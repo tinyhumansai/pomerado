@@ -8,7 +8,9 @@ import {
 } from "../destinations/credential-keyboard.js";
 import { BrowserExecuteResponse, type BrowserExecute } from "../runtime/browser-execution.js";
 import type { HostExecute } from "../runtime/host-execute.js";
+import { browserEngine, type BrowserEngine } from "./browser-engine.js";
 import {
+  BrowserName,
   NativeWorkerOptions,
   NativeWorkerReply,
   NativeWorkerRequest,
@@ -17,7 +19,7 @@ import {
 
 type WithoutId<A> = A extends { readonly id: string } ? Omit<A, "id"> : never;
 type NativePayload = WithoutId<typeof NativeWorkerRequest.Type>;
-export type { PlaywrightLibrary };
+export type { BrowserName, PlaywrightLibrary };
 
 /**
  * A running Chromium reached through its DevTools websocket, such as one started with
@@ -37,6 +39,8 @@ export interface PlaywrightOptions {
   readonly cdp?: PlaywrightCdpAttach;
   /** The Playwright build the executor drives the browser with. Defaults to `playwright`. */
   readonly library?: PlaywrightLibrary;
+  /** The browser the executor launches or joins. Defaults to `chromium`. */
+  readonly browser?: BrowserName;
   readonly headless?: boolean;
   readonly startupTimeoutMs?: number;
   readonly cleanupTimeoutMs?: number;
@@ -91,8 +95,8 @@ export interface PlaywrightExecutor {
 const asError = (cause: unknown): Error =>
   cause instanceof Error ? cause : new Error("Native Playwright transport failed", { cause });
 const promise = <A>(run: () => Promise<A>) => Effect.tryPromise({ try: run, catch: asError });
-const loadChromium = (library: PlaywrightLibrary) =>
-  promise(async () => ((await import(library)) as typeof import("playwright")).chromium);
+const loadLauncher = (engine: BrowserEngine, library: PlaywrightLibrary) =>
+  promise(async () => engine.launcher((await import(library)) as typeof import("playwright")));
 const duration = (value: number, name: string) => {
   if (!Number.isFinite(value) || value <= 0 || value > 300_000)
     throw new Error(`${name} must be positive and at most 300000 ms`);
@@ -107,6 +111,7 @@ const resultLimit = (value: number) => {
 type PendingResponse = (result: Effect.Effect<unknown, Error>) => void;
 interface NativeOwnership {
   readonly remote: boolean;
+  readonly engine: BrowserEngine;
   readonly cleanupTimeoutMs: number;
   readonly pending: Map<string, PendingResponse>;
   server?: BrowserServer;
@@ -128,7 +133,7 @@ const verifyOwnedContextClosed = (owner: NativeOwnership) =>
         );
       return;
     }
-    const cdp = yield* promise(() => supervisor.newBrowserCDPSession());
+    const cdp = yield* promise(() => owner.engine.browserSession(supervisor));
     return yield* Effect.gen(function* () {
       while (true) {
         const { browserContextIds } = yield* promise(() => cdp.send("Target.getBrowserContexts"));
@@ -346,8 +351,13 @@ export const makePlaywrightExecutor = (
     const library = yield* Schema.decodeUnknown(PlaywrightLibrary)(
       options.library ?? "playwright",
     ).pipe(Effect.mapError(() => new Error("library must be playwright or patchright")));
+    const browser = yield* Schema.decodeUnknown(BrowserName)(options.browser ?? "chromium").pipe(
+      Effect.mapError(() => new Error("browser must be chromium")),
+    );
+    const engine = browserEngine(browser);
     const owner: NativeOwnership = {
       remote: options.endpoint !== undefined || options.cdp !== undefined,
+      engine,
       cleanupTimeoutMs,
       stopped: false,
       pending: new Map(),
@@ -358,10 +368,10 @@ export const makePlaywrightExecutor = (
     const endpoint =
       options.cdp === undefined
         ? yield* Effect.gen(function* () {
-            const chromium = yield* loadChromium(library);
+            const launcher = yield* loadLauncher(engine, library);
             if (options.endpoint === undefined)
               owner.server = yield* promise(() =>
-                chromium.launchServer({
+                launcher.launchServer({
                   headless: options.headless ?? true,
                   timeout: startupTimeoutMs,
                 }),
@@ -370,7 +380,7 @@ export const makePlaywrightExecutor = (
             if (playwrightEndpoint === undefined)
               return yield* Effect.fail(new Error("Native Playwright endpoint missing"));
             owner.supervisor = yield* promise(() =>
-              chromium.connect(playwrightEndpoint, { timeout: startupTimeoutMs }),
+              launcher.connect(playwrightEndpoint, { timeout: startupTimeoutMs }),
             );
             return playwrightEndpoint;
           })
@@ -391,6 +401,7 @@ export const makePlaywrightExecutor = (
               endpoint,
               startupTimeoutMs,
               library,
+              browser,
               ...(resultLimitBytes === undefined ? {} : { resultLimitBytes }),
               ...(options.cdp === undefined
                 ? {}
