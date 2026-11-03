@@ -45,6 +45,10 @@ const ask = makeInputAsker((request) =>
 
 for (const contract of sessionSignInContract)
   test(contract.name, async () => {
+    test.skip(
+      test.info().project.name !== "chromium",
+      "The shop runs on a Chromium server the test launches itself, with Chromium's flags",
+    );
     test.setTimeout(180_000);
     const directory = await mkdtemp(join(tmpdir(), "pomerado-sign-in-contract-"));
     const shop = await startShop(directory);

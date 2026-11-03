@@ -6,6 +6,7 @@ import { makeInputAsker } from "../../src/inputs/callback.js";
 import { makeRunSecrets } from "../../src/inputs/secrets.js";
 import { signInForRun } from "../../src/runtime/sign-in-replay.js";
 import { expectNotCarried, hostKeyboard, hostPage } from "./autofill-host-page.js";
+import { pageGlobal } from "./page-world.js";
 
 // A run's sign-in whose recorded code screen has six one-digit boxes and a Verify button, but whose
 // own script sends the code as the sixth box takes its digit, with no new document. The site takes
@@ -147,7 +148,7 @@ test("a run signs in through six code boxes that send the code themselves, and n
   const { ended, reports } = await run(page);
   expect(ended).toEqual({ signedIn: true, alreadySignedIn: false });
   expect(checks).toEqual([code]);
-  expect(await page.evaluate(() => Reflect.get(window, "clicks"))).toBe(0);
+  expect(await pageGlobal(page, "clicks")).toBe(0);
   await expect(page.locator("#account")).toBeVisible();
   // The host clicked nothing and found the code screen closed in place, and the sign-in's own
   // check found the account, so the replay counted the screen as sent by the page.

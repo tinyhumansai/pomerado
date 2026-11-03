@@ -28,6 +28,10 @@ const withCheckout = async (
   page: string,
   use: (site: { readonly url: string }, endpoint: string) => Promise<void>,
 ) => {
+  test.skip(
+    test.info().project.name !== "chromium",
+    "The checkout runs on a Chromium server the test launches itself, with Chromium's flags",
+  );
   const directory = await mkdtemp(join(tmpdir(), "pomerado-card-fill-"));
   await promisify(execFile)("openssl", [
     "req",

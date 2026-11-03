@@ -5,6 +5,7 @@ import { makeInputAsker } from "../../src/inputs/callback.js";
 import { makeRunSecrets } from "../../src/inputs/secrets.js";
 import { signInForRun } from "../../src/runtime/sign-in-replay.js";
 import { expectNotCarried, hostKeyboard, hostPage } from "./autofill-host-page.js";
+import { pageGlobal } from "./page-world.js";
 
 // A run's sign-in whose recorded code screen has a Verify button, but whose own script sends the
 // code as the field takes its last digit and takes the button away in place, with no new
@@ -165,7 +166,7 @@ test("a run signs in through a code screen that sends itself on its last digit a
   expect(prompts).toEqual(["login", codePrompt]);
   expect(sent).toEqual([`/api/code ${code}`]);
   await expect(page.locator("#account")).toBeVisible();
-  expect(await page.evaluate(() => Reflect.get(window, "clicks"))).toBe(0);
+  expect(await pageGlobal(page, "clicks")).toBe(0);
 });
 
 test("a run still refuses a code screen that took its Verify button away in place when the marker never shows", async ({
@@ -176,5 +177,5 @@ test("a run still refuses a code screen that took its Verify button away in plac
   expect(ended).toEqual({ code: "RecipeFailed", reason: "submit_refused" });
   expect(prompts).toEqual(["login", codePrompt]);
   expect(sent).toEqual([`/api/code ${code}`]);
-  expect(await page.evaluate(() => Reflect.get(window, "clicks"))).toBe(0);
+  expect(await pageGlobal(page, "clicks")).toBe(0);
 });

@@ -149,6 +149,10 @@ for (const [name, handoff] of [
   test(`refuses a password screen on ${name} after the identifier was typed whatever the predicate trusts`, async ({
     page,
   }) => {
+    test.skip(
+      handoff.startsWith("http:") && test.info().project.name === "camoufox",
+      "Camoufox's HTTPS-First mode loads the plain-http screen over https, past the test's routes",
+    );
     const received = await serve(page, handoff);
     const asked: string[] = [];
     const { inspected } = await afterIdentifier(page, handoff, (url) => {

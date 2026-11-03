@@ -60,6 +60,10 @@ const signedOutTwice = async (
   answer: (kind: string, nth: number) => string | undefined,
   code = false,
 ) => {
+  test.skip(
+    test.info().project.name !== "chromium",
+    "The shop runs on a Chromium server the test launches itself, with Chromium's flags",
+  );
   const directory = await mkdtemp(join(tmpdir(), "pomerado-sign-in-rejected-"));
   const shop = await startShop(directory);
   const server = await chromium.launchServer({

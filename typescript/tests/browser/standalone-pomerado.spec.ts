@@ -50,6 +50,7 @@ import {
   guardianExecutionPolicy,
   nativeExecutionEnvironment,
 } from "../../src/guardian/execution-policy.js";
+import { projectBrowser } from "./project-browser.js";
 
 /** A write fixture's path: its one save, as a write build's first act step declares it. */
 const savePath = {
@@ -282,6 +283,10 @@ for (const [authentication, submitAfterInput] of [
   [true, true],
 ] as const) {
   test(`original SDKs mint a multi-file ${authentication ? "authenticated" : "public"} integration${submitAfterInput ? " whose sign-in button enables only after input" : ""} and run it`, async () => {
+    test.skip(
+      authentication && test.info().project.name !== "chromium",
+      "The shop runs on a Chromium server the test launches itself, with Chromium's flags",
+    );
     test.info().annotations.push({
       type: "slow",
       description:
@@ -325,7 +330,7 @@ for (const [authentication, submitAfterInput] of [
         Effect.scoped(
           Effect.gen(function* () {
             const service = yield* createPomerado({
-              ...(remote === undefined ? {} : { browser: { endpoint: remote.wsEndpoint() } }),
+              browser: remote === undefined ? projectBrowser() : { endpoint: remote.wsEndpoint() },
               minterProvider: minter(mintRequests, authentication),
               guardianProvider: guardian(reviewRequests),
               outcomeReviewerProvider: quietReviewer,
@@ -438,6 +443,7 @@ test("a run makes no Guardian or model call and returns the operation's output",
       Effect.scoped(
         Effect.gen(function* () {
           const service = yield* createPomerado({
+            browser: projectBrowser(),
             ask: makeInputAsker(() => Effect.succeed({})),
             minterProvider: unreachableModel(calls, "minter"),
             guardianProvider: unreachableModel(calls, "guardian"),
@@ -506,6 +512,7 @@ async ({ ask }) => ({ note: await ask("note") }));`;
       Effect.scoped(
         Effect.gen(function* () {
           const service = yield* createPomerado({
+            browser: projectBrowser(),
             ask: makeInputAsker((request) =>
               Effect.sync(() => {
                 asked.push(request);
@@ -775,6 +782,7 @@ async ({kernel,sessionId,enteringCommit,verified}) => {
       Effect.scoped(
         Effect.gen(function* () {
           const service = yield* createPomerado({
+            browser: projectBrowser(),
             minterProvider: model,
             guardianProvider: guardian([]),
             outcomeReviewerProvider: quietReviewer,
@@ -939,6 +947,7 @@ async ({kernel,sessionId,input,ask,enteringCommit,verified}) => {
       Effect.scoped(
         Effect.gen(function* () {
           const service = yield* createPomerado({
+            browser: projectBrowser(),
             minterProvider: model,
             guardianProvider: guardian([]),
             outcomeReviewerProvider: quietReviewer,
@@ -1254,6 +1263,10 @@ test("MCP mint input continues once into saved launcher and fresh business MCP",
 });
 
 test("a served integration with a recorded sign-in asks for the login on each call and keeps no value in its folder", async () => {
+  test.skip(
+    test.info().project.name !== "chromium",
+    "The shop runs on a Chromium server the test launches itself, with Chromium's flags",
+  );
   test.info().annotations.push({
     type: "slow",
     description: "Stdio child process serving from mcp.json, Chromium and two signed-in calls",
@@ -1427,6 +1440,10 @@ const saveMcpFixture = (
   );
 
 test("MCP write polls and answers never resubmit and EOF closes its owned context", async () => {
+  test.skip(
+    test.info().project.name !== "chromium",
+    "Watches the contexts of a Chromium server the test launches itself, over Chromium's DevTools",
+  );
   test.info().annotations.push({
     type: "slow",
     description:
@@ -1536,6 +1553,10 @@ if(!result.success||result.result!==true)throw new Error("Save not confirmed");v
 });
 
 test("an MCP write repeated with its idempotency_key acts once, across a restart and two servers", async () => {
+  test.skip(
+    test.info().project.name !== "chromium",
+    "Attaches the host to a Chromium server the test launches itself",
+  );
   test.info().annotations.push({
     type: "slow",
     description:
@@ -1881,6 +1902,7 @@ if(!result.success||result.result!==true)throw new Error("Save not reached");ret
       Effect.scoped(
         Effect.gen(function* () {
           const service = yield* createPomerado({
+            browser: projectBrowser(),
             ask: makeInputAsker(() => Effect.succeed({})),
             minterProvider: unreachableModel(calls, "minter"),
             guardianProvider: unreachableModel(calls, "guardian"),
@@ -2002,6 +2024,7 @@ throw new Error("Unexpected change after the save");});`;
       Effect.scoped(
         Effect.gen(function* () {
           const service = yield* createPomerado({
+            browser: projectBrowser(),
             ask: makeInputAsker(() => Effect.succeed({})),
             minterProvider: unreachableModel(calls, "minter"),
             guardianProvider: unreachableModel(calls, "guardian"),
@@ -2177,6 +2200,10 @@ test("MCP concurrent original input callbacks remain answerable", async () => {
 });
 
 test("original owner intent authorizes a named off-site tenant while an unnamed tenant is refused", async () => {
+  test.skip(
+    test.info().project.name !== "chromium",
+    "The shop runs on a Chromium server the test launches itself, with Chromium's flags",
+  );
   test.info().annotations.push({
     type: "slow",
     description:
@@ -2348,6 +2375,7 @@ test("a local mint sends Guardian the native policy and the minter the rendered 
       Effect.scoped(
         Effect.gen(function* () {
           const service = yield* createPomerado({
+            browser: projectBrowser(),
             minterProvider: minter(mintRequests),
             guardianProvider: guardian(reviewRequests),
             outcomeReviewerProvider: quietReviewer,
@@ -2405,6 +2433,10 @@ test("a local mint sends Guardian the native policy and the minter the rendered 
 });
 
 test("a sign-in code asked during sign-in is typed into the code screen; a later action code is not marked", async () => {
+  test.skip(
+    test.info().project.name !== "chromium",
+    "The site runs on a Chromium server the test launches itself, with Chromium's flags",
+  );
   test.info().annotations.push({
     type: "slow",
     description: "Original SDKs drive a two-screen native sign-in and two explores in Chromium",
@@ -2679,6 +2711,10 @@ const twoScreenSignIn = async (options: {
   readonly loginPath: string;
   readonly failNext: boolean;
 }) => {
+  test.skip(
+    test.info().project.name !== "chromium",
+    "The shop runs on a Chromium server the test launches itself, with Chromium's flags",
+  );
   const directory = await mkdtemp(join(tmpdir(), "pomerado-after-submit-"));
   const shop = await startShop(directory);
   // Marks this sign-in's help links, so the test finds its own saved file among parallel tests'.

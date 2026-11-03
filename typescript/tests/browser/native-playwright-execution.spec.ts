@@ -19,6 +19,7 @@ import { Deadline } from "../../src/runtime/deadline.js";
 import { executeKernelOperation } from "../../src/runtime/kernel-operation-run.js";
 import { runLocalOperation, type LocalOperationFailure } from "../../src/execution/local-operation.js";
 import { createLocalWorkspace } from "../../src/execution/local-workspace.js";
+import { projectBrowser } from "./project-browser.js";
 
 const native = <A>(
   run: (executor: PlaywrightExecutor) => Promise<A>,
@@ -27,7 +28,7 @@ const native = <A>(
   Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
-        const executor = yield* makePlaywrightExecutor(options);
+        const executor = yield* makePlaywrightExecutor({ ...projectBrowser(), ...options });
         return yield* Effect.tryPromise({
           try: () => run(executor),
           catch: (error) =>
@@ -201,6 +202,16 @@ document.getElementById('code').addEventListener('input', (event) => {
 };
 
 /**
+ * Host code that runs `source` in the page's own world, as the page's own script would. Camoufox
+ * evaluates in an isolated world the page's script never sees, so there it runs as an inline
+ * script.
+ */
+const inPage = (source: string) =>
+  test.info().project.name === "camoufox"
+    ? `await page.evaluate(() => { const script = document.createElement('script'); script.textContent = ${JSON.stringify(source)}; document.documentElement.append(script); script.remove(); });`
+    : `await page.evaluate(() => ${source});`;
+
+/**
  * Runs `code`, after loading `url` when given, while watching for two values, counting typing
  * only on `site`.
  */
@@ -237,7 +248,7 @@ test("a typing watch marks a value typed only by a typing call on the site that 
         ["await page.locator('#same').contentFrame().locator('#inner').fill('111111');"],
         ["await page.frameLocator('#nest').frameLocator('#deeper').locator('#inner').fill('111111');"],
         ["await page.locator('#open-field input').focus(); await page.keyboard.type('111111');"],
-        ["await page.evaluate(() => window.focusClosedField()); await page.keyboard.type('111111');"],
+        [`${inPage("window.focusClosedField()")} await page.keyboard.type('111111');`],
         ["await page.keyboard.type('111111');", `${site}/plain`],
         [
           `const tab = await context.newPage(); await tab.goto('${site}/'); await tab.fill('#code', '111111'); await tab.close();`,
@@ -276,7 +287,7 @@ test("a typing watch marks a value typed only by a typing call on the site that 
         "const tab = await context.newPage(); await tab.goto('data:text/html,<input id=code>'); await tab.fill('#code', '111111'); await tab.close();",
         `const tab = await context.newPage(); await tab.goto('${other}/'); await tab.fill('#code', '111111'); await tab.close();`,
         `const tab = await context.newPage(); await tab.goto('${other}/'); await tab.locator('#code').focus(); await tab.keyboard.type('111111'); await tab.close();`,
-        "await page.evaluate(() => Object.defineProperty(Document.prototype, 'activeElement', { configurable: true, get() { return document.getElementById('code'); } })); await page.frameLocator('#other').locator('#inner').focus(); await page.keyboard.type('111111');",
+        `${inPage("Object.defineProperty(Document.prototype, 'activeElement', { configurable: true, get() { return document.getElementById('code'); } })")} await page.frameLocator('#other').locator('#inner').focus(); await page.keyboard.type('111111');`,
         // Keys with nothing focused, on a page with another origin's frame.
         "await page.keyboard.type('111111');",
       ])
@@ -494,6 +505,10 @@ test("popup and frame actions preserve the original selected page across calls",
 });
 
 test("remote attachment releases owned contexts and preserves the caller's browser", async () => {
+  test.skip(
+    test.info().project.name !== "chromium",
+    "Attaches the executor to a Chromium server the test launches itself",
+  );
   const server = await chromium.launchServer({ headless: true });
   const owner = await chromium.connect(server.wsEndpoint());
   try {
@@ -528,6 +543,10 @@ test("remote attachment releases owned contexts and preserves the caller's brows
 
 for (const mode of ["pending_abort", "infinite_abort", "infinite_timeout"] as const) {
   test(`${mode} stops execution without replay`, async () => {
+    test.skip(
+      test.info().project.name !== "chromium",
+      "Attaches the executor to a Chromium server the test launches itself",
+    );
     const written = Promise.withResolvers<void>();
     let writes = 0;
     const fixture = createServer((request, response) => {
@@ -659,6 +678,10 @@ test("original autofill uses native trusted input and refuses a stale field bind
 });
 
 test("native autofill preserves an approved cross-site frame binding", async () => {
+  test.skip(
+    test.info().project.name !== "chromium",
+    "Attaches the executor to a Chromium server the test launches itself",
+  );
   const server = await chromium.launchServer({ headless: true, args: ["--site-per-process"] });
   try {
     await native(
@@ -776,11 +799,12 @@ for (const [name, button, script, expected] of [
     { submit: "stayed_disabled", posts: 0 },
   ],
   // Inert stays a page read: faked away, the step goes on, yet Playwright's click never lands.
+  // Camoufox reads the page in an isolated world the fake never reaches, and refuses the step.
   [
     "an inert submit page code fakes as not inert is never clicked",
     '<div inert><button id="continue">Sign in</button></div>',
     fakeNotInert,
-    { submit: "failed", posts: 0 },
+    { submit: "failed", posts: 0, isolatedRefusal: "not_editable" },
   ],
   // The submit enabling is no change to the controls the host judges, whatever element it is.
   [
@@ -809,6 +833,17 @@ for (const [name, button, script, expected] of [
           authenticationOrigins: [],
         }),
       );
+      const posts = () =>
+        Effect.runPromise(executor.execute("return context.signInPosts ?? 0;"));
+      if (
+        "outcome" in inspection &&
+        "isolatedRefusal" in expected &&
+        test.info().project.name === "camoufox"
+      ) {
+        expect(inspection.reason).toBe(expected.isolatedRefusal);
+        expect(await posts()).toBe(0);
+        return;
+      }
       if ("outcome" in inspection) throw new Error(`Fixture refused: ${inspection.reason}`);
       const report = await Effect.runPromise(
         fillAutofillStep({
@@ -821,9 +856,7 @@ for (const [name, button, script, expected] of [
         }),
       );
       expect(report).toMatchObject({ outcome: "filled", submit: expected.submit });
-      expect(
-        await Effect.runPromise(executor.execute("return context.signInPosts ?? 0;")),
-      ).toBe(expected.posts);
+      expect(await posts()).toBe(expected.posts);
     });
   });
 
@@ -920,6 +953,10 @@ const writeFixture = async () => {
 };
 
 test("lost native browser reports cleanup uncertainty and prevents replay", async () => {
+  test.skip(
+    test.info().project.name !== "chromium",
+    "Attaches the executor to a Chromium server the test launches itself",
+  );
   const fixture = await writeFixture();
   const server = await chromium.launchServer({ headless: true });
   try {
@@ -956,6 +993,10 @@ test("lost native browser reports cleanup uncertainty and prevents replay", asyn
 });
 
 test("credential queued behind cancelled browser work is never inserted", async () => {
+  test.skip(
+    test.info().project.name !== "chromium",
+    "Attaches the executor to a Chromium server the test launches itself",
+  );
   const fixture = await writeFixture();
   const server = await chromium.launchServer({ headless: true });
   const owner = await chromium.connect(server.wsEndpoint());
