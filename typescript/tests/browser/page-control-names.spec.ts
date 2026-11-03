@@ -295,11 +295,10 @@ test("a typed value the page draws into generated text never reaches a name", as
     expect.arrayContaining(["Identifier", "Class", "Property", "Rule", "Plain *", "Shadow"]),
   );
   // A field in an open shadow root, whose value the page draws into a label outside it, counts too.
-  // Firefox keeps the content's two strings apart, '" " "typed-shadow"', where Chromium joins them.
-  const drawn = await page
-    .locator("#shadow-label")
-    .evaluate((label) => getComputedStyle(label, "::after").content);
-  expect(drawn.replace(/["\s]/gu, "")).toBe("typed-shadow");
+  // Firefox keeps the content's two strings apart, where Chromium joins them.
+  expect(
+    await page.locator("#shadow-label").evaluate((label) => getComputedStyle(label, "::after").content),
+  ).toBe(test.info().project.name === "camoufox" ? '" " "typed-shadow"' : '" typed-shadow"');
 });
 
 // A page script can make reading a name throw, here for one field's styles: that name is null,

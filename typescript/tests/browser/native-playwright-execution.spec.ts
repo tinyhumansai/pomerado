@@ -678,11 +678,17 @@ test("original autofill uses native trusted input and refuses a stale field bind
 });
 
 test("native autofill preserves an approved cross-site frame binding", async () => {
-  test.skip(
-    test.info().project.name !== "chromium",
-    "Attaches the executor to a Chromium server the test launches itself",
-  );
-  const server = await chromium.launchServer({ headless: true, args: ["--site-per-process"] });
+  // Chromium runs the cross-site frame in a process of its own only with --site-per-process, on a
+  // server the test launches, where the frame has a DevTools session of its own. Firefox isolates
+  // sites itself, and its engine's tab session covers every frame.
+  const server =
+    test.info().project.name === "chromium"
+      ? await chromium.launchServer({ headless: true, args: ["--site-per-process"] })
+      : undefined;
+  const ownSession =
+    server === undefined
+      ? ""
+      : "const cdp = await context.newCDPSession(frame); await cdp.detach();";
   try {
     await native(
       async (executor) => {
@@ -695,7 +701,7 @@ test("native autofill preserves an approved cross-site frame binding", async () 
       await page.goto('${site}');
       await page.frameLocator('iframe').locator('#frame-password').waitFor();
       const frame = page.frames().find(frame => frame.url().startsWith('${authOrigin}'));
-      const cdp = await context.newCDPSession(frame); await cdp.detach();
+      ${ownSession}
     `),
         );
         const step = { fields: [{ selector: "#frame-password", slot: "password" as const }] };
@@ -728,10 +734,10 @@ test("native autofill preserves an approved cross-site frame binding", async () 
           ),
         ).toBe(true);
       },
-      { endpoint: server.wsEndpoint() },
+      server === undefined ? {} : { endpoint: server.wsEndpoint() },
     );
   } finally {
-    await server.close();
+    await server?.close();
   }
 });
 

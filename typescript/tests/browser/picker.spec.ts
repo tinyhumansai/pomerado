@@ -328,7 +328,10 @@ list.addEventListener("click", (event) => {
   expect(await submitted(page)).toEqual({ street: "Oak Lane" });
   // Typed once, a key at a time: the page asked for each prefix once, from the first key. Camoufox
   // presses Shift for a capital, whose own keyup asks for the same prefix again.
-  const prefixes = asked.filter((query, index) => query !== asked[index - 1]);
+  const prefixes =
+    test.info().project.name === "camoufox"
+      ? asked.filter((query, index) => query !== asked[index - 1])
+      : asked;
   expect(prefixes).toEqual(["O", "Oa", "Oak", "Oak ", "Oak L", "Oak La", "Oak Lan", "Oak Lane"]);
 });
 

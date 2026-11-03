@@ -151,7 +151,8 @@ test("the keyboard mode signs in on a page that keeps only what trusted keys typ
   expect(received.map((form) => Object.fromEntries(form))).toEqual([{ username, password }]);
   const downs = seen.filter((key) => key.type === "keydown");
   // Camoufox presses Shift for a capital, as a person does; the typed text is the other keys.
-  const typed = downs.filter((key) => key.key !== "Shift");
+  const typed =
+    test.info().project.name === "camoufox" ? downs.filter((key) => key.key !== "Shift") : downs;
   expect(typed.map((key) => key.key).join("")).toBe(username + password);
   expect(seen.every((key) => key.trusted)).toBe(true);
   const gaps = downs.slice(1).map((key, at) => key.at - (downs[at]?.at ?? 0));

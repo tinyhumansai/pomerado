@@ -55,14 +55,6 @@ export const expectNotCarried = (calls: readonly HostCall[], value: string) => {
 };
 
 /**
- * The host's call on a local page: Kernel's `page`, `context` and `browser`, as on a worker. It
- * keeps every call, and fails the test, without changing what the call does, when a script holds a
- * value the host's keyboard already typed on the page (no value but a date of
- * birth enters a Kernel call's script). Configured origins the host sends (`configured`), which a
- * value may sit inside, do not count. A Patchright page (`patchright`) evaluates locators in its
- * isolated world itself, so its calls run on it as they are.
- */
-/**
  * The engine for a fixture page's browser, attached to the page's context, so the host's own
  * DevTools sessions there go through it as they do on a worker.
  */
@@ -74,6 +66,14 @@ export const fixtureEngine = (page: Page) => {
   return engine;
 };
 
+/**
+ * The host's call on a local page: Kernel's `page`, `context` and `browser`, as on a worker. It
+ * keeps every call, and fails the test, without changing what the call does, when a script holds a
+ * value the host's keyboard already typed on the page (no value but a date of
+ * birth enters a Kernel call's script). Configured origins the host sends (`configured`), which a
+ * value may sit inside, do not count. A Patchright page (`patchright`) evaluates locators in its
+ * isolated world itself, so its calls run on it as they are.
+ */
 export const hostPage = async (
   page: Page,
   configured: readonly string[] = [],
