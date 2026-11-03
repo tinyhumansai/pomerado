@@ -16,6 +16,8 @@ describe("browser engines", () => {
       Effect.scoped(makePlaywrightExecutor({ browser: "webkit" as never })),
     );
     if (Exit.isSuccess(exit)) throw new Error("The executor started");
-    expect(Cause.squash(exit.cause)).toMatchObject({ message: "browser must be chromium" });
+    expect(Cause.squash(exit.cause)).toMatchObject({
+      message: "browser must be chromium or firefox",
+    });
   });
 });
