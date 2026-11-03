@@ -1,8 +1,9 @@
 // The native executor on Firefox, whose engine answers the host's DevTools commands itself: host
 // code binds its tab by the id the executor reports, a credential goes in by trusted input into
 // the bound field only, typed keys are trusted, clearing a site empties its storage and cookies,
-// a file goes into an input in a shadow root by either placement, and history types a form's
-// answer as DevTools does.
+// clearing an origin empties its own and leaves another's and unregisters its service workers, a
+// page loads plain http as asked, a file goes into an input in a shadow root by either placement,
+// and history types a form's answer as DevTools does.
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -176,6 +177,120 @@ test("clearing a site on Firefox empties its storage and cookies", async () => {
     );
     expect(left).toEqual({ local: null, session: null, cookies: 0 });
   });
+});
+
+test("clearing an origin on Firefox empties its storage and cookies, and keeps another origin's", async () => {
+  await firefox(async (executor) => {
+    const shop = "https://shop.example.test";
+    const other = "https://other.example.test";
+    const left = await Effect.runPromise(
+      executor.execute(
+        `
+        const site = route => route.fulfill({contentType:'text/html', body:'<title>Site</title>'});
+        await context.route('${shop}/**', site);
+        await context.route('${other}/**', site);
+        const seed = async origin => {
+          await page.goto(origin + '/');
+          await page.evaluate(async () => {
+            localStorage.setItem('cart', 'kept');
+            await new Promise((resolve, reject) => {
+              const open = indexedDB.open('orders', 1);
+              open.onupgradeneeded = () => open.result.createObjectStore('orders');
+              open.onsuccess = () => { open.result.close(); resolve(undefined); };
+              open.onerror = () => reject(open.error);
+            });
+            await (await caches.open('pages')).put('/cached', new Response('kept'));
+          });
+          await context.addCookies([{ name: 'session', value: 'kept', url: origin }]);
+        };
+        const read = async origin => {
+          await page.goto(origin + '/');
+          return {
+            local: await page.evaluate(() => localStorage.getItem('cart')),
+            databases: await page.evaluate(async () => (await indexedDB.databases()).map(database => database.name)),
+            cached: await page.evaluate(() => caches.has('pages')),
+            cookies: (await context.cookies(origin)).length,
+          };
+        };
+        await seed('${shop}');
+        await seed('${other}');
+        const session = await context.newCDPSession(page);
+        try {
+          await session.send('Storage.clearDataForOrigin', { origin: '${shop}', storageTypes: 'all' });
+        } finally {
+          await session.detach();
+        }
+        return { shop: await read('${shop}'), other: await read('${other}') };
+      `,
+        60,
+      ),
+    );
+    expect(left).toEqual({
+      shop: { local: null, databases: [], cached: false, cookies: 0 },
+      other: { local: "kept", databases: ["orders"], cached: true, cookies: 1 },
+    });
+  });
+});
+
+test("a Firefox page loads plain http as asked", async () => {
+  await firefox(async (executor) => {
+    const plain = "http://plain.example.test";
+    const url = await Effect.runPromise(
+      executor.execute(`
+        await context.route('${plain}/**', route => route.fulfill({contentType:'text/html', body:'<title>Plain</title>'}));
+        await page.goto('${plain}/');
+        return page.url();
+      `),
+    );
+    expect(url).toBe(`${plain}/`);
+  });
+});
+
+test("clearing an origin on Firefox unregisters its service workers", async () => {
+  const server = createServer((request, response) => {
+    if (request.url === "/worker.js") {
+      response.setHeader("content-type", "text/javascript");
+      response.end("self.addEventListener('fetch', () => undefined);");
+      return;
+    }
+    response.setHeader("content-type", "text/html");
+    response.end(
+      "<title>Site</title><script>navigator.serviceWorker.register('/worker.js').then(() => navigator.serviceWorker.ready).then(() => { document.documentElement.dataset.worker = 'ready'; });</script>",
+    );
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("No fixture address");
+  const origin = `http://127.0.0.1:${address.port}`;
+  // Playwright blocks a Firefox context's service workers with a script, which Camoufox runs apart
+  // from the page's own, so there the site's worker registers.
+  const registers = test.info().project.name === "camoufox";
+  try {
+    await firefox(async (executor) => {
+      const seen = await Effect.runPromise(
+        executor.execute(
+          `
+          await page.goto('${origin}/');
+          if (${String(registers)}) await page.locator('html[data-worker=ready]').waitFor({ state: 'attached' });
+          const workers = () => page.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).length);
+          const before = await workers();
+          const session = await context.newCDPSession(page);
+          try {
+            await session.send('Storage.clearDataForOrigin', { origin: '${origin}', storageTypes: 'all' });
+          } finally {
+            await session.detach();
+          }
+          return { before, after: await workers() };
+        `,
+          30,
+        ),
+      );
+      expect(seen).toEqual({ before: registers ? 1 : 0, after: 0 });
+    });
+  } finally {
+    server.close();
+  }
 });
 
 for (const placeByBrowserPath of [true, false]) {

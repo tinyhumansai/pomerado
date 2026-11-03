@@ -41,14 +41,39 @@ interface Visit {
   readonly url: string;
   readonly transitionType: "form_submit" | "other";
 }
+/** A main-frame navigation on its way: its request, and the method its redirect chain began with. */
+interface Navigation {
+  readonly request: Request;
+  readonly method: string;
+  /** When its response came: its document commits soon after, if it commits one. */
+  respondedAt?: number;
+  /** Its response commits no document: it holds no content, or is an attachment. */
+  noDocument?: boolean;
+}
+/** A main-frame load that failed, whose error page Firefox commits a moment later. */
+interface FailedLoad {
+  readonly url: string;
+  readonly method: string;
+  readonly at: number;
+}
 /** The most top-level navigations a tab keeps, newest last. */
 const visitsKept = 50;
 const visits = new WeakMap<Page, Visit[]>();
-const pending = new WeakMap<Page, Request>();
-/** Tabs whose main-frame load failed, whose error page Firefox commits a moment later. */
-const errorPageDue = new WeakSet<Page>();
-/** The longest a stop waits for a failed load's error page to commit. */
+const pending = new WeakMap<Page, Navigation>();
+const errorPageDue = new WeakMap<Page, FailedLoad>();
+/** The longest a failed load's error page is waited for. */
 const errorPageMs = 2_000;
+/** The longest a navigation whose response came holds reads before its document commits. */
+const commitMs = 5_000;
+/** The longest a stop waits for the page to run it. */
+const stopMs = 2_000;
+/** The failures that show no error page: a load stopped, or overtaken by another. */
+const abortedLoads = new Set(["NS_BINDING_ABORTED", "NS_ERROR_ABORT"]);
+
+const withoutFragment = (url: string) => {
+  const at = url.indexOf("#");
+  return at === -1 ? url : url.slice(0, at);
+};
 
 /**
  * The worker global under which the engine says whether a tab's main-frame navigation is on its
@@ -58,21 +83,38 @@ const errorPageMs = 2_000;
 export const navigationPendingKey = "__pomeradoNavigationPending";
 
 /**
- * Whether a navigation of `page`'s main frame is on its way: requested, and not yet committed,
- * failed or finished, as a response that commits no document does, such as a download's.
+ * Whether a navigation of `page`'s main frame is on its way: requested, and its document not yet
+ * committed, or a failed load's error page not yet committed. A response that commits no
+ * document, such as a download's, ends it, and so does a closed tab. A response whose document
+ * never says it committed holds for at most `commitMs`, and an error page for `errorPageMs`.
  */
-export const navigationPending = (page: Page) => pending.has(page);
+export const navigationPending = (page: Page) => {
+  if (page.isClosed()) return false;
+  const navigation = pending.get(page);
+  if (
+    navigation !== undefined &&
+    (navigation.respondedAt === undefined || Date.now() - navigation.respondedAt < commitMs)
+  )
+    return true;
+  const failed = errorPageDue.get(page);
+  return failed !== undefined && Date.now() - failed.at < errorPageMs;
+};
 
 /**
  * Records `page`'s top-level navigations, each a `form_submit` when a POST started it, redirects
- * included, as DevTools' history types a form's answer. A same-document navigation, or one a GET
- * started, is `other`; a GET form's answer is too, which is safe to open again.
+ * included, as DevTools' history types a form's answer. One a GET started is `other`; a GET
+ * form's answer is too, where Chromium types it `form_submit`, which is safe to open again. A
+ * same-document navigation, which Playwright reports as a navigation too, moves the current
+ * entry's address and keeps its type, as `replaceState` does in Chromium.
  */
 export const recordNavigations = (page: Page) => {
   if (visits.has(page)) return;
   const entries: Visit[] = [];
   visits.set(page, entries);
-  let method: string | undefined;
+  const visit = (url: string, method: string) => {
+    entries.push({ url, transitionType: method === "POST" ? "form_submit" : "other" });
+    if (entries.length > visitsKept) entries.splice(0, entries.length - visitsKept);
+  };
   page.on("request", (request) => {
     if (!request.isNavigationRequest()) return;
     let main = false;
@@ -85,24 +127,65 @@ export const recordNavigations = (page: Page) => {
     let first = request;
     for (let from = request.redirectedFrom(); from !== null; from = from.redirectedFrom())
       first = from;
-    method = first.method();
-    pending.set(page, request);
+    pending.set(page, { request, method: first.method() });
   });
-  const ended = (request: Request) => {
-    if (pending.get(page) === request) pending.delete(page);
-  };
+  page.on("response", (response) => {
+    const navigation = pending.get(page);
+    if (navigation?.request !== response.request()) return;
+    navigation.respondedAt = Date.now();
+    const disposition = response.headers()["content-disposition"] ?? "";
+    navigation.noDocument =
+      response.status() === 204 || response.status() === 205 || /^\s*attachment/iu.test(disposition);
+  });
+  // Firefox may say a request finished before its document says it committed, so only a response
+  // that commits none ends the navigation here.
+  page.on("requestfinished", (request) => {
+    const navigation = pending.get(page);
+    if (navigation?.request === request && navigation.noDocument === true) pending.delete(page);
+  });
   page.on("requestfailed", (request) => {
-    if (pending.get(page) === request) errorPageDue.add(page);
-    ended(request);
+    const navigation = pending.get(page);
+    if (navigation?.request !== request) return;
+    pending.delete(page);
+    const reason = request.failure()?.errorText ?? "";
+    if (!abortedLoads.has(reason))
+      errorPageDue.set(page, {
+        url: withoutFragment(request.url()),
+        method: navigation.method,
+        at: Date.now(),
+      });
   });
-  page.on("requestfinished", ended);
-  page.on("framenavigated", (frame) => {
-    if (frame !== page.mainFrame()) return;
+  page.on("download", (download) => {
+    const navigation = pending.get(page);
+    if (withoutFragment(download.url()) === withoutFragment(navigation?.request.url() ?? ""))
+      pending.delete(page);
+  });
+  page.on("close", () => {
     pending.delete(page);
     errorPageDue.delete(page);
-    entries.push({ url: frame.url(), transitionType: method === "POST" ? "form_submit" : "other" });
-    method = undefined;
-    if (entries.length > visitsKept) entries.splice(0, entries.length - visitsKept);
+  });
+  page.on("framenavigated", (frame) => {
+    if (frame !== page.mainFrame()) return;
+    const url = withoutFragment(frame.url());
+    const navigation = pending.get(page);
+    const failed = errorPageDue.get(page);
+    // A new document is the pending navigation's, at its address or once its response came; a
+    // redirect Playwright fulfilled starts no request of its own for where it leads.
+    if (
+      navigation !== undefined &&
+      (withoutFragment(navigation.request.url()) === url || navigation.respondedAt !== undefined)
+    ) {
+      pending.delete(page);
+      errorPageDue.delete(page);
+      visit(frame.url(), navigation.method);
+    } else if (failed?.url === url) {
+      errorPageDue.delete(page);
+      visit(frame.url(), failed.method);
+    } else {
+      const current = entries.at(-1);
+      if (current === undefined) visit(frame.url(), "GET");
+      else entries[entries.length - 1] = { ...current, url: frame.url() };
+    }
   });
 };
 
@@ -151,8 +234,8 @@ const markedElements = async (frame: Frame) => {
     },
     [fileMarker, bindingPrefix] as const,
   );
+  const elements: ElementHandle<Element>[] = [];
   try {
-    const elements: ElementHandle<Element>[] = [];
     for (const property of (await list.getProperties()).values()) {
       const element = property.asElement();
       if (element === null) await property.dispose();
@@ -160,8 +243,11 @@ const markedElements = async (frame: Frame) => {
       else elements.push(element as ElementHandle<Element>);
     }
     return elements;
+  } catch (error) {
+    await Promise.all(elements.map((element) => element.dispose().catch(() => undefined)));
+    throw error;
   } finally {
-    await list.dispose();
+    await list.dispose().catch(() => undefined);
   }
 };
 
@@ -169,10 +255,10 @@ const markedElements = async (frame: Frame) => {
 const blank = (route: Route) => route.fulfill({ contentType: "text/html", body: "<html></html>" });
 
 /**
- * Clears what `Storage.clearDataForOrigin` clears: the origin's cookies, local storage, IndexedDB
- * and cache storage. The tab opens an inert document on the origin to reach them; a database
- * another connection holds open is deleted once that connection closes. Service workers need no
- * clearing, since the engine's contexts block them.
+ * Clears what `Storage.clearDataForOrigin` clears: the origin's cookies, local storage, IndexedDB,
+ * cache storage and service workers. The tab opens an inert document on the origin to reach them;
+ * a database another connection holds open is deleted once that connection closes. Where a site's
+ * worker runs, as on Camoufox (`firefoxEngine`), it may answer that load in place of the routes.
  */
 const clearOrigin = async (context: BrowserContext, page: Page, origin: string) => {
   const pattern = `${origin}/**`;
@@ -189,6 +275,9 @@ const clearOrigin = async (context: BrowserContext, page: Page, origin: string) 
         });
       }
       if ("caches" in globalThis) for (const key of await caches.keys()) await caches.delete(key);
+      if (navigator.serviceWorker !== undefined)
+        for (const registration of await navigator.serviceWorker.getRegistrations())
+          await registration.unregister();
     });
   } finally {
     await page.unroute(pattern, blank);
@@ -246,14 +335,28 @@ const session = (context: BrowserContext, page: Page): CDPSession => {
       },
     }),
     "Page.stopLoading": async () => {
-      await page.evaluate(() => window.stop()).catch(() => undefined);
+      // The page runs the stop, where Chromium's browser does, so a page that holds its thread
+      // past the wait skips it rather than stopping a load started after it.
+      const until = Date.now() + stopMs;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        page
+          .evaluate((deadline) => {
+            if (Date.now() < deadline) window.stop();
+          }, until)
+          .catch(() => undefined),
+        new Promise((resolve) => (timer = setTimeout(resolve, stopMs))),
+      ]);
+      clearTimeout(timer);
       // A failed load's error page commits after the failure, and a load started before it would
       // be cut off by it, so a stop after one waits for it.
-      if (errorPageDue.has(page))
+      const failed = errorPageDue.get(page);
+      const left = failed === undefined ? 0 : errorPageMs - (Date.now() - failed.at);
+      if (left > 0)
         await page
           .waitForEvent("framenavigated", {
-            predicate: (frame) => frame === page.mainFrame(),
-            timeout: errorPageMs,
+            predicate: (frame) => frame === page.mainFrame() && !errorPageDue.has(page),
+            timeout: left,
           })
           .catch(() => undefined);
       return {};
@@ -321,19 +424,25 @@ const session = (context: BrowserContext, page: Page): CDPSession => {
       const args = (call.arguments ?? []).map((argument) =>
         "objectId" in argument ? object(argument.objectId) : argument.value,
       );
+      let handle: JSHandle | undefined;
       try {
         if (call.returnByValue === true)
           return { result: { value: await callOn(target, call.functionDeclaration, args, true) } };
-        const handle = (await callOn(target, call.functionDeclaration, args, false)) as JSHandle;
+        handle = (await callOn(target, call.functionDeclaration, args, false)) as JSHandle;
         const kind = await handle.evaluate((value) => (value === null ? "null" : typeof value));
-        if (kind === "object" || kind === "function")
-          return { result: { type: kind, objectId: keep(handle) } };
+        if (kind === "object" || kind === "function") {
+          const objectId = keep(handle);
+          handle = undefined;
+          return { result: { type: kind, objectId } };
+        }
         const value: unknown = await handle.jsonValue();
-        await handle.dispose();
         return { result: { type: kind, value } };
       } catch (error) {
         const text = error instanceof Error ? error.message : "Function call failed";
         return { result: { type: "undefined" }, exceptionDetails: { text } };
+      } finally {
+        // A handle the session keeps is released with its object; any other goes now.
+        await handle?.dispose().catch(() => undefined);
       }
     },
     "Runtime.releaseObject": async (params) => {

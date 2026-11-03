@@ -1,4 +1,5 @@
 import { defineConfig } from "@playwright/test";
+import { firefoxPrefs } from "./typescript/src/execution/browser-engine.js";
 
 // Suspected destination-boundary bugs stop instead of continuing, locally as in CI. Workers
 // inherit this process's environment.
@@ -28,14 +29,22 @@ export default defineConfig({
   },
   projects: [
     { name: "chromium", use: { browserName: "chromium" }, testIgnore: "**/native-firefox.spec.ts" },
-    { name: "firefox", use: { browserName: "firefox" }, testMatch: "**/native-firefox.spec.ts" },
+    // Firefox runs with the preferences a Firefox executor launches it with.
+    {
+      name: "firefox",
+      use: { browserName: "firefox", launchOptions: { firefoxUserPrefs: firefoxPrefs } },
+      testMatch: "**/native-firefox.spec.ts",
+    },
     // Camoufox, a Firefox build, when CAMOUFOX_EXECUTABLE names its binary.
     ...(camoufox === undefined
       ? []
       : [
           {
             name: "camoufox",
-            use: { browserName: "firefox" as const, launchOptions: { executablePath: camoufox } },
+            use: {
+              browserName: "firefox" as const,
+              launchOptions: { executablePath: camoufox, firefoxUserPrefs: firefoxPrefs },
+            },
             metadata: { executablePath: camoufox },
           },
         ]),

@@ -67,7 +67,8 @@ export interface InsertionOptions {
   /**
    * Type the text one character at a time, each between a keydown, keypress and keyup on the field,
    * for a page that reacts only to key presses. The guard holds before each character, so a
-   * refusal after the first may leave part of the text typed.
+   * refusal after the first may leave part of the text typed. A Firefox executor presses trusted
+   * keys instead (`trustedKeys`), since Camoufox crashes the tab on a synthetic keypress.
    */
   readonly keys?: true | undefined;
   /**

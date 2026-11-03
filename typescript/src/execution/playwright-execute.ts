@@ -399,6 +399,7 @@ export const makePlaywrightExecutor = (
             if (options.endpoint === undefined)
               owner.server = yield* promise(() =>
                 launcher.launchServer({
+                  ...engine.launchOptions,
                   headless: options.headless ?? true,
                   timeout: startupTimeoutMs,
                   ...(options.executablePath === undefined
