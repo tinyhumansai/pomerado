@@ -43,6 +43,10 @@ const orderHost = "www.order.test";
  * order and shows "Order placed".
  */
 const startOrderSite = async (directory: string) => {
+  test.skip(
+    test.info().project.name !== "chromium",
+    "The order site runs on a Chromium server the test launches itself, with Chromium's flags",
+  );
   await promisify(execFile)("openssl", [
     "req",
     "-x509",

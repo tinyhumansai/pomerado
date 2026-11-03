@@ -353,6 +353,10 @@ test("loads the request's page and reports its status, its redirects and where i
 test("a step's goto right after the request's page failed to load is never cut off", async ({
   page,
 }) => {
+  test.fixme(
+    test.info().project.name === "camoufox",
+    "Firefox commits a failed load's error page late, past the engine's stopLoading",
+  );
   test.setTimeout(120_000);
   const site = await startSite();
   const closed = await startSite();

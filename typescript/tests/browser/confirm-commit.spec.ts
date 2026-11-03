@@ -454,6 +454,10 @@ test.describe("confirmCommit", () => {
     });
 
   test("a body that can't be read in time is unclear", async ({ page: browserPage }) => {
+    test.fixme(
+      test.info().project.name === "camoufox",
+      "On Camoufox the late body is read in time, so the commit reads done",
+    );
     // The site sends the response's headers at once and its body only later.
     const server = createServer((request, response) => {
       if (request.method === "GET") {

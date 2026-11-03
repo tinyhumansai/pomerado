@@ -94,8 +94,11 @@ const state = { listeners: [], types: new Map() };
 const capture = (download) => {
   if (state.done !== undefined) return;
   const name = download.suggestedFilename();
-  const contentType = state.types.get(download.url());
-  state.done = download.saveAs(${JSON.stringify(path)}).then(() => ({ saved: true, name, ...(contentType === undefined ? {} : { contentType }) }), () => ({ saved: false }));
+  // Read once saved: Firefox reports a download before the response it came in.
+  state.done = download.saveAs(${JSON.stringify(path)}).then(() => {
+    const contentType = state.types.get(download.url());
+    return { saved: true, name, ...(contentType === undefined ? {} : { contentType }) };
+  }, () => ({ saved: false }));
 };
 const typed = (response) => {
   const type = response.headers()["content-type"];

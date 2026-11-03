@@ -109,11 +109,9 @@ export const hostPage = async (
           );
           if (typeof run !== "function")
             throw new Error("Call code unavailable");
-          // Camoufox, like Patchright, evaluates locators in an isolated world itself.
-          const kernel =
-            patchright || engine.name === "firefox"
-              ? { page, close: () => Promise.resolve() }
-              : await isolatedLocatorPage(page);
+          const kernel = patchright
+            ? { page, close: () => Promise.resolve() }
+            : await isolatedLocatorPage(page);
           let value: unknown;
           try {
             value = await Reflect.apply(run, undefined, [

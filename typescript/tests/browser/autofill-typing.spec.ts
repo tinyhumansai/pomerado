@@ -5,6 +5,7 @@ import { inspectAutofillStep, type AutofillStep } from "../../src/destinations/a
 import { fillAutofillStep } from "../../src/destinations/autofill-fill.js";
 import type { CredentialTypingMode } from "../../src/destinations/credential-keyboard.js";
 import { expectOriginsOnly, hostKeyboard, hostPage } from "./autofill-host-page.js";
+import { inPageWorld } from "./page-world.js";
 
 // The host types an autofill step's values itself, over its own DevTools session, into the field a
 // Kernel call focused. Chromium must generate trusted input events
@@ -149,7 +150,9 @@ test("the keyboard mode signs in on a page that keeps only what trusted keys typ
   expect(report).toMatchObject({ outcome: "filled", submit: "clicked" });
   expect(received.map((form) => Object.fromEntries(form))).toEqual([{ username, password }]);
   const downs = seen.filter((key) => key.type === "keydown");
-  expect(downs.map((key) => key.key).join("")).toBe(username + password);
+  // Camoufox presses Shift for a capital, as a person does; the typed text is the other keys.
+  const typed = downs.filter((key) => key.key !== "Shift");
+  expect(typed.map((key) => key.key).join("")).toBe(username + password);
   expect(seen.every((key) => key.trusted)).toBe(true);
   const gaps = downs.slice(1).map((key, at) => key.at - (downs[at]?.at ?? 0));
   expect(new Set(gaps.map(Math.round)).size).toBeGreaterThan(1);
@@ -326,7 +329,8 @@ for (const { cause, fault } of [
 
 test("a page cannot copy a credential binding onto a replacement control", async ({ page }) => {
   const received = await serve(page, loginScreen);
-  await page.evaluate(() => {
+  // The hostile page's own script, in the page's world, as a page's script always runs.
+  await inPageWorld(page, () => {
     new MutationObserver((records) => {
       for (const record of records) {
         const key = record.attributeName;
