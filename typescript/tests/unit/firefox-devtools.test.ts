@@ -79,8 +79,17 @@ describe("the Firefox engine's DevTools stand-in", () => {
   });
 
   it("refuses a frame its own session, as the worker expects of a same-process frame", async () => {
-    await expect(firefoxSession(context, {} as Frame)).rejects.toThrow(frameSessionRefusal);
+    const child = { parentFrame: () => ({}) } as unknown as Frame;
+    await expect(firefoxSession(context, child)).rejects.toThrow(frameSessionRefusal);
     expect(frameSessionRefusal).toContain("does not have a separate CDP session");
+  });
+
+  it("opens a tab's own session on its main frame, as Chromium does", async () => {
+    const { page } = fakePage();
+    const main = { parentFrame: () => null, page: () => page } as unknown as Frame;
+    const onFrame = await (await firefoxSession(context, main)).send("Target.getTargetInfo");
+    const onTab = await (await firefoxSession(context, page)).send("Target.getTargetInfo");
+    expect(onFrame.targetInfo.targetId).toBe(onTab.targetInfo.targetId);
   });
 
   it("refuses a command it does not answer, and every command once detached", async () => {
@@ -143,6 +152,26 @@ describe("the Firefox engine's DevTools stand-in", () => {
     expect(history.entries.at(-1)).toMatchObject({ transitionType: "form_submit" });
     const listed = await (await browser.newBrowserCDPSession()).send("Target.getBrowserContexts");
     expect(listed.browserContextIds).toHaveLength(1);
+  });
+});
+
+describe("an executor's browser build", () => {
+  it.each([
+    [{ executablePath: "" }, "executablePath must name a browser build"],
+    [
+      { executablePath: "/opt/camoufox", endpoint: "ws://127.0.0.1:9/browser" },
+      "executablePath applies only to a browser the executor launches",
+    ],
+    [
+      { executablePath: "/opt/camoufox", cdp: { url: "http://127.0.0.1:9222" } },
+      "executablePath applies only to a browser the executor launches",
+    ],
+  ] as const)("refuses %o before it starts", async (options, message) => {
+    const exit = await Effect.runPromiseExit(
+      Effect.scoped(makePlaywrightExecutor(options as PlaywrightOptions)),
+    );
+    if (Exit.isSuccess(exit)) throw new Error("The executor started");
+    expect(Cause.squash(exit.cause)).toMatchObject({ message });
   });
 });
 

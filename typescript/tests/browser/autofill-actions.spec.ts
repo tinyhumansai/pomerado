@@ -565,8 +565,12 @@ test("a typed field that reads differently on every call is refused on the third
 `,
   );
   // This controlled read fault belongs in the realm the host inspects; a page's main-world
-  // JavaScript getter cannot change Patchright's private element wrapper.
-  const kernel = await isolatedLocatorPage(page);
+  // JavaScript getter cannot change Patchright's private element wrapper. On Firefox the host
+  // inspects in the world the page's own evaluations use, Camoufox's isolated one included.
+  const kernel =
+    page.context().browser()?.browserType().name() === "firefox"
+      ? { page, close: () => Promise.resolve() }
+      : await isolatedLocatorPage(page);
   try {
     const [primary] = kernel.page.frames();
     if (primary === undefined) throw new Error("Fixture primary frame missing");

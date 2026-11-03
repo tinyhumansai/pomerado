@@ -4,6 +4,8 @@ import { defineConfig } from "@playwright/test";
 // inherit this process's environment.
 process.env["POMERADO_BOUNDARY_STRICT"] ??= "1";
 
+const camoufox = process.env["CAMOUFOX_EXECUTABLE"] || undefined;
+
 export default defineConfig({
   testDir: "./typescript/tests/browser",
   testMatch: "**/*.spec.ts",
@@ -24,5 +26,18 @@ export default defineConfig({
     trace: "retain-on-failure",
     screenshot: "only-on-failure",
   },
-  projects: [{ name: "chromium", use: { browserName: "chromium" } }],
+  projects: [
+    { name: "chromium", use: { browserName: "chromium" }, testIgnore: "**/native-firefox.spec.ts" },
+    { name: "firefox", use: { browserName: "firefox" }, testMatch: "**/native-firefox.spec.ts" },
+    // Camoufox, a Firefox build, when CAMOUFOX_EXECUTABLE names its binary.
+    ...(camoufox === undefined
+      ? []
+      : [
+          {
+            name: "camoufox",
+            use: { browserName: "firefox" as const, launchOptions: { executablePath: camoufox } },
+            metadata: { executablePath: camoufox },
+          },
+        ]),
+  ],
 });

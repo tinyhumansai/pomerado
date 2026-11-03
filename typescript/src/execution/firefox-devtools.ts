@@ -342,10 +342,14 @@ const session = (context: BrowserContext, page: Page): CDPSession => {
   return stand as unknown as CDPSession;
 };
 
-/** A session on a tab, or a refusal for a frame, which never has a separate session in Firefox. */
+/**
+ * A session on a tab, also when named by its main frame as Chromium allows, or a refusal for a
+ * child frame, which never has a separate session in Firefox.
+ */
 export const firefoxSession = async (context: BrowserContext, target: Page | Frame) => {
-  if (!("mainFrame" in target)) throw new Error(frameSessionRefusal);
-  return session(context, target);
+  if ("mainFrame" in target) return session(context, target);
+  if (target.parentFrame() === null) return session(context, target.page());
+  throw new Error(frameSessionRefusal);
 };
 
 /** A session on the browser, answering only which contexts this connection made. */

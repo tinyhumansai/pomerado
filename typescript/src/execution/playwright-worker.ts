@@ -407,10 +407,14 @@ const credential = (
           }
         },
       });
+      // Typing key by key presses trusted keys where page code may not send synthetic ones.
+      const pressed = request.keys === true && !engine.syntheticKeys;
       return yield* keyboard.insertText(
         request.target,
         request.text,
-        { phone: request.phone, keys: request.keys, trustedKeys: request.trustedKeys },
+        pressed
+          ? { phone: request.phone, trustedKeys: true }
+          : { phone: request.phone, keys: request.keys, trustedKeys: request.trustedKeys },
       );
     }).pipe(
       Effect.ensuring(

@@ -189,7 +189,7 @@ jobs:
       - run: corepack enable
       - run: corepack pnpm install --frozen-lockfile
       - run: corepack pnpm build
-      - run: corepack pnpm exec playwright install --with-deps chromium
+      - run: corepack pnpm exec playwright install --with-deps chromium firefox
       # One worker per vCPU. Both runners this job uses have 4 vCPUs.
       - run: corepack pnpm test:browser --shard=${{ matrix.shard }}/${{ strategy.job-total }} --workers=4
   # `CI` is one status for the whole run. It fails unless every job it needs succeeded, so a

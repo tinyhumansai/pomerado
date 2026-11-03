@@ -40,6 +40,11 @@ export interface BrowserEngine {
    * worker's context closed once the worker's connection dropped.
    */
   readonly listsContexts: boolean;
+  /**
+   * Whether page code may type key by key with synthetic key events. Where it may not, typing
+   * key by key presses trusted keys instead, which every engine's sessions send.
+   */
+  readonly syntheticKeys: boolean;
 }
 
 /** Chromium answers DevTools commands itself. */
@@ -51,7 +56,10 @@ export const chromiumEngine: BrowserEngine = {
   contextOptions: {},
   attach: () => undefined,
   listsContexts: true,
+  syntheticKeys: true,
 };
+
+const attached = new WeakSet<BrowserContext>();
 
 /**
  * Firefox answers no DevTools commands, so the engine answers those the host sends with Playwright
@@ -65,12 +73,16 @@ export const firefoxEngine: BrowserEngine = {
   browserSession: firefoxBrowserSession,
   contextOptions: { serviceWorkers: "block" },
   attach: (browser, context) => {
+    if (attached.has(context)) return;
+    attached.add(context);
     context.newCDPSession = (target) => firefoxSession(context, target);
     browser.newBrowserCDPSession = () => firefoxBrowserSession(browser);
     for (const page of context.pages()) recordNavigations(page);
     context.on("page", recordNavigations);
   },
   listsContexts: false,
+  // Camoufox's isolated world crashes the tab on a synthetic keypress that page code dispatches.
+  syntheticKeys: false,
 };
 
 const engines: { readonly [Name in BrowserName]: BrowserEngine } = {

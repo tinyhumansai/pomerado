@@ -66,5 +66,7 @@ export const submitted = (page: Page) =>
     const form = document.forms[0];
     if (form === undefined) return {};
     const data = new FormData(form);
-    return Object.fromEntries([...new Set(data.keys())].map((key) => [key, data.getAll(key).join(",")]));
+    // The pairs themselves: Firefox's isolated world can't iterate keys().
+    const keys = new Set([...data].map(([key]) => key));
+    return Object.fromEntries([...keys].map((key) => [key, data.getAll(key).join(",")]));
   });

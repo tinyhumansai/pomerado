@@ -41,6 +41,11 @@ export interface PlaywrightOptions {
   readonly library?: PlaywrightLibrary;
   /** The browser the executor launches or joins. Defaults to `chromium`. */
   readonly browser?: BrowserName;
+  /**
+   * A build of that browser to launch in place of Playwright's own, such as Camoufox for
+   * `firefox`. Only for a browser the executor launches, not one it attaches to.
+   */
+  readonly executablePath?: string;
   readonly headless?: boolean;
   readonly startupTimeoutMs?: number;
   readonly cleanupTimeoutMs?: number;
@@ -369,6 +374,14 @@ export const makePlaywrightExecutor = (
       if (library === "patchright")
         return yield* Effect.fail(new Error("patchright drives only chromium"));
     }
+    if (options.executablePath !== undefined) {
+      if (options.executablePath === "")
+        return yield* Effect.fail(new Error("executablePath must name a browser build"));
+      if (options.endpoint !== undefined || options.cdp !== undefined)
+        return yield* Effect.fail(
+          new Error("executablePath applies only to a browser the executor launches"),
+        );
+    }
     const owner: NativeOwnership = {
       remote: options.endpoint !== undefined || options.cdp !== undefined,
       engine,
@@ -388,6 +401,9 @@ export const makePlaywrightExecutor = (
                 launcher.launchServer({
                   headless: options.headless ?? true,
                   timeout: startupTimeoutMs,
+                  ...(options.executablePath === undefined
+                    ? {}
+                    : { executablePath: options.executablePath }),
                 }),
               );
             const playwrightEndpoint = options.endpoint ?? owner.server?.wsEndpoint();

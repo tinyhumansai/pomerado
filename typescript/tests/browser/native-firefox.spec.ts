@@ -26,7 +26,12 @@ const firefox = <A>(run: (executor: PlaywrightExecutor) => Promise<A>): Promise<
   Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
-        const executor = yield* makePlaywrightExecutor({ browser: "firefox" });
+        // The camoufox project names a Firefox build in place of Playwright's own.
+        const executablePath = test.info().project.metadata["executablePath"] as string | undefined;
+        const executor = yield* makePlaywrightExecutor({
+          browser: "firefox",
+          ...(executablePath === undefined ? {} : { executablePath }),
+        });
         return yield* Effect.tryPromise({
           try: () => run(executor),
           catch: (error) =>
