@@ -613,7 +613,12 @@ const waitForReady = async (target, options = {}) => {
           await shown.click({ timeout: Math.min(waitLimits.action, left()) }).catch(() => undefined);
           await shown.waitFor({ state: "hidden", timeout: Math.min(1000, left()) }).catch(() => undefined);
         }
-        const state = await target.evaluateAll(readyWaitInPage, spec);
+        // A tab whose main frame is on its way to another document reads as absent, as Chromium
+        // holds its reads then; a host whose browser reads the old document says so instead.
+        const navigating = globalThis["__pomeradoNavigationPending"]?.(target.page()) === true;
+        const state = navigating
+          ? { blockers: ["absent"] }
+          : await target.evaluateAll(readyWaitInPage, spec);
         // Expand only a section that holds the control hidden, and only once, through a toggle
         // that says it is collapsed: a control already showing or not yet there is never clicked.
         if (options.expand !== undefined && !expandTried && state.blockers[0] === "hidden" &&

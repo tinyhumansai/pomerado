@@ -13,8 +13,11 @@ import { firefoxEngine } from "../../src/execution/browser-engine.js";
 import {
   firefoxSession,
   frameSessionRefusal,
+  navigationPending,
+  navigationPendingKey,
   recordNavigations,
 } from "../../src/execution/firefox-devtools.js";
+import { readyWaitCode } from "../../src/browser/action-waits.js";
 import {
   makePlaywrightExecutor,
   type PlaywrightOptions,
@@ -32,6 +35,15 @@ const fakePage = () => {
     mainFrame: () => main,
     frames: () => [main],
     url: () => "https://shop.example/cart",
+    evaluate: async () => undefined,
+    waitForEvent: (event: string, { timeout }: { timeout: number }) =>
+      new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("Timeout")), timeout);
+        events.once(event, (frame) => {
+          clearTimeout(timer);
+          resolve(frame);
+        });
+      }),
     keyboard: {
       down: async (key: string) => {
         if (key === "₹") throw new Error('Unknown key: "₹"');
@@ -114,6 +126,56 @@ describe("the Firefox engine's DevTools stand-in", () => {
       currentIndex: 1,
       entries: [{ transitionType: "form_submit" }, { transitionType: "other" }],
     });
+  });
+
+  it("says a main-frame navigation is pending from its request until it commits, fails or ends", () => {
+    const { page, events, main } = fakePage();
+    recordNavigations(page);
+    expect(navigationPending(page)).toBe(false);
+    const posted = navigation(main, "POST");
+    events.emit("request", posted);
+    expect(navigationPending(page)).toBe(true);
+    events.emit("framenavigated", main);
+    expect(navigationPending(page)).toBe(false);
+    const refused = navigation(main, "GET");
+    events.emit("request", refused);
+    events.emit("requestfailed", refused);
+    expect(navigationPending(page)).toBe(false);
+    const download = navigation(main, "GET");
+    events.emit("request", download);
+    events.emit("requestfinished", navigation(main, "GET"));
+    expect(navigationPending(page)).toBe(true);
+    events.emit("requestfinished", download);
+    expect(navigationPending(page)).toBe(false);
+    events.emit("request", navigation({ url: () => "about:blank" }, "GET"));
+    expect(navigationPending(page)).toBe(false);
+  });
+
+  it("stops a tab only once a failed load's error page has committed", async () => {
+    const { page, events, main } = fakePage();
+    recordNavigations(page);
+    const session = await firefoxSession(context, page);
+    const refused = navigation(main, "GET");
+    events.emit("request", refused);
+    events.emit("requestfailed", refused);
+    let stopped = false;
+    const stopping = session.send("Page.stopLoading").then(() => (stopped = true));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(stopped).toBe(false);
+    events.emit("framenavigated", main);
+    await stopping;
+    expect(stopped).toBe(true);
+    // With no failed load before it, the stop waits for nothing.
+    const at = Date.now();
+    await session.send("Page.stopLoading");
+    expect(Date.now() - at).toBeLessThan(500);
+  });
+
+  it("tells the readiness wait of a pending navigation under the key the wait reads", () => {
+    const owned = { pages: () => [], on: () => owned } as unknown as BrowserContext;
+    firefoxEngine.attach({ contexts: () => [owned] } as unknown as Browser, owned);
+    expect(Reflect.get(globalThis, navigationPendingKey)).toBe(navigationPending);
+    expect(readyWaitCode).toContain(`globalThis[${JSON.stringify(navigationPendingKey)}]`);
   });
 
   it("presses a key with its text, releases it, and types a character off the layout", async () => {

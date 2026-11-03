@@ -7,6 +7,7 @@ import type {
   Frame,
   JSHandle,
   Page,
+  Request,
   Route,
 } from "playwright";
 import { Schema } from "effect";
@@ -43,6 +44,24 @@ interface Visit {
 /** The most top-level navigations a tab keeps, newest last. */
 const visitsKept = 50;
 const visits = new WeakMap<Page, Visit[]>();
+const pending = new WeakMap<Page, Request>();
+/** Tabs whose main-frame load failed, whose error page Firefox commits a moment later. */
+const errorPageDue = new WeakSet<Page>();
+/** The longest a stop waits for a failed load's error page to commit. */
+const errorPageMs = 2_000;
+
+/**
+ * The worker global under which the engine says whether a tab's main-frame navigation is on its
+ * way. Chromium holds a tab's reads while one is, so its old document reads as absent; Firefox
+ * reads the old document, so the readiness wait asks this instead (`readyWaitCode`).
+ */
+export const navigationPendingKey = "__pomeradoNavigationPending";
+
+/**
+ * Whether a navigation of `page`'s main frame is on its way: requested, and not yet committed,
+ * failed or finished, as a response that commits no document does, such as a download's.
+ */
+export const navigationPending = (page: Page) => pending.has(page);
 
 /**
  * Records `page`'s top-level navigations, each a `form_submit` when a POST started it, redirects
@@ -67,9 +86,20 @@ export const recordNavigations = (page: Page) => {
     for (let from = request.redirectedFrom(); from !== null; from = from.redirectedFrom())
       first = from;
     method = first.method();
+    pending.set(page, request);
   });
+  const ended = (request: Request) => {
+    if (pending.get(page) === request) pending.delete(page);
+  };
+  page.on("requestfailed", (request) => {
+    if (pending.get(page) === request) errorPageDue.add(page);
+    ended(request);
+  });
+  page.on("requestfinished", ended);
   page.on("framenavigated", (frame) => {
     if (frame !== page.mainFrame()) return;
+    pending.delete(page);
+    errorPageDue.delete(page);
     entries.push({ url: frame.url(), transitionType: method === "POST" ? "form_submit" : "other" });
     method = undefined;
     if (entries.length > visitsKept) entries.splice(0, entries.length - visitsKept);
@@ -217,6 +247,15 @@ const session = (context: BrowserContext, page: Page): CDPSession => {
     }),
     "Page.stopLoading": async () => {
       await page.evaluate(() => window.stop()).catch(() => undefined);
+      // A failed load's error page commits after the failure, and a load started before it would
+      // be cut off by it, so a stop after one waits for it.
+      if (errorPageDue.has(page))
+        await page
+          .waitForEvent("framenavigated", {
+            predicate: (frame) => frame === page.mainFrame(),
+            timeout: errorPageMs,
+          })
+          .catch(() => undefined);
       return {};
     },
     "Page.getNavigationHistory": async () => {

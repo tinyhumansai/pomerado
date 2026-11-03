@@ -10,6 +10,8 @@ import type {
 import {
   firefoxBrowserSession,
   firefoxSession,
+  navigationPending,
+  navigationPendingKey,
   recordNavigations,
 } from "./firefox-devtools.js";
 import type { BrowserName } from "./playwright-protocol.js";
@@ -79,6 +81,7 @@ export const firefoxEngine: BrowserEngine = {
     browser.newBrowserCDPSession = () => firefoxBrowserSession(browser);
     for (const page of context.pages()) recordNavigations(page);
     context.on("page", recordNavigations);
+    Reflect.set(globalThis, navigationPendingKey, navigationPending);
   },
   listsContexts: false,
   // Camoufox's isolated world crashes the tab on a synthetic keypress that page code dispatches.

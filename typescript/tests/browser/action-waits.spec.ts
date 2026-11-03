@@ -2,6 +2,12 @@ import { expect, test } from "@playwright/test";
 import type { Page, Request } from "playwright";
 import { waitCode } from "../../src/browser/wait.js";
 import { makeLocalKernel } from "../../src/testing/local-kernel.js";
+import { fixtureEngine } from "./autofill-host-page.js";
+
+// The page's engine watches its navigations from the start, as a worker's does.
+test.beforeEach(({ page }) => {
+  fixtureEngine(page);
+});
 
 // The runtime's outcome race and readiness wait, run as a Kernel call body runs them (`page` in
 // scope) on synthetic pages. The pages copy the markup and timing of common toast, alert, modal,
@@ -908,10 +914,6 @@ test.describe("readiness before acting", () => {
   });
 
   test("a deadline ends the readiness wait in time even while a slow submit holds the page", async ({ page }) => {
-    test.fixme(
-      test.info().project.name === "camoufox",
-      "Firefox reads the old page while a submit's navigation is pending, so the wait passes",
-    );
     await site(
       page,
       {
