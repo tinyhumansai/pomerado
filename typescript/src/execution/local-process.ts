@@ -22,7 +22,11 @@ const signalGroup = (child: ChildProcess) =>
       try {
         process.kill(-child.pid, "SIGKILL");
       } catch (cause) {
-        if (!(cause instanceof Error && "code" in cause && cause.code === "ESRCH")) throw cause;
+        // macOS answers EPERM for a group whose processes all exited and wait to be reaped. The
+        // stop then waits for the exit as after a signal, so a group that still runs is a stop
+        // it can't confirm, never one that passed.
+        const code = cause instanceof Error && "code" in cause ? cause.code : undefined;
+        if (code !== "ESRCH" && code !== "EPERM") throw cause;
       }
     },
     catch: localError,
