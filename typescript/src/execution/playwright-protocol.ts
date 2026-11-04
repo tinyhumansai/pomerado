@@ -44,6 +44,58 @@ export type PlaywrightLibrary = typeof PlaywrightLibrary.Type;
 /** The browsers the native executor drives. */
 export const BrowserName = Schema.Literal("chromium", "firefox");
 export type BrowserName = typeof BrowserName.Type;
+/** An http or https page's own origin, exactly as `URL.origin` writes it. */
+const PageOrigin = Schema.String.pipe(
+  Schema.filter((value) => {
+    const url = URL.parse(value);
+    return url !== null && /^https?:$/u.test(url.protocol) && url.origin === value;
+  }),
+);
+/**
+ * The options a host sets for the context the worker opens: Playwright's own, a fixed set that
+ * leaves the executor's own behaviour alone, and per-origin permissions in place of Playwright's
+ * `permissions`, which grants every origin.
+ */
+export const ContextOptions = Schema.Struct({
+  proxy: Schema.optionalWith(
+    Schema.Struct({
+      server: Schema.String,
+      bypass: Schema.optionalWith(Schema.String, { exact: true }),
+      username: Schema.optionalWith(Schema.String, { exact: true }),
+      password: Schema.optionalWith(Schema.String, { exact: true }),
+    }),
+    { exact: true },
+  ),
+  locale: Schema.optionalWith(Schema.String, { exact: true }),
+  timezoneId: Schema.optionalWith(Schema.String, { exact: true }),
+  geolocation: Schema.optionalWith(
+    Schema.Struct({
+      latitude: Schema.Number,
+      longitude: Schema.Number,
+      accuracy: Schema.optionalWith(Schema.Number, { exact: true }),
+    }),
+    { exact: true },
+  ),
+  viewport: Schema.optionalWith(
+    Schema.NullOr(Schema.Struct({ width: Schema.Number, height: Schema.Number })),
+    { exact: true },
+  ),
+  userAgent: Schema.optionalWith(Schema.String, { exact: true }),
+  extraHTTPHeaders: Schema.optionalWith(
+    Schema.Record({ key: Schema.String, value: Schema.String }),
+    { exact: true },
+  ),
+  ignoreHTTPSErrors: Schema.optionalWith(Schema.Boolean, { exact: true }),
+  /** Playwright's storage state as an object, cookies and each origin's storage. */
+  storageState: Schema.optionalWith(
+    Schema.Struct({ cookies: Schema.Array(Schema.Unknown), origins: Schema.Array(Schema.Unknown) }),
+    { exact: true },
+  ),
+  permissions: Schema.optionalWith(
+    Schema.Array(Schema.Struct({ origin: PageOrigin, permissions: Schema.Array(Schema.String) })),
+    { exact: true },
+  ),
+});
 export const NativeWorkerOptions = Schema.Struct({
   endpoint: Schema.String,
   startupTimeoutMs: Schema.Number,
@@ -53,4 +105,6 @@ export const NativeWorkerOptions = Schema.Struct({
   resultLimitBytes: Schema.optional(Schema.Number),
   /** Attach over CDP and drive the browser's own context, at this page (its first when absent). */
   cdp: Schema.optional(Schema.Struct({ targetId: Schema.optional(Schema.String) })),
+  /** The host's options for the context the worker opens; never over CDP. */
+  context: Schema.optional(ContextOptions),
 });

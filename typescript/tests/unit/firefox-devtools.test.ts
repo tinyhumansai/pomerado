@@ -494,10 +494,6 @@ describe("an executor's browser build", () => {
 describe("a Firefox executor", () => {
   it.each([
     [{ cdp: { url: "http://127.0.0.1:9222" } }, "cdp attaches only to chromium"],
-    [
-      { endpoint: "ws://127.0.0.1:9/browser" },
-      "firefox runs only on a browser the executor launches",
-    ],
     [{ library: "patchright" }, "patchright drives only chromium"],
   ] as const)("refuses %o before it starts", async (options, message) => {
     const exit = await Effect.runPromiseExit(

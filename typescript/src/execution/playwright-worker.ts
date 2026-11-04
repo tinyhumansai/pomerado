@@ -4,7 +4,14 @@ import { fileURLToPath } from "node:url";
 import { parentPort, workerData } from "node:worker_threads";
 import { compileFunction } from "node:vm";
 import { format } from "node:util";
-import type { Browser, BrowserContext, CDPSession, Frame, Page } from "playwright";
+import type {
+  Browser,
+  BrowserContext,
+  BrowserContextOptions,
+  CDPSession,
+  Frame,
+  Page,
+} from "playwright";
 import { Cause, Effect, Exit, Schema } from "effect";
 import type { BrowserExecuteResponse } from "../runtime/browser-execution.js";
 import type { PrivateCredentialCdp } from "../destinations/credential-keyboard.js";
@@ -316,6 +323,26 @@ const script = (
     } satisfies BrowserExecuteResponse & { readonly typed?: readonly Delivery[] };
   });
 
+/** The worker's own context: the host's options, with the engine's own over them. */
+const contextOptions = (
+  engine: BrowserEngine,
+  host: (typeof NativeWorkerOptions.Type)["context"],
+): BrowserContextOptions => {
+  if (host === undefined) return engine.contextOptions;
+  // Each origin's own permissions are granted once the context exists.
+  const { permissions: _granted, storageState, ...rest } = host;
+  // The protocol checked the storage state's shape; Playwright checks each cookie and origin.
+  const restored = storageState as Exclude<
+    BrowserContextOptions["storageState"],
+    string | undefined
+  >;
+  return {
+    ...rest,
+    ...(storageState === undefined ? {} : { storageState: restored }),
+    ...engine.contextOptions,
+  };
+};
+
 const credential = (
   request: Extract<typeof NativeWorkerRequest.Type, { readonly kind: "credential" }>,
   engine: BrowserEngine,
@@ -447,10 +474,14 @@ await Effect.runPromise(
     // Over CDP the worker drives the browser's own context and page and owns neither.
     const context =
       attached === undefined
-        ? yield* promise(() => browser.newContext(engine.contextOptions))
+        ? yield* promise(() => browser.newContext(contextOptions(engine, options.context)))
         : browser.contexts()[0];
     if (context === undefined)
       return yield* Effect.fail(new Error("CDP browser has no default context"));
+    for (const grant of options.context?.permissions ?? [])
+      yield* promise(() =>
+        context.grantPermissions([...grant.permissions], { origin: grant.origin }),
+      );
     engine.attach(browser, context);
     const page =
       attached === undefined

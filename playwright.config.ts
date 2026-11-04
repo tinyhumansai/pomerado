@@ -33,7 +33,7 @@ export default defineConfig({
     {
       name: "firefox",
       use: { browserName: "firefox", launchOptions: { firefoxUserPrefs: firefoxPrefs } },
-      testMatch: "**/native-firefox.spec.ts",
+      testMatch: ["**/native-firefox.spec.ts", "**/host-hooks.spec.ts"],
     },
     // Camoufox, a Firefox build, when CAMOUFOX_EXECUTABLE names its binary.
     ...(camoufox === undefined
