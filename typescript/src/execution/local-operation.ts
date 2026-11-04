@@ -32,8 +32,13 @@ import {
 } from "../runtime/session-sign-in.js";
 import { createLocalProcess, type LocalProcess, type LocalProcessResult } from "./local-process.js";
 import { localError, localOutputLimit } from "./local-path.js";
-import { LocalOperationMessage, type LocalOperationResult } from "./local-operation-protocol.js";
+import {
+  commitRefusedCode,
+  LocalOperationMessage,
+  type LocalOperationResult,
+} from "./local-operation-protocol.js";
 import type { LocalWorkspace } from "./local-workspace.js";
+import { commitReportValue } from "../runtime/commit-report.js";
 import { FileRefused } from "../runtime/files.js";
 import { outputFiles, type RunFiles } from "../runtime/file-transfer.js";
 import { HttpFailure, type HttpTransport } from "../runtime/site-http.js";
@@ -41,6 +46,7 @@ import type { ListHost } from "../runtime/list-page.js";
 import {
   pageFingerprint,
   pageProgressCode,
+  type EnteredCommit,
   type OperationHooks,
 } from "../runtime/operation-hooks.js";
 
@@ -108,9 +114,13 @@ export interface LocalOperationOptions {
    */
   readonly http?: HttpTransport;
   /**
-   * The host's hooks into this run: when the script starts, the pages after each of its browser
-   * calls, and each commit step it enters, whose next call that can reach the site waits for the
-   * host to accept it. Absent, the run goes as before.
+   * The host's hooks into this run (`OperationHooks`): before the child starts the script, the
+   * pages after each of its browser calls, and each commit step it enters, whose next call that
+   * can reach the site waits for the host to accept it. With a commit hook, the run fails
+   * `CommitRefused` once the host refused a step, even after its script returned, and no held
+   * call goes through once the run is decided. A step whose report fails the host's own check of
+   * it, or one the child marks without entering it through the host, is refused without asking
+   * the hook. Absent, the run goes as before.
    */
   readonly hooks?: OperationHooks;
 }
@@ -230,19 +240,22 @@ export const answerSessionSignIn = (
     yield* settle;
     return { outcome: "refused", cause: "session_sign_in_failed" } satisfies SessionSignInAnswer;
   });
+/** Holds a call that can reach the site until the host accepted every step entered before it. */
+type CommitHold = <A>(call: Effect.Effect<A, Error>) => Effect.Effect<A, Error>;
+
 /**
  * `call`, held until the host accepted every commit step the script entered before it, when the
- * host gave a commit hook (`commitGate`); without one, `call` runs as it always did.
+ * host gave a commit hook (`hold`); without one, `call` runs as it always did.
  */
 const gated = <A>(
-  commitGate: Effect.Effect<void, Error> | undefined,
+  hold: CommitHold | undefined,
   call: Effect.Effect<A, Error>,
-): Effect.Effect<A, Error> =>
-  commitGate === undefined ? call : commitGate.pipe(Effect.zipRight(call));
+): Effect.Effect<A, Error> => (hold === undefined ? call : hold(call));
 
 /**
  * The host's progress hook after one of the script's browser calls, with a fingerprint of the
- * pages then. A read that fails, or finds no page, reports nothing and leaves the run as it was.
+ * pages then. A read that fails, or finds no page, reports nothing and leaves the run as it was,
+ * and so does a hook that fails or dies.
  */
 const reportProgress = (
   browser: NonNullable<LocalOperationOptions["browser"]>,
@@ -253,8 +266,8 @@ const reportProgress = (
       const fingerprint = read.success ? pageFingerprint(read.result) : undefined;
       return fingerprint === undefined ? Effect.void : progress(fingerprint);
     }),
-    // error-reporting-allow: typed-recovery a progress read is the host's own view of the page; one that fails reports nothing and the script's call stands
-    Effect.ignore,
+    // error-reporting-allow: typed-recovery a progress read is the host's own view of the page; one that fails, or a hook that dies, reports nothing and the script's call stands
+    Effect.catchAllCause(() => Effect.void),
   );
 
 const handleRequest = (
@@ -263,10 +276,11 @@ const handleRequest = (
   message: Exclude<LocalOperationMessage, { kind: "result" | "error" | "cancel" | "journal" }>,
   cardHandles: RunCardHandles,
   /**
-   * With a commit hook, passes once the host accepted every commit step the script entered, and
-   * fails once it refused one. Absent without a commit hook.
+   * With a commit hook, holds each call that can reach the site until the host accepted every
+   * commit step the script entered before it, and refuses it once the host refused one or the
+   * run was decided. Absent without a commit hook.
    */
-  commitGate: Effect.Effect<void, Error> | undefined,
+  hold: CommitHold | undefined,
 ): Effect.Effect<unknown, Error> =>
   Effect.suspend<unknown, Error, never>(() => {
     if (message.kind === "execute") {
@@ -279,7 +293,7 @@ const handleRequest = (
         return Effect.fail(new Error("Local operation browser session mismatch"));
       const progress = options.hooks?.progress;
       const call = gated(
-        commitGate,
+        hold,
         browser.executeResponse(message.body.code, message.body.timeout_sec),
       );
       return progress === undefined
@@ -309,7 +323,7 @@ const handleRequest = (
         ),
       );
       // Arming the capture reaches no page.
-      return message.kind === "file_arm" ? crossed : gated(commitGate, crossed);
+      return message.kind === "file_arm" ? crossed : gated(hold, crossed);
     }
     if (message.kind === "http") {
       const transport = options.http;
@@ -331,12 +345,12 @@ const handleRequest = (
               })
             : localError(error),
       });
-      return gated(commitGate, sent);
+      return gated(hold, sent);
     }
     if (message.kind === "sign_in")
       return options.signIn === undefined
         ? Effect.fail(new Error("Local operation sign-in is unavailable"))
-        : gated(commitGate, suspended(deadline, answerSessionSignIn(options.signIn)));
+        : gated(hold, suspended(deadline, answerSessionSignIn(options.signIn)));
     if (message.kind === "ask") {
       if (options.ask === undefined)
         return Effect.fail(new Error("Local operation input is unavailable"));
@@ -362,7 +376,7 @@ const handleRequest = (
       )
         return Effect.fail(new Error("Local operation card fill is unavailable"));
       return gated(
-        commitGate,
+        hold,
         suspended(deadline, cardFill({ step: message.step, handles: cardHandles })),
       ).pipe(Effect.map(scriptCardFillAnswer));
     }
@@ -441,51 +455,164 @@ const receiveOperation = (
     const cardHandles = makeRunCardHandles();
     let finished = false;
     let current: LocalOperationJournal = { effect: "not_sent", commits: [] };
-    // The host's answer to each commit step the script entered, in order, and the first refusal,
-    // with the journal from just before that step: nothing after it reached the site.
-    const answers: Deferred.Deferred<void, Error>[] = [];
+    const commit = options.hooks?.commit;
+    // With a commit hook: each step the script entered, in order, with the host's answer, and the
+    // first refusal. Once the run is decided (`closed`), no held call goes through and no answer
+    // counts. `siteCalls` counts the calls that can reach the site that are out, held or running.
+    const steps: EnteredStep[] = [];
     let refusal: CommitRefusal | undefined;
+    let closed = false;
+    let siteCalls = 0;
+    let siteCallCame = false;
     const answering = new Set<Fiber.RuntimeFiber<void, never>>();
+    // Done once the host refused a step or the run was decided: a held call or a wait for answers
+    // stops waiting then.
+    const stopSignal = Effect.runSync(Deferred.make<void>());
+    const signalStop = () => Effect.runSync(Deferred.succeed(stopSignal, undefined));
+    /** Decides the run: no held call goes through from here, whatever the hook answers later. */
+    const close = () => {
+      closed = true;
+      signalStop();
+    };
+    const heldCall = (message: string) =>
+      Object.assign(new Error(message), { code: commitRefusedCode });
     const refused = (name: string) =>
-      Object.assign(
-        new Error(`The host refused the commit step ${name}, so this call did not run`),
-        { code: "CommitRefused" },
-      );
+      heldCall(`The host refused the commit step ${name}, so this call did not run`);
+    /** Why no held call may go now: the run was decided, or the host refused a step. */
+    const stopped = () =>
+      closed
+        ? heldCall("The run ended before the host let this call through, so it did not run")
+        : refusal === undefined
+          ? undefined
+          : refused(refusal.name);
+    const unlessStopped = Effect.suspend(() => {
+      const stop = stopped();
+      return stop === undefined ? Effect.void : Effect.fail(stop);
+    });
+    /**
+     * Waits for `answers`, or until the host refused a step, even a later one, or the run was
+     * decided. With every answer already in, it waits for nothing, so the call goes on at once.
+     */
+    const awaitAnswers = (answers: readonly Deferred.Deferred<void, Error>[]) => {
+      const all = Effect.forEach(answers, (answer) => Deferred.await(answer), { discard: true });
+      return answers.every((answer) => Effect.runSync(Deferred.isDone(answer)))
+        ? all
+        : Effect.raceFirst(all, Deferred.await(stopSignal));
+    };
     // A call waits for every step entered before it, so a step accepted after an earlier one the
-    // host still decides on never lets a click through ahead of that answer.
-    const commitGate =
-      options.hooks?.commit === undefined
+    // host still decides on never lets a click through ahead of that answer. It counts as out from
+    // its request on: its task starts as the request arrives, before the next message is read.
+    const hold: CommitHold | undefined =
+      commit === undefined
         ? undefined
-        : Effect.suspend(() =>
-            refusal !== undefined
-              ? Effect.fail(refused(refusal.name))
-              : Effect.forEach([...answers], (answer) => Deferred.await(answer), {
-                  discard: true,
+        : (call) =>
+            Effect.acquireUseRelease(
+              Effect.sync(() => {
+                siteCalls += 1;
+                siteCallCame = true;
+                return steps.map((step) => step.answer);
+              }),
+              (answers) =>
+                unlessStopped.pipe(
+                  Effect.zipRight(awaitAnswers(answers)),
+                  // An answer can come after the run was decided or a later step was refused, and
+                  // neither lets the call through.
+                  Effect.zipRight(unlessStopped),
+                  Effect.zipRight(call),
+                ),
+              () =>
+                Effect.sync(() => {
+                  siteCalls -= 1;
                 }),
-          );
+            );
+    /**
+     * Records the host's refusal of `step`, unless the run was decided or it refused another step
+     * first. Every call after the first step the host has not accepted waited for that step, so
+     * the run reports the journal from there.
+     */
+    const refuse = (step: EnteredStep) => {
+      if (refusal !== undefined || closed) return;
+      const stop = steps.find((entered) => !entered.accepted) ?? step;
+      refusal = { name: step.name, journal: stoppedAt(stop) };
+      signalStop();
+    };
+    /** Records a step the update `marked` entered, which `before` did not have. */
+    const enter = (
+      name: string,
+      before: LocalOperationJournal,
+      marked: LocalOperationJournal,
+      rewinds: boolean,
+    ) => {
+      const answer = Effect.runSync(Deferred.make<void, Error>());
+      const step: EnteredStep = { name, before, marked, rewinds, answer, accepted: false };
+      steps.push(step);
+      return step;
+    };
+    /** Refuses `step` without asking the host's hook. */
+    const refuseUnasked = (step: EnteredStep) => {
+      refuse(step);
+      Effect.runSync(Deferred.fail(step.answer, refused(step.name)));
+    };
     /** Asks the host's commit hook about a step the script just entered, before its next call. */
     const askCommit = (
-      commit: NonNullable<OperationHooks["commit"]>,
-      entered: { readonly name: string; readonly report?: unknown },
-      before: LocalOperationJournal,
+      hook: NonNullable<OperationHooks["commit"]>,
+      entered: EnteredCommit,
+      step: EnteredStep,
     ) => {
-      // Once refused, the run is over: no later step is offered, and every call stays refused.
-      if (refusal !== undefined) return;
-      const answer = Effect.runSync(Deferred.make<void, Error>());
-      answers.push(answer);
       answering.add(
         Effect.runFork(
-          commit(entered).pipe(
+          // A hook that throws as it is called refuses, as one that fails does.
+          Effect.suspend(() => hook(entered)).pipe(
             Effect.exit,
             Effect.flatMap((exit) => {
-              if (Exit.isSuccess(exit)) return Deferred.succeed(answer, undefined);
-              refusal ??= { name: entered.name, journal: before };
-              return Deferred.fail(answer, refused(entered.name));
+              if (Exit.isSuccess(exit)) {
+                if (!closed) step.accepted = true;
+                return Deferred.succeed(step.answer, undefined);
+              }
+              // A hook that fails, dies or ends interrupted refuses the step while the run is open.
+              refuse(step);
+              return Deferred.fail(step.answer, refused(step.name));
             }),
             Effect.asVoid,
           ),
         ),
       );
+    };
+    /**
+     * With a commit hook, what a journal update says about commit steps. A step it entered goes
+     * to the hook, or is refused unasked when its report fails the check the child should have
+     * made. A step it marks without entering it, as from a child that could not send that
+     * entering, is refused unasked before the next call is read.
+     */
+    const heard = (
+      hook: NonNullable<OperationHooks["commit"]>,
+      message: Extract<LocalOperationMessage, { kind: "journal" | "error" | "result" }>,
+      before: LocalOperationJournal,
+    ) => {
+      // Once refused or decided, the run is over: no later step is offered.
+      if (refusal !== undefined || closed) return;
+      const entered = message.kind === "journal" ? message.entered : undefined;
+      for (const mark of current.commits) {
+        const was = before.commits.find((known) => known.name === mark.name)?.state;
+        if (mark.state === "not_sent" || (was !== undefined && was !== "not_sent")) continue;
+        if (mark.name === entered?.name) continue;
+        // The host can't tell when the child marked it, so the step reads as before it only when
+        // no call that can reach the site came at all.
+        refuseUnasked(enter(mark.name, before, current, !siteCallCame));
+      }
+      if (entered === undefined || refusal !== undefined) return;
+      // The child sends this update as it enters the step, so a call is out then when the host
+      // still has it or the child still awaits its answer.
+      const step = enter(
+        entered.name,
+        before,
+        current,
+        siteCalls === 0 && entered.outstanding !== true,
+      );
+      const report = entered.report === undefined ? undefined : commitReportValue(entered.report);
+      if (report !== undefined && "refused" in report) return refuseUnasked(step);
+      const { name } = entered;
+      askCommit(hook, report === undefined ? { name } : { name, report: report.value }, step);
     };
     const listener = (raw: unknown) => {
       if (finished) return;
@@ -496,15 +623,12 @@ const receiveOperation = (
         return;
       }
       const message = decoded.right;
-      const before = current;
-      if (message.kind === "journal" || message.kind === "error" || message.kind === "result")
+      if (message.kind === "journal" || message.kind === "error" || message.kind === "result") {
+        const before = current;
         current = operationJournal(message);
-      if (message.kind === "journal") {
-        const commit = options.hooks?.commit;
-        if (message.entered !== undefined && commit !== undefined)
-          askCommit(commit, message.entered, before);
-        return;
+        if (commit !== undefined) heard(commit, message, before);
       }
+      if (message.kind === "journal") return;
       if (message.kind === "result" || message.kind === "error" || message.kind === "cancel") {
         if (message.kind !== "cancel") finished = true;
         handleTerminalMessage(message, completed, pending);
@@ -514,7 +638,7 @@ const receiveOperation = (
         Effect.runSync(Deferred.fail(completed, new Error("Duplicate local operation request")));
         return;
       }
-      const task = handleRequest(options, deadline, message, cardHandles, commitGate).pipe(
+      const task = handleRequest(options, deadline, message, cardHandles, hold).pipe(
         Effect.exit,
         Effect.flatMap((exit) => {
           if (Exit.isSuccess(exit))
@@ -541,6 +665,8 @@ const receiveOperation = (
     process.child.on("message", listener);
     yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {
+        // However the run ends, even when its caller interrupts it, no held call goes through.
+        close();
         process.child.off("message", listener);
         // A commit hook still deciding has no call left to hold.
         if (answering.size > 0)
@@ -581,30 +707,116 @@ const receiveOperation = (
       completed: completion.pipe(Effect.raceFirst(exited)),
       pending,
       journal: Effect.sync(() => current),
-      refusal: Effect.sync(() => refusal),
+      /**
+       * After the child's result, with a commit hook: waits for the host's answer to every step
+       * entered, since a script may return right after entering one, or for its first refusal,
+       * then fails `CommitRefused` if the host refused one.
+       */
+      settled: Effect.raceFirst(
+        Effect.suspend(() =>
+          Effect.forEach([...steps], (step) => Effect.exit(Deferred.await(step.answer)), {
+            discard: true,
+          }),
+        ),
+        // Once the host refused a step, no answer still to come changes the run's outcome.
+        Deferred.await(stopSignal),
+      ).pipe(
+        Effect.zipRight(
+          Effect.suspend(() =>
+            refusal === undefined ? Effect.void : Effect.fail(refusedRun(refusal, true)),
+          ),
+        ),
+      ),
+      /**
+       * With a commit hook, once the run's outcome is decided: no held call goes through from
+       * here, whatever the hook answers later. Gives the host's refusal, and, while a step's
+       * answer was pending, the journal of the first step the host had not accepted
+       * (`stoppedAt`), since every call after it was held.
+       */
+      decided: Effect.sync(() => {
+        close();
+        const stop = steps.find((step) => !step.accepted);
+        return {
+          refusal,
+          held: refusal === undefined && stop !== undefined ? stoppedAt(stop) : undefined,
+        };
+      }),
     };
   });
 
-/** A commit step the host refused, and the journal from just before the script entered it. */
+/** A commit step the host refused, and the journal the run reports with it. */
 interface CommitRefusal {
   readonly name: string;
   readonly journal: LocalOperationJournal;
 }
 
+/** A commit step the script entered, as the host heard it, and whether the host accepted it. */
+interface EnteredStep {
+  readonly name: string;
+  /** The journal just before the script entered the step. */
+  readonly before: LocalOperationJournal;
+  /** The journal of the update that entered it, with the step marked. */
+  readonly marked: LocalOperationJournal;
+  /**
+   * No call that can reach the site was out when the script entered the step. Every later call
+   * waits for its answer, so until the host accepts it the site sees nothing past `before`.
+   */
+  readonly rewinds: boolean;
+  /** Succeeds once the host accepted the step, and fails once it did not. */
+  readonly answer: Deferred.Deferred<void, Error>;
+  /** The host accepted the step before the run was decided. */
+  accepted: boolean;
+}
+
 /**
- * The run's failure once the host refused a commit step, whatever the script did next: its journal
- * is the one from just before the step, since that step's call and every later one were refused.
- * Only the child's own final report makes it a reported one.
+ * The journal of a run that stopped at `step`, with every call after it held: the one from just
+ * before it, or, when a call that can reach the site was out as it was entered, the one that
+ * entered it, with the step sent.
  */
-const refusedRun = (refusal: CommitRefusal, reported: boolean) =>
-  new LocalOperationFailure(
-    `The host refused the commit step ${refusal.name}, so nothing was sent for it`,
+const stoppedAt = (step: EnteredStep) => (step.rewinds ? step.before : step.marked);
+
+/**
+ * The run's failure once the host refused a commit step, whatever the script did next, with the
+ * refusal's journal. Its message says whether that journal has the step sent, by an earlier click
+ * or a call already out as the script entered it. Only the child's own final report makes it a
+ * reported one.
+ */
+const refusedRun = (refusal: CommitRefusal, reported: boolean) => {
+  const state = refusal.journal.commits.find((mark) => mark.name === refusal.name)?.state;
+  return new LocalOperationFailure(
+    state === undefined || state === "not_sent"
+      ? `The host refused the commit step ${refusal.name}, so nothing was sent for it`
+      : `The host refused the commit step ${refusal.name}, which an earlier call may have sent`,
     refusal.journal,
-    "CommitRefused",
+    commitRefusedCode,
     undefined,
     undefined,
     { reported, commitRefused: refusal.name },
   );
+};
+
+/**
+ * `failure` with `held`, the journal of the step whose answer was still pending when the run
+ * stopped (`stoppedAt`), when it has one. No call after that step went out, but the child's report
+ * no longer says so, so it is not a reported one.
+ */
+const heldFailure = (failure: LocalOperationFailure, held: LocalOperationJournal | undefined) =>
+  held === undefined
+    ? failure
+    : new LocalOperationFailure(
+        failure.message,
+        held,
+        failure.code,
+        failure.tag,
+        failure.inputIssues,
+        {
+          reported: false,
+          ...(failure.sessionLoss === undefined ? {} : { sessionLoss: failure.sessionLoss }),
+          ...(failure.refusal === undefined ? {} : { refusal: failure.refusal }),
+          ...(failure.unapplied === undefined ? {} : { unapplied: failure.unapplied }),
+          ...(failure.frame === undefined ? {} : { frame: failure.frame }),
+        },
+      );
 
 const operationJournal = (
   result: Pick<LocalOperationResult, "effect" | "commits" | "confirmation">,
@@ -680,7 +892,29 @@ export const runLocalOperation = (
         ipc: true,
       });
       const response = yield* receiveOperation(process, options, deadline);
-      if (options.hooks?.started !== undefined) yield* options.hooks.started();
+      const commit = options.hooks?.commit;
+      // The started hook counts against the run's time: past its deadline, no script starts.
+      if (options.hooks?.started !== undefined)
+        yield* options.hooks.started().pipe(
+          // A hook that can't be stopped goes on alone, so the deadline fails the run on time.
+          Effect.disconnect,
+          Effect.raceFirst(
+            deadline.awaitExpiry.pipe(
+              Effect.zipRight(
+                Effect.fail(
+                  new LocalOperationFailure(
+                    "Local operation deadline expired before its code started",
+                    { effect: "not_sent", commits: [] },
+                    undefined,
+                    undefined,
+                    undefined,
+                    { reported: false },
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
       yield* sendToChild(process, {
         kind: "start",
         entrypoint: staged.entrypoint,
@@ -714,22 +948,21 @@ export const runLocalOperation = (
         options.target !== "pureFiles"
           ? { cardFill: true }
           : {}),
+        ...(commit === undefined ? {} : { commitHook: true }),
       });
-      const refusedRunFails = <A>(completed: Effect.Effect<A, Error>) =>
-        options.hooks?.commit === undefined
-          ? completed
-          : completed.pipe(
-              Effect.tap(() =>
-                response.refusal.pipe(
-                  Effect.flatMap((refusal) =>
-                    refusal === undefined ? Effect.void : Effect.fail(refusedRun(refusal, true)),
-                  ),
-                ),
-              ),
-            );
-      const result = yield* response.completed.pipe(
+      // With a commit hook, a run whose commit step the host refused fails, whatever its script
+      // returned after it, and from the deadline on no call the hook held goes through.
+      const completed =
+        commit === undefined
+          ? response.completed
+          : response.completed.pipe(Effect.tap(() => response.settled));
+      const expired =
+        commit === undefined
+          ? deadline.awaitExpiry
+          : deadline.awaitExpiry.pipe(Effect.zipRight(response.decided), Effect.asVoid);
+      const result = yield* completed.pipe(
         Effect.raceFirst(
-          deadline.awaitExpiry.pipe(
+          expired.pipe(
             Effect.zipRight(
               Effect.fail(
                 new Error("Local operation deadline expired; execution was not replayed"),
@@ -737,25 +970,29 @@ export const runLocalOperation = (
             ),
           ),
         ),
-        // A run whose commit step the host refused fails, whatever its script returned after it.
-        refusedRunFails,
         Effect.catchAll((error) =>
           Effect.gen(function* () {
-            const refusal =
-              options.hooks?.commit === undefined ? undefined : yield* response.refusal;
+            // The run is decided: nothing the commit hook says from here lets a held call through.
+            const decision = commit === undefined ? undefined : yield* response.decided;
             const failure =
-              refusal !== undefined
-                ? refusedRun(refusal, error instanceof LocalOperationFailure && error.reported)
-                : error instanceof LocalOperationFailure
-                  ? error
-                  : new LocalOperationFailure(
-                      error.message,
-                      yield* response.journal,
-                      failureCode(error),
-                      undefined,
-                      undefined,
-                      { reported: false },
-                    );
+              decision?.refusal !== undefined
+                ? refusedRun(
+                    decision.refusal,
+                    error instanceof LocalOperationFailure && error.reported,
+                  )
+                : heldFailure(
+                    error instanceof LocalOperationFailure
+                      ? error
+                      : new LocalOperationFailure(
+                          error.message,
+                          yield* response.journal,
+                          failureCode(error),
+                          undefined,
+                          undefined,
+                          { reported: false },
+                        ),
+                    decision?.held,
+                  );
             yield* process.close;
             const channels = yield* process.result.pipe(Effect.either);
             return yield* Effect.fail(
@@ -769,6 +1006,7 @@ export const runLocalOperation = (
           }),
         ),
       );
+      if (commit !== undefined) yield* response.decided;
       // Only a file this run collected may stand in its output; a script cannot name another.
       yield* checkOutputFiles(options.files, result).pipe(
         Effect.tapError(() => process.close),

@@ -460,6 +460,9 @@ await Effect.runPromise(
     const options = yield* Schema.decodeUnknown(NativeWorkerOptions)(workerData).pipe(
       Effect.mapError(asError),
     );
+    // Page code runs in this thread and can read its data, so the host's context options, a
+    // proxy's login among them, stay only in the decoded copy here.
+    Reflect.deleteProperty(workerData as object, "context");
     const resultLimit = options.resultLimitBytes ?? outputLimit;
     const engine = browserEngine(options.browser);
     const launcher = yield* promise(async () =>

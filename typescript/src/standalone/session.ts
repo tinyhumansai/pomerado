@@ -1,13 +1,34 @@
 import { readFile } from "node:fs/promises";
-import { Effect } from "effect";
+import { Effect, Schema } from "effect";
 import { makePlaywrightExecutor } from "../execution/playwright-execute.js";
 import { makeRunSecrets, registerSecretAnswer } from "../inputs/secrets.js";
 import { localRuntimeAssets } from "../execution/local-runtime-assets.js";
+import { shownForms } from "../privacy/value-forms.js";
 import type { InputAsker } from "../runtime/input-request.js";
-import { pageOriginsOnly, sessionStorageRestoreCode } from "../runtime/start-state.js";
+import {
+  pageOriginsOnly,
+  SavedSessionStorage,
+  sessionStorageRestoreCode,
+} from "../runtime/start-state.js";
 import type { SessionTyping } from "./authentication.js";
 import type { PomeradoOptions } from "./contracts.js";
 import { error, mintError } from "./errors.js";
+
+/**
+ * A session's secrets, the host's proxy password among them from the start: page code never reads
+ * it, so a page or an error that shows it is masked like any answer. Masking covers every place a
+ * value appears, so only a password of 8 characters or more in each form it shows in counts: a
+ * shorter one, like a username, is often an ordinary word, which would be masked in page text and
+ * refuse a tool's source that holds it.
+ */
+export const sessionSecrets = (options: PomeradoOptions) => {
+  const secrets = makeRunSecrets();
+  const password = options.browser?.context?.proxy?.password;
+  if (password !== undefined && shownForms(password).every(([, short]) => !short))
+    secrets.register(password);
+  return secrets;
+};
+
 export const makeSession = (options: PomeradoOptions) =>
   Effect.gen(function* () {
     if (options.browser !== undefined && "cdp" in options.browser)
@@ -17,9 +38,20 @@ export const makeSession = (options: PomeradoOptions) =>
         ),
       );
     // Saved session storage goes back on the session's own tab, checked before the browser starts.
-    const sessionStorage =
-      options.sessionStorage === undefined ? undefined : pageOriginsOnly(options.sessionStorage);
-    if (sessionStorage === undefined && options.sessionStorage !== undefined)
+    const saved =
+      options.sessionStorage === undefined
+        ? undefined
+        : yield* Schema.decodeUnknown(SavedSessionStorage)(options.sessionStorage).pipe(
+            Effect.mapError(
+              () =>
+                new Error(
+                  "sessionStorage must be as saveSession returned it: each origin with its " +
+                    "entries as pairs of strings",
+                ),
+            ),
+          );
+    const sessionStorage = saved === undefined ? undefined : pageOriginsOnly(saved);
+    if (sessionStorage === undefined && saved !== undefined)
       return yield* Effect.fail(
         new Error("sessionStorage names an origin that is not an http or https page's own"),
       );
@@ -32,7 +64,8 @@ export const makeSession = (options: PomeradoOptions) =>
         try: () => readFile(new URL("../guardian/upstream-policy.md", import.meta.url), "utf8"),
         catch: error,
       }));
-    const secrets = makeRunSecrets();
+    // The executor checked the context, so its proxy password is a string, if it has one.
+    const secrets = sessionSecrets(options);
     yield* Effect.addFinalizer(() => Effect.sync(secrets.clear));
     const mutex = yield* Effect.makeSemaphore(1);
     const trustedSources = new Map(yield* localRuntimeAssets);

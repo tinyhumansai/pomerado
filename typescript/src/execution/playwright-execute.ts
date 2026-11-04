@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Worker } from "node:worker_threads";
 import type { Browser, BrowserContextOptions, BrowserServer } from "playwright";
-import { Cause, Effect, Exit, Fiber, Schema, type Scope } from "effect";
+import { Cause, Effect, Exit, Fiber, ParseResult, Schema, type Scope } from "effect";
 import {
   CredentialReadBack,
   type CredentialKeyboard,
@@ -12,6 +12,7 @@ import { browserEngine, type BrowserEngine } from "./browser-engine.js";
 import {
   BrowserName,
   ContextOptions,
+  contextRules,
   NativeWorkerOptions,
   NativeWorkerReply,
   NativeWorkerRequest,
@@ -28,7 +29,12 @@ export { firefoxPrefs } from "./browser-engine.js";
  * Options for the context the executor's worker opens, from its host, such as a run's proxy, its
  * locale and time zone, its location and a saved storage state: Playwright's own, a fixed set that
  * leaves the executor's own behaviour alone. `permissions` grants each origin its own, where
- * Playwright's grants every origin.
+ * Playwright's grants every origin. The proxy's `server` is a URL with an http, https, socks4 or
+ * socks5 scheme, or a host and port alone, which Playwright reads as an http proxy, with no login
+ * in it: the login goes in `username` and `password`, and a socks proxy takes none. A location's
+ * latitude is within ±90, its longitude within ±180 and its accuracy at least 0, and a viewport's
+ * sides are whole numbers of at least 1. An option set to undefined is left out. Anything else is
+ * refused before the browser starts, naming the rule but not the value.
  */
 export interface PlaywrightContextOptions
   extends Pick<
@@ -40,9 +46,16 @@ export interface PlaywrightContextOptions
     | "viewport"
     | "userAgent"
     | "extraHTTPHeaders"
-    | "ignoreHTTPSErrors"
   > {
-  /** Playwright's storage state as an object, such as a saved session's. */
+  /**
+   * Trusts any certificate for any origin, a sign-in's included, so a page or a login can go to
+   * whoever intercepts the connection. Set it only for a TLS-intercepting proxy the host controls.
+   */
+  readonly ignoreHTTPSErrors?: boolean;
+  /**
+   * Playwright's storage state as an object, such as a saved session's `state`, which holds every
+   * site that session visited.
+   */
   readonly storageState?: Exclude<BrowserContextOptions["storageState"], string | undefined>;
   readonly permissions?: readonly {
     readonly origin: string;
@@ -158,6 +171,20 @@ const resultLimit = (value: number) => {
   if (!Number.isInteger(value) || value <= 0 || value > 67_108_864)
     throw new Error("resultLimitBytes must be a positive integer and at most 67108864 bytes");
   return value;
+};
+/**
+ * Why a host's context options were refused: the rule one broke, else what context takes. Never
+ * the parse's own message, which quotes the value, such as a proxy URL with a login in it.
+ */
+const contextRefusal = (error: ParseResult.ParseError) => {
+  const rules: readonly string[] = Object.values(contextRules);
+  return (
+    ParseResult.ArrayFormatter.formatErrorSync(error)
+      .map(({ message }) => message)
+      .find((message) => rules.includes(message)) ??
+    "context takes only proxy, locale, timezoneId, geolocation, viewport, userAgent, " +
+      "extraHTTPHeaders, ignoreHTTPSErrors, storageState and permissions for http or https origins"
+  );
 };
 
 type PendingResponse = (result: Effect.Effect<unknown, Error>) => void;
@@ -417,19 +444,13 @@ export const makePlaywrightExecutor = (
       if (library === "patchright")
         return yield* Effect.fail(new Error("patchright drives only chromium"));
     }
+    // Decoded, an option set to undefined is left out, so the worker's data never holds one.
     const context =
       options.context === undefined
         ? undefined
         : yield* Schema.decodeUnknown(ContextOptions)(options.context, {
             onExcessProperty: "error",
-          }).pipe(
-            Effect.mapError(
-              () =>
-                new Error(
-                  "context takes only proxy, locale, timezoneId, geolocation, viewport, userAgent, extraHTTPHeaders, ignoreHTTPSErrors, storageState and permissions for http or https origins",
-                ),
-            ),
-          );
+          }).pipe(Effect.mapError((error) => new Error(contextRefusal(error))));
     if (context !== undefined && options.cdp !== undefined)
       return yield* Effect.fail(
         new Error("context applies only to a context the executor opens, not over cdp"),

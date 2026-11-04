@@ -15,21 +15,51 @@ export interface LocalProcess {
   readonly close: Effect.Effect<void, Error>;
 }
 
-const signalGroup = (child: ChildProcess) =>
+const errorCode = (cause: unknown) =>
+  cause instanceof Error && "code" in cause ? cause.code : undefined;
+
+/** Whether the process group `pid` leads is gone: signal 0 checks for it without signalling. */
+const groupGone = (pid: number) =>
   Effect.try({
     try: () => {
-      if (child.pid === undefined) return;
       try {
-        process.kill(-child.pid, "SIGKILL");
+        process.kill(-pid, 0);
+        return false;
       } catch (cause) {
-        // macOS answers EPERM for a group whose processes all exited and wait to be reaped. The
-        // stop then waits for the exit as after a signal, so a group that still runs is a stop
-        // it can't confirm, never one that passed.
-        const code = cause instanceof Error && "code" in cause ? cause.code : undefined;
-        if (code !== "ESRCH" && code !== "EPERM") throw cause;
+        // EPERM: the group still holds processes, maybe exited ones that wait to be reaped.
+        const code = errorCode(cause);
+        if (code === "ESRCH") return true;
+        if (code === "EPERM") return false;
+        throw cause;
       }
     },
     catch: localError,
+  });
+
+/** Waits until the process group `pid` leads is gone, checking every 25 ms. */
+const awaitGroupGone = (pid: number): Effect.Effect<void, Error> =>
+  groupGone(pid).pipe(
+    Effect.flatMap((gone) =>
+      gone ? Effect.void : Effect.sleep(25).pipe(Effect.zipRight(awaitGroupGone(pid))),
+    ),
+  );
+
+const signalGroup = (child: ChildProcess) =>
+  Effect.suspend(() => {
+    const pid = child.pid;
+    if (pid === undefined) return Effect.void;
+    try {
+      process.kill(-pid, "SIGKILL");
+      return Effect.void;
+    } catch (cause) {
+      const code = errorCode(cause);
+      if (code === "ESRCH") return Effect.void;
+      if (code !== "EPERM") return Effect.fail(localError(cause));
+    }
+    // macOS answers EPERM for a group whose processes all exited and wait to be reaped. The stop
+    // then passes only once the group is gone, so a group that still runs, its leader or a
+    // process it started, is a stop it can't confirm, never one that passed.
+    return awaitGroupGone(pid);
   });
 
 /** Each command owns a process group. Local execution is caller compute, not an OS sandbox. */

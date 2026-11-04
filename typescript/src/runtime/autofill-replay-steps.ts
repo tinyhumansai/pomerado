@@ -204,6 +204,12 @@ export interface AutofillReplayInput<
   readonly readSignedOut?: boolean;
   readonly retryState?: AutofillRetryState;
   readonly ask: InputAsker;
+  /**
+   * Whether the owner's answers are a host's handles, revealed only as each is typed: a code then
+   * goes to `hooks.fill` as answered, whose fill checks its revealed value against the screen's
+   * one-character code boxes (`makeAutofillValues`).
+   */
+  readonly opaqueAnswers?: boolean | undefined;
   /** The fields the owner gave, kept with the attempt. */
   readonly answers?: { readonly given: { current: AnsweredLoginFields } };
   readonly broker: Pick<SecretBroker, "register" | "registeredSecretMatches">;

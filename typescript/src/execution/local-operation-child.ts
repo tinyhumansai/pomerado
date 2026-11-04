@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { Cause, Effect, Exit, Schema } from "effect";
 import type { Deadline as RunDeadline } from "../runtime/deadline.js";
 import type { Operation } from "../runtime/operation.js";
+import type { EnteredCommit } from "../runtime/operation-hooks.js";
 import type { ScriptInput as ScriptInputTag } from "../runtime/script-input.js";
 import type { SiteHttp as SiteHttpTag } from "../runtime/site-http.js";
 
@@ -31,7 +32,7 @@ if (import.meta.url.endsWith(".ts"))
           }
         : nextLoad(url, context),
   });
-const { LocalHttpAnswer, LocalOperationStart, LocalOperationReply } =
+const { commitRefusedCode, LocalHttpAnswer, LocalOperationStart, LocalOperationReply } =
   await import("./local-operation-protocol.js");
 const { localError, localOutputLimit } = await import("./local-path.js");
 const { isKernelOperation } = await import("../runtime/kernel-operation.js");
@@ -91,21 +92,39 @@ const authoredFrame = (error: unknown): string | undefined => {
   return undefined;
 };
 const replies = new Map<string, (result: Effect.Effect<unknown, Error>) => void>();
+/** Throws unless the host's channel can carry `message` now. */
+const checkSendable = (message: unknown) => {
+  if (process.send === undefined || !process.connected)
+    throw new Error("Local operation IPC unavailable");
+  if (serialize(message).byteLength > localOutputLimit)
+    throw new Error("Local operation IPC exceeds output limit");
+  if (typeof message !== "object" || message === null)
+    throw new Error("Local IPC message must be an object");
+};
 const send = (message: unknown) =>
   Effect.try({
     try: () => {
-      if (process.send === undefined || !process.connected)
-        throw new Error("Local operation IPC unavailable");
-      if (serialize(message).byteLength > localOutputLimit)
-        throw new Error("Local operation IPC exceeds output limit");
-      if (typeof message !== "object" || message === null)
-        throw new Error("Local IPC message must be an object");
-      process.send(message);
+      checkSendable(message);
+      process.send?.(message);
     },
     catch: localError,
   });
-const call = (payload: object) =>
-  Effect.async<unknown, Error>((resume) => {
+/** The kinds of call that can reach the site. */
+const siteCallKinds: ReadonlySet<string> = new Set([
+  "execute",
+  "http",
+  "file_place",
+  "file_collect",
+  "sign_in",
+  "card_fill",
+]);
+/**
+ * The calls to the host that can reach the site and still await their answers, counted only for a
+ * host with a commit hook.
+ */
+let siteCallsOut = 0;
+const call = <Payload extends { readonly kind: string }>(payload: Payload) => {
+  const answered = Effect.async<unknown, Error>((resume) => {
     const id = randomUUID();
     replies.set(id, resume);
     Effect.runCallback(send({ id, ...payload }), {
@@ -120,6 +139,20 @@ const call = (payload: object) =>
       replies.delete(id);
     }).pipe(Effect.zipRight(send({ kind: "cancel", id })), Effect.orDie);
   });
+  // Counted until its answer, so a commit step entered meanwhile tells the host it is out.
+  return start.commitHook === true && siteCallKinds.has(payload.kind)
+    ? Effect.acquireUseRelease(
+        Effect.sync(() => {
+          siteCallsOut += 1;
+        }),
+        () => answered,
+        () =>
+          Effect.sync(() => {
+            siteCallsOut -= 1;
+          }),
+      )
+    : answered;
+};
 const start = await Effect.runPromise(
   Effect.async<typeof LocalOperationStart.Type, Error>((resume) => {
     process.on("message", (message: unknown) => {
@@ -157,39 +190,73 @@ const journalState = Effect.gen(function* () {
     ...(confirmation === undefined ? {} : { confirmation }),
   };
 });
-const publishJournal = journalState.pipe(
-  Effect.flatMap((metadata) => send({ kind: "journal", ...metadata })),
-  Effect.orDie,
-);
 /**
- * The journal once a commit step was entered, naming it with its report. It goes out before the
- * script's next call, so the host holds that call when its commit hook must accept the step first.
+ * Runs `effect`, which never waits, as one step of the calling fiber, so no other fiber of the
+ * script runs between its parts: each journal update carries the journal as it was when sent.
  */
-const publishEntered = (name: string, report: unknown) =>
+const atomically = <A, E>(effect: Effect.Effect<A, E>): Effect.Effect<A, E> =>
+  Effect.suspend(() => Effect.runSyncExit(effect));
+const publishJournal = atomically(
+  journalState.pipe(Effect.flatMap((metadata) => send({ kind: "journal", ...metadata }))),
+).pipe(Effect.orDie);
+type JournalState = Effect.Effect.Success<typeof journalState>;
+/**
+ * The journal update that enters a commit step, naming it with its report, and with whether a
+ * call that can reach the site was still out then.
+ */
+const enteredUpdate = (metadata: JournalState, entered: EnteredCommit) => ({
+  kind: "journal",
+  ...metadata,
+  entered: siteCallsOut === 0 ? entered : { ...entered, outstanding: true },
+});
+/**
+ * The journal once a commit step was entered. It goes out before the script's next call, so the
+ * host holds that call when its commit hook must accept the step first.
+ */
+const publishEntered = (entered: EnteredCommit) =>
   journalState.pipe(
-    Effect.flatMap((metadata) =>
-      send({
-        kind: "journal",
-        ...metadata,
-        entered: report === undefined ? { name } : { name, report },
-      }),
-    ),
+    Effect.flatMap((metadata) => send(enteredUpdate(metadata, entered))),
     Effect.orDie,
   );
+/** The journal's state once `name` is marked, as `enteringCommit` marks it. */
+const markedState = (metadata: JournalState, name: string): JournalState => ({
+  ...metadata,
+  effect: "may_have_dispatched",
+  commits: metadata.commits.some((mark) => mark.name === name)
+    ? metadata.commits.map((mark) => (mark.name === name ? { name, state: "sent" } : mark))
+    : [...metadata.commits, { name, state: "sent" }],
+});
 const revertCommit = baseJournal.notCommitted;
 const journal: typeof baseJournal = {
   ...baseJournal,
   enteringDispatch: baseJournal.enteringDispatch.pipe(Effect.tap(() => publishJournal)),
-  // An HTTP version passes its report here unchecked: one that can't reach the host fails the run
-  // before the step is marked.
+  // An HTTP version passes its report here unchecked. A report that can't reach the host, or an
+  // update entering the step that can't, fails the run before the step is marked, so the host
+  // hears of every step marked. The check, the mark and its entering update are one step, so no
+  // other update of the script reaches the host between the mark and its entering.
   enteringCommit: (name, report) =>
     Effect.suspend(() => {
       const checked = report === undefined ? undefined : commitReportValue(report);
       if (checked !== undefined && "refused" in checked)
         return Effect.die(new OperationFailure(checked.refused, { dispatch: "not_sent" }));
-      return baseJournal
-        .enteringCommit(name)
-        .pipe(Effect.tap(() => publishEntered(name, checked?.value)));
+      const entered = checked === undefined ? { name } : { name, report: checked.value };
+      return atomically(
+        journalState.pipe(
+          Effect.flatMap((metadata) =>
+            Effect.try({
+              try: () => checkSendable(enteredUpdate(markedState(metadata, name), entered)),
+              catch: () =>
+                new OperationFailure(
+                  "The commit step can't reach the host, so it was not entered",
+                  { dispatch: "not_sent" },
+                ),
+            }),
+          ),
+          Effect.orDie,
+          Effect.zipRight(baseJournal.enteringCommit(name)),
+          Effect.tap(() => publishEntered(entered)),
+        ),
+      );
     }),
   ...(revertCommit === undefined
     ? {}
@@ -251,6 +318,8 @@ const executeLocally = (operation: Parameters<typeof executeKernelOperation>[0])
     // The host refuses a file with a `FileRefused:<reason>` code; anything else is unavailable.
     const fileRefusal = (error: Error) => {
       const code = "code" in error && typeof error.code === "string" ? error.code : "";
+      // A call the host held for a commit step and refused never reached the page.
+      if (code === commitRefusedCode) return new FileRefused({ reason: "unavailable" });
       const [, named, sent] = code.split(":");
       const reason = Schema.decodeUnknownOption(FileRefusalReason)(named);
       return new FileRefused({
@@ -364,6 +433,9 @@ const httpTransport = (
         Effect.flatMap((value) => Schema.decodeUnknown(LocalHttpAnswer)(value)),
         Effect.mapError((error) => {
           const code = "code" in error && typeof error.code === "string" ? error.code : "";
+          // A request the host held for a commit step and refused was never sent.
+          if (code === commitRefusedCode)
+            return new HttpFailure({ code: "transport_failed", dispatch: "not_sent" });
           const [tag, named, dispatch] = code.split(":");
           const failure = Schema.decodeUnknownOption(HttpFailureCode)(named);
           return tag === "HttpFailure" &&

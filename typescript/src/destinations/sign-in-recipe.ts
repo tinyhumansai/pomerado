@@ -220,11 +220,16 @@ export const signInRecipeText = (recipe: SignInRecipe) =>
 export interface SignInBrowser<E> {
   /** Finds the step's controls and judges where they submit, before anything is typed. */
   readonly inspect: (step: AutofillStep) => Effect.Effect<AutofillRefusal | AutofillInspection, E>;
-  /** Fills the step's values into the inspected controls and clicks its submit. */
+  /**
+   * Fills the step's values into the inspected controls and clicks its submit. `revealedFor`, by
+   * field, is the origin a host revealed each value for, when it did: the fill types that value
+   * only into a field in a document of that origin.
+   */
   readonly fill: (input: {
     readonly step: AutofillStep;
     readonly values: readonly string[];
     readonly inspection: AutofillInspection;
+    readonly revealedFor?: readonly (string | undefined)[];
   }) => Effect.Effect<AutofillStepReport>;
   /**
    * Clicks again the submit of a screen whose fill reported `blocked`, typing nothing, after the

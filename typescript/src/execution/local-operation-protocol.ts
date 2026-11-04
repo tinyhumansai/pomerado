@@ -13,6 +13,12 @@ import { HttpCapability, HttpResponseGap, SiteHttpRequest } from "../runtime/sit
 import { ListDraft } from "../runtime/list-page.js";
 import { ScriptCardFillRequest } from "../runtime/script-card-fill.js";
 
+/**
+ * The code of a call the host held for a commit step and then refused, or let go no further once
+ * the run was decided: it never reached the site.
+ */
+export const commitRefusedCode = "CommitRefused";
+
 const HttpTransportName = Schema.Literal("kernel-curl", "page-fetch", "saved-http");
 /** The host transport's answer to a child's `http` request, as `SiteHttpResponse`. */
 export const LocalHttpAnswer = Schema.Struct({
@@ -80,6 +86,11 @@ export const LocalOperationStart = Schema.Struct({
   signIn: Schema.optionalWith(Schema.Literal(true), { exact: true }),
   /** The host types the run's card answers for the script's `fillCard`. */
   cardFill: Schema.optionalWith(Schema.Literal(true), { exact: true }),
+  /**
+   * The host's commit hook answers each commit step the script enters, holding the calls after
+   * it: entering a step says whether a call that can reach the site was still out.
+   */
+  commitHook: Schema.optionalWith(Schema.Literal(true), { exact: true }),
   /**
    * The host signs list cursors: the position the caller's cursor holds, once the host checked
    * it, which the run gets beside its input (`withListHost`).
@@ -165,11 +176,16 @@ export const LocalOperationMessage = Schema.Union(
   Schema.Struct({
     kind: Schema.Literal("journal"),
     ...JournalFields,
-    /** The commit step this update entered, with the script's report, for the host's hook. */
+    /**
+     * The commit step this update entered, with the script's report, for the host's hook.
+     * `outstanding` says a call of the child's that can reach the site still awaited its answer
+     * then, so it may reach the site after the step was entered.
+     */
     entered: Schema.optionalWith(
       Schema.Struct({
         name: Schema.String,
         report: Schema.optionalWith(Schema.Unknown, { exact: true }),
+        outstanding: Schema.optionalWith(Schema.Literal(true), { exact: true }),
       }),
       { exact: true },
     ),

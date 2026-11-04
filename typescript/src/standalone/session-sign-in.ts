@@ -1,5 +1,6 @@
-import { Data, Effect, Schema } from "effect";
+import { Clock, Data, Duration, Effect, Schema } from "effect";
 import {
+  decodeSignInRecipe,
   recipeLoginStep,
   type SignInLogin,
   type SignInRecipe,
@@ -77,6 +78,74 @@ export const makeBoundableAsk = (base: InputAsker) => {
   return { ask, within };
 };
 export type BoundableAsk = ReturnType<typeof makeBoundableAsk>;
+
+/** The longest prompt, and the longest notice, a request may have (`InputRequest`). */
+const promptLimit = 2_000;
+const noticeLimit = 16_384;
+
+/** `text` cut to `limit` characters with an ellipsis, never leaving half a surrogate pair. */
+const fitted = (text: string, limit: number) =>
+  text.length <= limit ? text : `${text.slice(0, limit - 1).replace(/[\uD800-\uDBFF]$/u, "")}…`;
+
+/**
+ * An asker whose questions' prompts, and its request's notice, are masked with `redact`, each cut
+ * to fit once masked, for a run whose host reveals its own handles: a question that quotes the
+ * page, such as a code screen's instruction or a security question, may show a value revealed for
+ * an earlier screen. The asker's `recoverSecrets` stays.
+ */
+export const redactedAsk = (ask: InputAsker, redact: (text: string) => string): InputAsker =>
+  Object.assign(
+    (request: Parameters<InputAsker>[0], bounds?: Parameters<InputAsker>[1]) =>
+      ask(
+        {
+          ...request,
+          ...(request.notice === undefined
+            ? {}
+            : { notice: fitted(redact(request.notice), noticeLimit) }),
+          questions: request.questions.map((question) => ({
+            ...question,
+            prompt: fitted(redact(question.prompt), promptLimit),
+          })),
+        },
+        bounds,
+      ),
+    ask.recoverSecrets === undefined ? {} : { recoverSecrets: ask.recoverSecrets },
+  );
+
+/**
+ * A host's reveal within a sign-in's bound: a reveal is never asked once the bound passed or its
+ * stop was raised, and one still running then is refused, its own end left to run apart, so a
+ * slow host never holds the sign-in past its bound. Each refusal the bound made is noted
+ * (`expiry`), so the sign-in fails as the bound's passing, never as the host's refusal.
+ */
+const boundedReveal = (
+  reveal: RevealSignInValue,
+  bound: SessionSignInBound,
+  expiry: { passed: boolean },
+): RevealSignInValue => {
+  const expired = Effect.suspend(() => {
+    expiry.passed = true;
+    return Effect.fail(new SessionSignInExpiredStep("The sign-in's bound passed"));
+  });
+  const stopped = Effect.async<void>((resume) => {
+    if (bound.stop.aborted) return resume(Effect.void);
+    const raised = () => resume(Effect.void);
+    bound.stop.addEventListener("abort", raised, { once: true });
+    return Effect.sync(() => bound.stop.removeEventListener("abort", raised));
+  });
+  const passed = Clock.currentTimeMillis.pipe(
+    Effect.flatMap((now) =>
+      Effect.raceFirst(Effect.sleep(Duration.millis(Math.max(0, bound.untilMs - now))), stopped),
+    ),
+    Effect.zipRight(expired),
+  );
+  return (value, origin) =>
+    sessionSignInExpired(bound).pipe(
+      Effect.flatMap((over) =>
+        over ? expired : Effect.raceFirst(Effect.disconnect(reveal(value, origin)), passed),
+      ),
+    );
+};
 
 /** The part of a held login the site rejected: its identifier, as the username, or its password. */
 type LoginField = "username" | "password";
@@ -216,7 +285,10 @@ export const makeLocalSessionSignIn = (options: {
   /** The asker `login` and the sign-in's own questions ask through. */
   readonly asks: BoundableAsk;
   readonly secrets: RunSignInSecrets;
-  /** The host's reveal of its own handles, as each sign-in types them (`RevealSignInValue`). */
+  /**
+   * The host's reveal of its own handles, as each sign-in types them (`RevealSignInValue`). Under
+   * a script's bound, a reveal still running when the bound passes is refused.
+   */
   readonly reveal?: RevealSignInValue;
   /** The values the site rejected and the corrections asked, across this host's sign-ins. */
   readonly retryState?: AutofillRetryState;
@@ -248,12 +320,19 @@ export const makeLocalSessionSignIn = (options: {
           bound,
           () => new SessionSignInExpiredStep("The sign-in's bound passed"),
         );
+  // A host's reveal under a script's bound is refused once the bound passes, as a question is.
+  const revealWithin = (bound: SessionSignInBound | undefined, expiry: { passed: boolean }) =>
+    options.reveal === undefined || bound === undefined
+      ? options.reveal
+      : boundedReveal(options.reveal, bound, expiry);
   const replay = (
     sign: RecordedSignIn,
     bound: SessionSignInBound | undefined,
     login: SignInLogin<unknown>,
-  ) =>
-    options.asks.within(
+  ) => {
+    const expiry = { passed: false };
+    const reveal = revealWithin(bound, expiry);
+    return options.asks.within(
       bound,
       signInForRun({
         recipe: sign.recipe,
@@ -262,7 +341,7 @@ export const makeLocalSessionSignIn = (options: {
         login,
         ask: options.asks.ask,
         secrets: options.secrets,
-        ...(options.reveal === undefined ? {} : { reveal: options.reveal }),
+        ...(reveal === undefined ? {} : { reveal }),
         site: options.site,
         siteOrigin: options.siteOrigin,
         ...(options.timing === undefined ? {} : { timing: options.timing }),
@@ -272,6 +351,13 @@ export const makeLocalSessionSignIn = (options: {
           ? {}
           : { workspaceOrigin: options.workspace.origin }),
       }).pipe(
+        // A reveal the bound refused stopped the sign-in as the bound passing does, whichever
+        // screen it was on: no refusal of the host's.
+        Effect.mapError((error) =>
+          expiry.passed && error instanceof SignInRunFailed && error.reason === "reveal_refused"
+            ? new SessionSignInExpiredStep("The sign-in's bound passed")
+            : error,
+        ),
         Effect.tap((signedIn) =>
           Effect.sync(() => {
             if (options.workspace !== undefined && signedIn.workspaceOrigin !== undefined)
@@ -280,6 +366,7 @@ export const makeLocalSessionSignIn = (options: {
         ),
       ),
     );
+  };
   /** The recorded marker on the current page; no recorded sign-in says nothing. */
   const sessionOn = Effect.suspend(() => {
     const sign = options.recorded();
@@ -455,21 +542,23 @@ export const mintSessionSignInFailure = (failed: SessionSignInFailed): MintFailu
  * account page checks that page first, as `stillSignedIn` does, waiting for a marker drawn late
  * (`settledMarkerCheck`), and signs nothing in when the marker shows there. Otherwise, and on a
  * new browser, it replays. A recipe with a workspace relation always replays, since only the
- * replay finds the workspace host the session is on.
+ * replay finds the workspace host the session is on, and one that doesn't decode goes straight to
+ * the replay, which fails `MissingRecipe`.
  */
 export const runSignInBefore = <E>(
   typed: () => boolean,
   input: Parameters<typeof signInForRun<E>>[0],
 ): ReturnType<typeof signInForRun<E>> =>
   Effect.gen(function* () {
-    const { signedIn, steps } = input.recipe;
+    const recipe = decodeSignInRecipe(JSON.stringify(input.recipe) ?? "");
     if (
       typed() &&
-      signedIn.openPath !== undefined &&
-      workspaceRelation(input.recipe, input.siteOrigin) === undefined &&
+      typeof recipe !== "string" &&
+      recipe.signedIn.openPath !== undefined &&
+      workspaceRelation(recipe, input.siteOrigin) === undefined &&
       (yield* settledMarkerCheck(
-        (shown) => input.browser.confirm(shown, steps, steps),
-        signedIn,
+        (shown) => input.browser.confirm(shown, recipe.steps, recipe.steps),
+        recipe.signedIn,
         input.markerSettle,
       )).signedIn
     )
@@ -483,7 +572,9 @@ export const runSignInBefore = <E>(
  * script's `ensureSignedIn` finds the page signed out, with the login `before` read. A run never
  * restores a saved session, so it saves none. Only a read's sign-in may end on a page that can't
  * tell: a write's needs its marker, as nothing checks the session again before the write commits.
- * `workspace` holds the workspace origin the run's sign-in learned, for this run only.
+ * `workspace` holds the workspace origin the run's sign-in learned, for this run only. With the
+ * host's `reveal`, each question's prompt and notice are masked with the session's masking
+ * (`redactedAsk`), since a question that quotes the page may show a value revealed for it.
  */
 export const makeRunSignIn = (
   session: StandaloneSession,
@@ -494,9 +585,10 @@ export const makeRunSignIn = (
 ) => {
   const allowCantTell = effect === "read";
   const { browser, ask, secrets } = session;
+  const { reveal } = session.options;
   // The site as the owner's questions name it: its host, without `www.`.
   const site = new URL(siteOrigin).hostname.replace(/^www\./u, "");
-  const asks = makeBoundableAsk(ask);
+  const asks = makeBoundableAsk(reveal === undefined ? ask : redactedAsk(ask, secrets.redact));
   const workspace: RunWorkspace = { origin: undefined };
   const signInBrowser = makeSignInBrowser({
     page: browser,
@@ -505,8 +597,10 @@ export const makeRunSignIn = (
     authenticationOrigins,
     typing: session.signInTyping,
   });
-  // A recipe that types no password asks the owner for its identifier alone.
-  const passwordless = recipeLoginStep(signIn.recipe);
+  // A recipe that types no password asks the owner for its identifier alone. One that doesn't
+  // decode asks as any other would, and its sign-in fails `MissingRecipe`.
+  const recipe = decodeSignInRecipe(JSON.stringify(signIn.recipe) ?? "");
+  const passwordless = typeof recipe === "string" ? undefined : recipeLoginStep(recipe);
   const login = {
     login: localSignInLogin({
       ask: asks.ask,
@@ -517,7 +611,6 @@ export const makeRunSignIn = (
   };
   // One run's sign-ins share what the site rejected, as one attempt's do in every host.
   const retryState = makeAutofillRetryState();
-  const { reveal } = session.options;
   const before = runSignInBefore(() => session.signInTyping.typed, {
     recipe: signIn.recipe,
     entryUrl: signIn.entryUrl,

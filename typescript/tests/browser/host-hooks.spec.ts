@@ -15,6 +15,7 @@ import { firefoxPrefs } from "../../src/execution/playwright-execute.js";
 import { createPomerado } from "../../src/standalone/pomerado.js";
 import type { PomeradoOptions } from "../../src/standalone/contracts.js";
 import { RunOutcomeFailure } from "../../src/standalone/run-report.js";
+import { SignInRunFailed } from "../../src/runtime/sign-in-replay.js";
 import { makeInputAsker } from "../../src/inputs/callback.js";
 import type { InputRequest } from "../../src/runtime/input-request.js";
 import type { EnteredCommit, OperationHooks } from "../../src/runtime/operation-hooks.js";
@@ -155,7 +156,10 @@ test("a write's click waits for the host's commit hook, which hears the checkout
       ).pipe(Effect.flip),
     );
     expect(refused).toBeInstanceOf(RunOutcomeFailure);
-    expect(refused).toMatchObject({ outcome: { writeStatus: "not_applied", possibleCommit: false } });
+    expect(refused).toMatchObject({
+      commitRefused: "place-order",
+      outcome: { writeStatus: "not_applied", possibleCommit: false },
+    });
     expect(posts()).toBe(1);
     expect(calls).toEqual([]);
   } finally {
@@ -187,22 +191,25 @@ export default defineOperation(
   },
 );`;
   try {
-    const { output, saved } = await Effect.runPromise(
+    const { output, beforeRun, saved } = await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
           const pomerado = yield* session(calls, {
             sessionStorage: [{ origin: site.origin, entries: [["cart", "c-1"]] }],
           });
+          // Putting the tab's storage back sends the site nothing.
+          const beforeRun = [...site.requests];
           const output = yield* pomerado.run(artifact(readCart), {
             url: site.url,
             intent: "Read the cart",
             effect: "read",
             input: {},
           });
-          return { output, saved: yield* pomerado.saveSession(site.url) };
+          return { output, beforeRun, saved: yield* pomerado.saveSession(site.url) };
         }),
       ),
     );
+    expect(beforeRun).toEqual([]);
     expect(output).toEqual({ cart: "c-1" });
     expect(saved.sessionStorage).toEqual([
       { origin: site.origin, entries: expect.arrayContaining([["cart", "c-1"], ["seen", "yes"]]) },
@@ -299,7 +306,12 @@ export default defineOperation(
  * the network. A signed-in shop answers its root with the account, read from the session cookie.
  */
 const proxyShop = async () => {
-  const seen: { readonly url: string; readonly login: string | undefined; readonly run: string | undefined; readonly language: string | undefined }[] = [];
+  const seen: {
+    readonly url: string;
+    readonly login: string | undefined;
+    readonly run: string | undefined;
+    readonly language: string | undefined;
+  }[] = [];
   const login = `Basic ${Buffer.from("run-1.2:lease-token").toString("base64")}`;
   const server = createServer((request, response) => {
     const presented = request.headers["proxy-authorization"];
@@ -344,21 +356,29 @@ const proxyShop = async () => {
   };
 };
 
-/** A read of the shop's account, as a minted read would make it. */
+/**
+ * A read of the shop's account, as a minted read would make it, with the page's time zone and
+ * whatever of the host's context its page code can find in the worker that runs it.
+ */
 const readAccount = `import { Schema } from "effect";
 import { defineOperation } from "../runtime/index.js";
 export default defineOperation(
   {
     name: "read_account",
     input: Schema.Struct({}),
-    output: Schema.Struct({ account: Schema.NullOr(Schema.String), basket: Schema.NullOr(Schema.String) }),
+    output: Schema.Struct({
+      account: Schema.NullOr(Schema.String),
+      basket: Schema.NullOr(Schema.String),
+      offset: Schema.Number,
+      context: Schema.Unknown,
+    }),
   },
   async ({ kernel, sessionId }) => {
     const read = await kernel.browsers.playwright.execute(sessionId, {
-      code: "const account = page.locator('#account'); return { account: (await account.count()) > 0 ? await account.innerText() : null, basket: await page.evaluate(() => localStorage.getItem('basket')) };",
+      code: "const account = page.locator('#account'); return { account: (await account.count()) > 0 ? await account.innerText() : null, basket: await page.evaluate(() => localStorage.getItem('basket')), offset: await page.evaluate(() => new Date().getTimezoneOffset()), context: process.getBuiltinModule('node:worker_threads').workerData?.context ?? null };",
       timeout_sec: 10,
     });
-    if (!read.success) throw new Error("The account did not read");
+    if (!read.success) throw new Error("The account did not read: " + read.error);
     return read.result;
   },
 );`;
@@ -420,7 +440,14 @@ test("a host's own browser server, with its context options, runs a minted read 
         }),
       ),
     );
-    expect(output).toEqual({ account: "Signed in as Asha", basket: "b-1" });
+    // The proxy's login and the restored cookies stay with the host: page code finds none of
+    // the context in its worker.
+    expect(output).toEqual({
+      account: "Signed in as Asha",
+      basket: "b-1",
+      offset: -330,
+      context: null,
+    });
     const pages = proxy.seen.filter((request) => request.login === "run");
     expect(pages.length).toBeGreaterThan(0);
     for (const request of pages) {
@@ -465,7 +492,13 @@ export default defineOperation(
       timeout_sec: 15,
     });
     if (!read.success) throw new Error("The profile did not read: " + read.error);
-    return read.result;
+    // The same server under another name is another origin, which the host granted nothing.
+    const elsewhere = await kernel.browsers.playwright.execute(sessionId, {
+      code: "await page.goto(page.url().replace('127.0.0.1', 'localhost')); return await page.evaluate(async () => (await navigator.permissions.query({ name: 'geolocation' })).state);",
+      timeout_sec: 15,
+    });
+    if (!elsewhere.success) throw new Error("The other origin did not read: " + elsewhere.error);
+    return { ...read.result, elsewhere: elsewhere.result };
   },
 );`;
   const setProfile = `import { Schema } from "effect";
@@ -492,23 +525,26 @@ export default defineOperation(
         }),
       ),
     );
-    const profile = await Effect.runPromise(
+    const requestsBefore = site.requests.length;
+    const { beforeRun, profile } = await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
           const pomerado = yield* session(calls, {
             browser: {
               ...projectBrowser(),
               context: {
-                storageState: saved.state as never,
+                storageState: saved.state,
                 locale: "en-IN",
                 timezoneId: "Asia/Kolkata",
-                geolocation: { latitude: 23.26, longitude: 77.41 },
+                geolocation: { latitude: 12.5, longitude: 45.5 },
                 permissions: [{ origin: site.origin, permissions: ["geolocation"] }],
               },
             },
             sessionStorage: saved.sessionStorage,
           });
-          return yield* pomerado.run(artifact(readProfile), request);
+          // Restoring the profile sends the site nothing.
+          const beforeRun = [...site.requests];
+          return { beforeRun, profile: yield* pomerado.run(artifact(readProfile), request) };
         }),
       ),
     );
@@ -519,8 +555,10 @@ export default defineOperation(
       // India's time, half an hour off the hour, whichever name the browser's zone data uses.
       offset: -330,
       language: "en-IN",
-      location: [23.26, 77.41],
+      location: [12.5, 45.5],
+      elsewhere: expect.not.stringMatching(/^granted$/u),
     });
+    expect(beforeRun.length).toBe(requestsBefore);
     expect(calls).toEqual([]);
   } finally {
     await site.close();
@@ -533,7 +571,7 @@ export default defineOperation(
  * which tunnels every connection to it, as a resolver that maps its name would, so a context
  * that sets the proxy and takes its own certificate (`ignoreHTTPSErrors`) opens it on any browser.
  */
-const phoneShop = async () => {
+const phoneShop = async (options: { readonly codeBoxes?: boolean } = {}) => {
   const directory = await mkdtemp(join(tmpdir(), "pomerado-phone-shop-"));
   await promisify(execFile)("openssl", [
     "req",
@@ -572,7 +610,8 @@ const phoneShop = async () => {
           return;
         }
         if (request.method === "POST" && path === "/verify") {
-          const code = form.get("code") ?? "";
+          const code =
+            form.get("code") ?? [1, 2, 3, 4, 5, 6].map((box) => form.get(`d${box}`) ?? "").join("");
           received.codes.push(code);
           response.writeHead(
             303,
@@ -591,10 +630,16 @@ const phoneShop = async () => {
           return;
         }
         if (path === "/verify") {
-          html(
-            response,
-            `<form method="post" action="/verify"><label>Code <input name="code" inputmode="numeric" autocomplete="one-time-code"></label><button>Verify</button></form>`,
-          );
+          // The code in one field, or in six one-character boxes.
+          const fields = options.codeBoxes
+            ? [1, 2, 3, 4, 5, 6]
+                .map(
+                  (box) =>
+                    `<input id="otp-${box}" name="d${box}" maxlength="1" inputmode="numeric" aria-label="Digit ${box}">`,
+                )
+                .join("")
+            : `<label>Code <input name="code" inputmode="numeric" autocomplete="one-time-code"></label>`;
+          html(response, `<form method="post" action="/verify">${fields}<button>Verify</button></form>`);
           return;
         }
         const signedIn = /(?:^|;\s*)session=s-1(?:;|$)/u.test(request.headers.cookie ?? "");
@@ -634,7 +679,10 @@ const phoneShop = async () => {
     origin: "https://shop.test",
     url: "https://shop.test/",
     /** The context that reaches the shop. */
-    context: { proxy: { server: `http://127.0.0.1:${tunnelAddress.port}` }, ignoreHTTPSErrors: true },
+    context: {
+      proxy: { server: `http://127.0.0.1:${tunnelAddress.port}` },
+      ignoreHTTPSErrors: true,
+    },
     received,
     close: async () => {
       shop.closeAllConnections();
@@ -646,7 +694,7 @@ const phoneShop = async () => {
 };
 
 /** The phone shop's sign-in as a build publishes it: the number, then the code. */
-const phoneSignIn = (origin: string) => ({
+const phoneSignIn = (origin: string, codeBoxes = false) => ({
   recipe: {
     version: 1 as const,
     steps: [
@@ -658,7 +706,9 @@ const phoneSignIn = (origin: string) => ({
       },
       {
         page: `${origin}/verify`,
-        fields: [{ selector: "input[name=code]", slot: "code" as const }],
+        fields: codeBoxes
+          ? [1, 2, 3, 4, 5, 6].map((box) => ({ selector: `#otp-${box}`, slot: "code" as const }))
+          : [{ selector: "input[name=code]", slot: "code" as const }],
         submit: "button",
         submittedBy: "host" as const,
       },
@@ -669,7 +719,7 @@ const phoneSignIn = (origin: string) => ({
 });
 
 /** A read of the account heading, behind the phone shop's sign-in. */
-const phoneAccount = (origin: string) => ({
+const phoneAccount = (origin: string, codeBoxes = false) => ({
   ...artifact(`import { Schema } from "effect";
 import { defineOperation } from "../runtime/index.js";
 export default defineOperation(
@@ -683,7 +733,7 @@ export default defineOperation(
     return { account: read.result };
   },
 );`),
-  signIn: phoneSignIn(origin),
+  signIn: phoneSignIn(origin, codeBoxes),
 });
 
 /** Answers the login with `phone` alone and the code with `code`, recording each request. */
@@ -711,7 +761,7 @@ test("a run whose recorded sign-in types no password asks for the phone number a
         Effect.gen(function* () {
           const pomerado = yield* session(calls, {
             browser: { ...projectBrowser(), context: shop.context },
-            ask: phoneAnswers(asked, "+919812345678", "424242"),
+            ask: phoneAnswers(asked, "+15555550123", "424242"),
           });
           return yield* pomerado.run(phoneAccount(shop.origin), {
             url: shop.url,
@@ -723,9 +773,11 @@ test("a run whose recorded sign-in types no password asks for the phone number a
       ),
     );
     expect(output).toEqual({ account: "Signed in" });
-    const login = asked.flatMap((request) => request.questions).find((q) => q.type === "credential");
+    const login = asked
+      .flatMap((request) => request.questions)
+      .find((question) => question.type === "credential");
     expect(login).toMatchObject({ currentStep: { identifierKinds: ["phone"], password: false } });
-    expect(shop.received).toEqual({ phones: ["+919812345678"], codes: ["424242"] });
+    expect(shop.received).toEqual({ phones: ["+15555550123"], codes: ["424242"] });
     expect(calls).toEqual([]);
   } finally {
     await shop.close();
@@ -737,7 +789,7 @@ test("a host that answers with handles gets each one revealed for its field's ow
   const shop = await phoneShop();
   const calls: string[] = [];
   const values: Readonly<Record<string, string>> = {
-    "sec_phone": "+919812345678",
+    "sec_phone": "+15555550123",
     "sec_code": "424242",
   };
   try {
@@ -771,28 +823,85 @@ test("a host that answers with handles gets each one revealed for its field's ow
       ["sec_phone", shop.origin],
       ["sec_code", shop.origin],
     ]);
-    expect(shop.received).toEqual({ phones: ["+919812345678"], codes: ["424242"] });
+    expect(shop.received).toEqual({ phones: ["+15555550123"], codes: ["424242"] });
 
-    // A host that refuses every reveal gets nothing typed, and the run doesn't sign in.
-    const refused = await Effect.runPromise(
+    // A host that refuses every reveal, or whose reveal dies, gets nothing typed, and the run
+    // fails for the answer the host withheld.
+    for (const reveal of [
+      () => Effect.fail(new Error("Not on this origin")),
+      () => Effect.die(new Error("The host's store failed")),
+    ]) {
+      let asked = 0;
+      const refused = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const pomerado = yield* session(calls, {
+              browser: { ...projectBrowser(), context: shop.context },
+              ask: phoneAnswers([], "sec_phone", "sec_code"),
+              reveal: (value, origin) =>
+                Effect.suspend(() => {
+                  asked++;
+                  return reveal();
+                }).pipe(Effect.as(`${value}@${origin}`)),
+            });
+            return yield* pomerado.run(phoneAccount(shop.origin), {
+              url: shop.url,
+              intent: "Read the account",
+              effect: "read",
+              input: {},
+            });
+          }),
+        ).pipe(Effect.flip),
+      );
+      expect(refused).toBeInstanceOf(SignInRunFailed);
+      expect(refused).toMatchObject({ code: "NeedsInput", reason: "reveal_refused" });
+      expect(asked).toBe(1);
+    }
+    expect(shop.received).toEqual({ phones: ["+15555550123"], codes: ["424242"] });
+    expect(calls).toEqual([]);
+  } finally {
+    await shop.close();
+  }
+});
+
+test("a handle for a code on six one-character boxes is revealed once and typed a character per box", async () => {
+  test.setTimeout(90_000);
+  const shop = await phoneShop({ codeBoxes: true });
+  const calls: string[] = [];
+  const values: Readonly<Record<string, string>> = {
+    "sec_phone": "+15555550123",
+    "sec_code": "424 242",
+  };
+  try {
+    const revealed: string[] = [];
+    const output = await Effect.runPromise(
       Effect.scoped(
         Effect.gen(function* () {
           const pomerado = yield* session(calls, {
             browser: { ...projectBrowser(), context: shop.context },
             ask: phoneAnswers([], "sec_phone", "sec_code"),
-            reveal: () => Effect.fail(new Error("Not on this origin")),
+            reveal: (value, origin) =>
+              Effect.suspend(() => {
+                revealed.push(value);
+                const held = values[value];
+                return held !== undefined && origin === shop.origin
+                  ? Effect.succeed(held)
+                  : Effect.fail(new Error("Not on this origin"));
+              }),
           });
-          return yield* pomerado.run(phoneAccount(shop.origin), {
+          return yield* pomerado.run(phoneAccount(shop.origin, true), {
             url: shop.url,
             intent: "Read the account",
             effect: "read",
             input: {},
           });
         }),
-      ).pipe(Effect.flip),
+      ),
     );
-    expect(refused).toBeInstanceOf(Error);
-    expect(shop.received).toEqual({ phones: ["+919812345678"], codes: ["424242"] });
+    expect(output).toEqual({ account: "Signed in" });
+    // One reveal each, the code's spaces left out of the boxes.
+    expect(revealed).toEqual(["sec_phone", "sec_code"]);
+    expect(shop.received).toEqual({ phones: ["+15555550123"], codes: ["424242"] });
     expect(calls).toEqual([]);
   } finally {
     await shop.close();

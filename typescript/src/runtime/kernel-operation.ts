@@ -187,8 +187,9 @@ export interface KernelOperationContext<
    * before its execute call.
    * `report`, optional, is what the page shows about the step just before its click, read in an
    * earlier call, such as the button's text and the total, for a host that checks it before the
-   * click: such a host holds the next call until it accepts the step, and refuses it and every later
-   * call otherwise. It must be JSON of at most 64 KiB, or `enteringCommit` throws before marking.
+   * click: such a host holds the next call until it accepts the step, and refuses it and every
+   * later call otherwise. It must be JSON of at most 64 KiB, nested at most 64 levels deep, or
+   * `enteringCommit` throws before marking.
    */
   readonly enteringCommit: (name: string, report?: unknown) => void;
   /**

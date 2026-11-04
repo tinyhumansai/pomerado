@@ -165,13 +165,25 @@ export const SavedSession = Schema.Struct({
 });
 export type SavedSession = typeof SavedSession.Type;
 
+/** How long a save waits for one frame's session storage before it skips the frame. */
+const frameReadMs = 3_000;
 /**
- * One browser call that reads the context's storage state and the primary tab's session storage,
- * from its main frame and the frames on the site's registrable domain only, one read per origin.
+ * How far into a save's browser call it still reads frames, so a page whose frames don't answer
+ * leaves the storage state that follows two thirds of the 60 s the call's callers give it.
+ */
+const frameReadsMs = 20_000;
+
+/**
+ * One browser call that reads the primary tab's session storage, from its main frame and the
+ * frames on the site's registrable domain only, one read per origin, and then the context's
+ * storage state. A frame that doesn't answer within `frameReadMs`, as one behind an open dialog
+ * doesn't, is skipped, and so is every frame once the call is `frameReadsMs` old. The frames come
+ * first, so a slow storage state, such as a large IndexedDB's, never takes their time.
  */
 export const saveSessionCode = (targetId: string, primaryOrigin: string) => {
   const url = new URL(primaryOrigin);
   return `${primaryPageCode(targetId)}
+const readsEnd = Date.now() + ${frameReadsMs};
 const scheme = ${JSON.stringify(url.protocol)};
 const onSiteHost = ${hostOnSiteSource(siteOf(url))};
 const sameSite = (href) => {
@@ -182,25 +194,34 @@ const sameSite = (href) => {
     return false;
   }
 };
-const state = await context.storageState({ indexedDB: true });
 const sessionStorage = [];
 const read = new Set();
 for (const frame of primary.frames()) {
   if (!sameSite(frame.url()) || read.has(new URL(frame.url()).origin)) continue;
-  const stored = await frame
-    .evaluate(() => {
-      const entries = [];
-      for (let index = 0; index < sessionStorage.length; index++) {
-        const key = sessionStorage.key(index);
-        if (key !== null) entries.push([key, sessionStorage.getItem(key) ?? ""]);
-      }
-      return { origin: location.origin, entries };
-    })
-    .catch(() => undefined);
+  const left = readsEnd - Date.now();
+  if (left <= 0) break;
+  let timer;
+  const stored = await Promise.race([
+    frame
+      .evaluate(() => {
+        const entries = [];
+        for (let index = 0; index < sessionStorage.length; index++) {
+          const key = sessionStorage.key(index);
+          if (key !== null) entries.push([key, sessionStorage.getItem(key) ?? ""]);
+        }
+        return { origin: location.origin, entries };
+      })
+      .catch(() => undefined),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(undefined), Math.min(${frameReadMs}, left));
+    }),
+  ]);
+  clearTimeout(timer);
   if (stored === undefined || !sameSite(stored.origin + "/") || read.has(stored.origin)) continue;
   read.add(stored.origin);
   if (stored.entries.length > 0) sessionStorage.push(stored);
 }
+const state = await context.storageState({ indexedDB: true });
 return { state, sessionStorage };`;
 };
 

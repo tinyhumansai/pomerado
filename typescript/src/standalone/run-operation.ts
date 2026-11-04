@@ -64,15 +64,6 @@ const admitDeclaredFiles = (
     { discard: true },
   );
 
-/**
- * Runs an already-built artifact. Guardian reviewed its source when it was minted, so a run makes
- * no Guardian review and no model request, and needs no model key. An artifact that recorded a
- * sign-in signs in first with it, asking the owner for the login only when the session is not
- * signed in, and never runs signed out: its script's `ensureSignedIn` signs in again on the same
- * browser when a page load signed it out. A read or a confirmed write returns its output. A
- * sign-in that fails fails with its `SignInRunFailed`; any other run fails with a
- * `RunOutcomeFailure` that says what it did to the website and how to retry.
- */
 /** A run's sign-in, through the request's sign-in origins and the ones its tool saved. */
 const artifactSignIn = (
   session: StandaloneSession,
@@ -107,6 +98,15 @@ export const signInOnly = (
       }).pipe(Effect.mapError(beforeOperationFailure(request.effect)));
 };
 
+/**
+ * Runs an already-built artifact. Guardian reviewed its source when it was minted, so a run makes
+ * no Guardian review and no model request, and needs no model key. An artifact that recorded a
+ * sign-in signs in first with it, asking the owner for the login only when the session is not
+ * signed in, and never runs signed out: its script's `ensureSignedIn` signs in again on the same
+ * browser when a page load signed it out. A read or a confirmed write returns its output. A
+ * sign-in that fails fails with its `SignInRunFailed`; any other run fails with a
+ * `RunOutcomeFailure` that says what it did to the website and how to retry.
+ */
 export const runOperation = (
   session: StandaloneSession,
   artifact: MintArtifact,

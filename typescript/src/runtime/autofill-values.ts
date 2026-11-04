@@ -126,7 +126,9 @@ const codeInstruction = (step: AutofillStep, screen: readonly ShownAnswerField[]
 /**
  * The step's values in field order, the step with the kind each identifier field was sent, which
  * an answer to a field that accepts several kinds decides, and the recovery codes it took. A later
- * field the owner did not answer, or that failed, fills nothing: the codes it took go back.
+ * field the owner did not answer, or that failed, fills nothing: the codes it took go back. With
+ * `opaque` answers, a host's handles, a code goes on as given, for its fill to check once revealed
+ * as `boxedCode` checks a value.
  */
 const valuesInOrder =
   <L extends AutofillLogin, E>(
@@ -137,6 +139,7 @@ const valuesInOrder =
       passwordShown: boolean,
     ) => Effect.Effect<Found, E>,
     giveBackTaken: (login: L, taken: readonly TakenRecoveryCode[]) => Effect.Effect<void>,
+    opaque: boolean,
   ) =>
   /** `screen` is the step's fields as the host inspected them, in the step's order. */
   (step: AutofillStep, login: L, screen?: readonly ShownAnswerField[]) => {
@@ -145,6 +148,7 @@ const valuesInOrder =
     // A screen carries one code: its code fields, such as one-digit boxes, share it, asked or
     // read once. A screen that asked for two different codes would get the first in both.
     const boxes = step.fields.filter((field) => field.slot === "code").length;
+    const boxed = (found: Found) => (opaque ? found : boxedCode(found, boxes));
     const instruction = codeInstruction(step, screen);
     const codeLogin =
       boxes > 1 || instruction !== undefined
@@ -166,8 +170,7 @@ const valuesInOrder =
       for (const [index, field] of step.fields.entries()) {
         const found =
           field.slot === "code"
-            ? (code ??
-              boxedCode(yield* valueFor(field, codeLogin, screen?.[index], passwordShown), boxes))
+            ? (code ?? boxed(yield* valueFor(field, codeLogin, screen?.[index], passwordShown)))
             : yield* valueFor(field, login, screen?.[index], passwordShown);
         if (found instanceof Unanswered) {
           yield* giveBack;
@@ -306,7 +309,9 @@ export interface HostedValues<E, L extends AutofillLogin> {
  * (`hosted`). An answered identifier
  * is the same login, never another account. Each value is registered with the broker so every
  * channel masks it as the username is. Fields the owner gives are kept for the attempt (`given`);
- * a code is asked for each screen that shows one, once for all of that screen's code fields.
+ * a code is asked for each screen that shows one, once for all of that screen's code fields. With
+ * `opaqueAnswers`, the answers are a host's handles, revealed only as each is typed: a code goes
+ * to the fill as given, which checks its revealed value against the screen's code fields.
  */
 export const makeAutofillValues = <
   E extends YieldableError,
@@ -317,6 +322,7 @@ export const makeAutofillValues = <
   readonly site: string;
   readonly given: { current: AnsweredLoginFields };
   readonly hosted?: HostedValues<E, L> | undefined;
+  readonly opaqueAnswers?: boolean | undefined;
 }) => {
   const { given, hosted } = dependencies;
   const { register, ask, askAnswer, fail } = makeLoginFieldAsk({
@@ -448,6 +454,7 @@ export const makeAutofillValues = <
   const valuesFor = valuesInOrder<L, E>(
     valueFor,
     (login, taken) => hosted?.giveBack?.(login, taken) ?? Effect.void,
+    dependencies.opaqueAnswers === true,
   );
   return {
     valuesFor,
