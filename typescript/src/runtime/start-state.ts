@@ -165,13 +165,25 @@ export const SavedSession = Schema.Struct({
 });
 export type SavedSession = typeof SavedSession.Type;
 
+/** How long a save waits for one frame's session storage before it skips the frame. */
+const frameReadMs = 3_000;
 /**
- * One browser call that reads the context's storage state and the primary tab's session storage,
- * from its main frame and the frames on the site's registrable domain only, one read per origin.
+ * How far into a save's browser call it still reads frames, so a page whose frames don't answer
+ * leaves the storage state that follows two thirds of the 60 s the call's callers give it.
+ */
+const frameReadsMs = 20_000;
+
+/**
+ * One browser call that reads the primary tab's session storage, from its main frame and the
+ * frames on the site's registrable domain only, one read per origin, and then the context's
+ * storage state. A frame that doesn't answer within `frameReadMs`, as one behind an open dialog
+ * doesn't, is skipped, and so is every frame once the call is `frameReadsMs` old. The frames come
+ * first, so a slow storage state, such as a large IndexedDB's, never takes their time.
  */
 export const saveSessionCode = (targetId: string, primaryOrigin: string) => {
   const url = new URL(primaryOrigin);
   return `${primaryPageCode(targetId)}
+const readsEnd = Date.now() + ${frameReadsMs};
 const scheme = ${JSON.stringify(url.protocol)};
 const onSiteHost = ${hostOnSiteSource(siteOf(url))};
 const sameSite = (href) => {
@@ -182,27 +194,77 @@ const sameSite = (href) => {
     return false;
   }
 };
-const state = await context.storageState({ indexedDB: true });
 const sessionStorage = [];
 const read = new Set();
 for (const frame of primary.frames()) {
   if (!sameSite(frame.url()) || read.has(new URL(frame.url()).origin)) continue;
-  const stored = await frame
-    .evaluate(() => {
-      const entries = [];
-      for (let index = 0; index < sessionStorage.length; index++) {
-        const key = sessionStorage.key(index);
-        if (key !== null) entries.push([key, sessionStorage.getItem(key) ?? ""]);
-      }
-      return { origin: location.origin, entries };
-    })
-    .catch(() => undefined);
+  const left = readsEnd - Date.now();
+  if (left <= 0) break;
+  let timer;
+  const stored = await Promise.race([
+    frame
+      .evaluate(() => {
+        const entries = [];
+        for (let index = 0; index < sessionStorage.length; index++) {
+          const key = sessionStorage.key(index);
+          if (key !== null) entries.push([key, sessionStorage.getItem(key) ?? ""]);
+        }
+        return { origin: location.origin, entries };
+      })
+      .catch(() => undefined),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve(undefined), Math.min(${frameReadMs}, left));
+    }),
+  ]);
+  clearTimeout(timer);
   if (stored === undefined || !sameSite(stored.origin + "/") || read.has(stored.origin)) continue;
   read.add(stored.origin);
   if (stored.entries.length > 0) sessionStorage.push(stored);
 }
+const state = await context.storageState({ indexedDB: true });
 return { state, sessionStorage };`;
 };
+
+/**
+ * Saved session storage whose every origin is a page's own, http or https, as `URL.origin` writes
+ * it, or undefined: the origins it puts back routes, which a malformed one must not widen.
+ */
+export const pageOriginsOnly = (saved: SavedSessionStorage): SavedSessionStorage | undefined =>
+  saved.every(({ origin }) => {
+    const url = URL.parse(origin);
+    return url !== null && /^https?:$/u.test(url.protocol) && url.origin === origin;
+  })
+    ? saved
+    : undefined;
+
+/**
+ * One browser call that puts saved session storage back into the primary tab, before any of the
+ * site's pages load, and leaves the tab blank: each origin's entries are set on a blank document of
+ * that origin that Playwright serves locally in the same tab, as `resetPageCode` restores them, so
+ * no request reaches the site. The tab keeps each origin's session storage across its later loads.
+ */
+export const sessionStorageRestoreCode = (targetId: string, saved: SavedSessionStorage) => `${primaryPageCode(targetId)}
+const tabStorage = ${JSON.stringify(saved.map(({ origin, entries }) => [origin, entries]))};
+const local = (route) => route.fulfill({ contentType: "text/html", body: "<html></html>" });
+const navigation = await context.newCDPSession(primary);
+await navigation.send("Network.setBypassServiceWorker", { bypass: true });
+try {
+  for (const [origin, entries] of tabStorage) {
+    await primary.route(origin + "/**", local);
+    try {
+      await primary.goto(origin + "/", { waitUntil: "domcontentloaded", timeout: 10_000 });
+      await primary.evaluate((entries) => {
+        for (const [key, value] of entries) sessionStorage.setItem(key, value);
+      }, entries);
+    } finally {
+      await primary.unroute(origin + "/**", local);
+    }
+  }
+} finally {
+  await navigation.send("Network.setBypassServiceWorker", { bypass: false });
+  await navigation.detach();
+}
+await primary.goto("about:blank", { timeout: 10_000 });`;
 
 /**
  * Browser code that stops the primary tab's loading. A failed goto can reject before Chromium

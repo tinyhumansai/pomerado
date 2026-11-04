@@ -4,19 +4,60 @@ import { ExpectedConfirms } from "../browser/dialogs/expected.js";
 import { SignInRecipe } from "../destinations/sign-in-recipe.js";
 import type { MintOutcome } from "../mint/contracts.js";
 import type { MintArtifact } from "../mint/input-feedback.js";
-import type { PlaywrightOptions } from "../execution/playwright-execute.js";
+import type {
+  PlaywrightContextOptions,
+  PlaywrightOptions,
+} from "../execution/playwright-execute.js";
 import type { InputAsker } from "../runtime/input-request.js";
 import type { FileLimits } from "../runtime/files.js";
 import type { ListCursorKeys } from "../runtime/list-cursor.js";
 import { ScriptQuestionDeclarations } from "../runtime/script-input.js";
+import type { OperationHooks } from "../runtime/operation-hooks.js";
+import type { RevealSignInValue } from "../runtime/sign-in-replay.js";
+import type { SavedSession, SavedSessionStorage } from "../runtime/start-state.js";
 export interface PomeradoOptions {
   readonly ask: InputAsker;
   /**
    * The browser the host launches or attaches to. It never attaches over CDP (`cdp`): its runs
    * close other tabs and reset site data, which would change a browser it doesn't own. Its browser
-   * calls keep the executor's 1 MiB result limit (`resultLimitBytes`).
+   * calls keep the executor's 1 MiB result limit unless `resultLimitBytes` raises it, as for a
+   * `saveSession` of a site that keeps more. Its `context` (`PlaywrightContextOptions`) restores a
+   * `saveSession`'s `state` as its `storageState`: every site that session visited, not just the
+   * one it was saved for. Its `context.ignoreHTTPSErrors` trusts any certificate for any origin,
+   * the sign-in's included, so set it only for a TLS-intercepting proxy the host controls.
    */
-  readonly browser?: Omit<PlaywrightOptions, "cdp" | "resultLimitBytes">;
+  readonly browser?: Omit<PlaywrightOptions, "cdp">;
+  /**
+   * The tab's session storage to put back before the session's first page loads, as
+   * `saveSession` returned it, beside the browser's restored storage state. It holds the origins
+   * of the tab's frames on the saved URL's site that answered, none when the tab was elsewhere.
+   * Each origin's entries go back on a blank page of that origin the browser serves itself, so the
+   * site sees no request. Anything else fails before the browser starts.
+   */
+  readonly sessionStorage?: SavedSessionStorage;
+  /**
+   * For a host that answers a run's sign-in questions with its own handles in place of the values,
+   * such as a phone number or a code (`RevealSignInValue`): called just before each sign-in value
+   * is typed, with the origin of the document its field is in, it returns the value to type, or
+   * fails to refuse typing it there. A value that is no handle comes back as it is. Only a run's
+   * sign-in reveals: a build's types its answers as given.
+   * - A value is typed only in a document of the origin it was revealed for: a field the page
+   *   moves to another origin before it is typed isn't typed, and the run fails `NeedsInput`
+   *   (`revealed_origin_changed`), as one to run again. Any failure, defect or empty answer
+   *   refuses, that screen types nothing, and the run fails `NeedsInput` (`reveal_refused`); an
+   *   interrupted reveal interrupts the run.
+   * - It may be called more than once for one value, for each screen and origin that types it and
+   *   again when a screen is filled again, so it gives the same answer each time.
+   * - A code's fit to a screen's one-character boxes is checked once it is revealed, and one that
+   *   doesn't fit fails the run `NeedsInput` (`code_does_not_fit_boxes`). A phone number or date of
+   *   birth Pomerado asks for in place keeps its shape check, so a host answers those with the
+   *   value, not a handle.
+   * - Pomerado masks each value it returns, in the forms it is typed in, and masks the questions'
+   *   prompts, which may quote the page. Its memory of the values a site rejected compares what
+   *   the host answered, so a host gives a new value a fresh handle and the same value the same
+   *   handle, and keeps its own record of the values the site rejected.
+   */
+  readonly reveal?: RevealSignInValue;
   readonly minterProvider?: ModelProvider;
   readonly guardianProvider?: ModelProvider;
   /** The outcome reviewer's model provider, which judges whether each write took effect. */
@@ -56,6 +97,13 @@ export type LocalMintOutcome = MintOutcome & {
   readonly untrustedSignInOrigins?: readonly string[];
 };
 
+/**
+ * A session's calls. Each takes the session and holds it until it ends, so they run one at a time,
+ * and a run's hooks, `ask` and `reveal` are called while it is held. They must not call any of the
+ * session's calls, `saveSession` included: each waits for the call in progress, so it would wait
+ * for the call it is inside, forever or until that call's deadline. A host saves before or after
+ * a run.
+ */
 export interface Pomerado {
   readonly mint: (request: PomeradoRequest) => Effect.Effect<LocalMintOutcome, Error>;
   /**
@@ -71,7 +119,38 @@ export interface Pomerado {
   readonly run: (
     artifact: MintArtifact,
     request: Omit<PomeradoRequest, "effect"> & { readonly effect?: "read" | "write" },
+    /**
+     * The host's hooks into this run (`OperationHooks`): when its code starts, the pages after
+     * each browser call, and each commit step, whose click waits for the host to accept it.
+     */
+    hooks?: OperationHooks,
   ) => Effect.Effect<unknown, Error>;
+  /**
+   * Signs the session in with the artifact's recorded sign-in, as a run does before its
+   * operation, and runs nothing else, so a host can save the session right after it. A session
+   * that already shows signed in types nothing (`alreadySignedIn`). An artifact with no recorded
+   * sign-in fails, and a failed sign-in fails with its `SignInRunFailed`.
+   */
+  readonly signIn: (
+    artifact: MintArtifact,
+    request: Omit<PomeradoRequest, "effect"> & { readonly effect?: "read" | "write" },
+  ) => Effect.Effect<{ readonly alreadySignedIn: boolean }, Error>;
+  /**
+   * The session's site data as a host saves it to start a later session from. `state` is the
+   * browser's whole storage state, IndexedDB included, for every site this session visited, not
+   * just `url`'s; a later session restores it as `browser.context.storageState`, as it is.
+   * `sessionStorage` is read from the tab's frames on `url`'s site, so save while the tab shows
+   * that site: a tab elsewhere saves none, and a frame that doesn't answer within seconds is left
+   * out. A save waits for a mint, a run or a sign-in in progress, so a host saves before or after
+   * a run, never from its hooks, `ask` or `reveal`. Its JSON counts against the browser's result
+   * limit.
+   */
+  readonly saveSession: (url: string) => Effect.Effect<
+    SavedSession & {
+      readonly state: NonNullable<PlaywrightContextOptions["storageState"]>;
+    },
+    Error
+  >;
 }
 
 /** A web page a run can open: an http or https URL with no credentials and no fragment. */

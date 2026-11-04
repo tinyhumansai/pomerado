@@ -134,6 +134,7 @@ const makeReplaySession = <E extends YieldableError, V extends string, L extends
     given: input.answers?.given ?? { current: {} },
     site: input.site,
     hosted: input.hosted,
+    opaqueAnswers: input.opaqueAnswers,
   });
   const retryState: AutofillRetryState = input.retryState ?? {
     rejectedValues: {},

@@ -384,6 +384,13 @@ interface CallInput {
 interface FillInput extends CallInput {
   readonly values: readonly string[];
   /**
+   * The origin each field's value was revealed for, by the field's index, when a host reveals its
+   * values only for the document each is typed in: the fill refuses a field it finds in a document
+   * of another origin when it would type there (`revealedElsewhere`). A field with none, and a
+   * fill without them, types as before.
+   */
+  readonly revealedFor?: readonly (string | undefined)[];
+  /**
    * Every value the host typed earlier in this sign-in on this browser, in any step: a clicked
    * submit reports where the page went (`navigated`) only when it is set and nothing the page
    * chose holds one of these or `values` (`reportedNavigation`). A first screen's is empty.
@@ -500,17 +507,55 @@ const screenGone = (
 };
 
 /**
+ * The check a fill's refusal names (its failure detail's phase) when the field a value was
+ * revealed for moved to another origin before it was typed (`revealedElsewhere`).
+ */
+export const revealedOriginCheck = "revealed_origin";
+
+/**
+ * A refusal of a field's call that would type a value revealed for one origin (`revealedFor`)
+ * into a field the host now judges in a document of another, as when the page moved the field to
+ * another origin of the site after the inspection: the focus the host types into next, or a
+ * date's fill. Undefined for any other call, a field with no revealed value, and a field still
+ * judged in that origin.
+ */
+const revealedElsewhere = (
+  input: CallInput & Pick<FillInput, "revealedFor">,
+  progress: FillProgress,
+  call: AutofillFillCall,
+) => {
+  if (call.kind !== "focus" && call.kind !== "date") return undefined;
+  const revealed = input.revealedFor?.[call.index];
+  const judged = progress.judged.fields[call.index];
+  if (revealed === undefined || judged?.documentOrigin === revealed) return undefined;
+  return withCheck(
+    refused("credential_target_refused", call.index),
+    revealedOriginCheck,
+    targetEvidence(judged, evidenceOrigins(input, progress)),
+  );
+};
+
+/**
  * One Kernel call of the fill, which first checks the field the host typed last. A call that finds
  * a control changed since the host last judged it does nothing, and the host judges the controls
  * it found again (`rejudge`), then calls again against that judgment, which the page kept as that
  * call found it: no call's code holds an address the page supplied. `changes` counts the changes
- * found, shared by every call the host makes again for the same action.
+ * found, shared by every call the host makes again for the same action. A field's call whose
+ * revealed value the host now judges in another origin's document is refused before it is made
+ * (`revealedElsewhere`), whichever call judged the field so.
  */
 const fillCall =
-  (input: CallInput, progress: FillProgress, changes = { count: 0 }) =>
+  (
+    input: CallInput & Pick<FillInput, "revealedFor">,
+    progress: FillProgress,
+    changes = { count: 0 },
+  ) =>
   (call: AutofillFillCall): Effect.Effect<Either.Either<CallAnswer, Error>> =>
     Effect.gen(function* () {
+      let url: string | undefined;
       for (;;) {
+        const elsewhere = revealedElsewhere(input, progress, call);
+        if (elsewhere !== undefined) return Either.right<Stop>({ refusal: elsewhere, url });
         const observed = randomUUID();
         const answered = yield* input.page
           .execute(
@@ -561,6 +606,7 @@ const fillCall =
           });
         progress.judged = answer.changed;
         progress.judgment = observed;
+        url = answer.url;
       }
     });
 
@@ -949,6 +995,9 @@ const afterFieldCall = (
  * have sent the code itself and closed in place, which only the sign-in's own check can tell.
  * Guardian's refusals still come first: a control that moved off the site or changed how it
  * submits refuses the submit as before.
+ * A value a host revealed for one origin (`revealedFor`) goes only into a field the host judges, as
+ * it types it, in a document of that origin: a field the page moved to another origin, even one
+ * of the site, is refused as a control the host refuses before its typing is (`revealedElsewhere`).
  * A step that names `dismiss` clicks that covering notice's own control first, when the page shows
  * it, and refuses the step with nothing typed when it is no such control (`dismissNotice`). A
  * click another element caught, which never reached the submit, is `blocked`, with that element

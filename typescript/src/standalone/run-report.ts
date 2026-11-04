@@ -26,13 +26,15 @@ import { localFailureText } from "./failure-text.js";
  * A run that did not end in a confirmed result. `outcome` says what it did to the website and how
  * to retry, and the message says the same in one sentence. A write that may have applied keeps
  * the output its script returned, unconfirmed. `journal` is what the operation reported about
- * the website, when it reported anything, for a keyed job's record.
+ * the website, when it reported anything, for a keyed job's record. `commitRefused` names the
+ * commit step the host's commit hook refused, when it refused one.
  */
 export class RunOutcomeFailure extends Data.TaggedError("RunOutcomeFailure")<{
   readonly outcome: RunOutcome;
   readonly text: string;
   readonly unconfirmed?: { readonly output: unknown };
   readonly journal?: LocalOperationJournal;
+  readonly commitRefused?: string;
 }> {
   override get message() {
     return this.text;
@@ -274,6 +276,9 @@ export const runOutcomeFailure =
       outcome,
       text: localFailureText(outcome),
       ...(error instanceof LocalOperationFailure ? { journal: journalOf(error.journal) } : {}),
+      ...(error instanceof LocalOperationFailure && error.commitRefused !== undefined
+        ? { commitRefused: error.commitRefused }
+        : {}),
     });
   };
 

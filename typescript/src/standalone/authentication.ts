@@ -12,7 +12,11 @@ import {
 } from "../destinations/autofill-step.js";
 import { rememberTyping } from "../destinations/autofill-typed-page.js";
 import type { CredentialKeyboard } from "../destinations/credential-keyboard.js";
-import type { SignInBrowser, SignInLogin } from "../destinations/sign-in-recipe.js";
+import type {
+  PasswordlessLoginStep,
+  SignInBrowser,
+  SignInLogin,
+} from "../destinations/sign-in-recipe.js";
 import { MintFailure } from "../mint/contracts.js";
 import type { CredentialRejectedField, WebsiteCredentials } from "../runtime/authentication.js";
 import { credentialMessage, credentialPrompt } from "../runtime/credential-prompts.js";
@@ -136,6 +140,7 @@ export const makeSignInBrowser = (options: {
       readonly step: AutofillStep;
       readonly inspection: AutofillInspection;
       readonly values: readonly string[];
+      readonly revealedFor?: readonly (string | undefined)[];
     }) =>
       fillAutofillStep({ ...input, page, keyboard: options.keyboard, typing: "keyboard" }).pipe(
         // The session's record counts what `rememberTyping` counts: a fill that typed.
@@ -219,15 +224,27 @@ export const localSignInLogin = (options: {
   readonly ask: InputAsker;
   readonly register: (value: string) => void;
   readonly siteOrigin: string;
+  /**
+   * What the login needs when the sign-in types no password (`recipeLoginStep`): the question
+   * offers only its identifier kinds, and the login is held without a password. A correction
+   * offers only the kind of the login the site rejected.
+   */
+  readonly passwordless?: PasswordlessLoginStep;
 }): SignInLogin<MintFailure> => {
   let held: WebsiteCredentials | undefined;
   // The first ask may be declined: the owner has no account, or wants the public part only.
   const askLogin = (
     reason: "missing_credentials" | "invalid_credentials",
-    username?: string,
+    rejected?: WebsiteCredentials,
     triesLeft?: number,
   ) =>
     Effect.gen(function* () {
+      const username = rejected?.username;
+      // A correction of a login without a password keeps its kind, so the corrected login fills
+      // the screens the rejected one did: its question offers that kind alone.
+      const offered = options.passwordless?.identifierKinds;
+      const kept = rejected?.primaryIdentifierKind;
+      const kinds = kept !== undefined && offered?.includes(kept) === true ? [kept] : offered;
       const answers = yield* options
         .ask({
           id: randomUUID(),
@@ -244,6 +261,9 @@ export const localSignInLogin = (options: {
               siteOrigin: options.siteOrigin,
               ...(reason === "missing_credentials" ? { allowDecline: true } : {}),
               ...(username === undefined || username === "" ? {} : { username }),
+              ...(kinds === undefined
+                ? {}
+                : { currentStep: { identifierKinds: [...kinds], password: false } }),
             },
           ],
         })
@@ -251,13 +271,26 @@ export const localSignInLogin = (options: {
       const answer = answers["login"];
       if (answer?.type === "credential" && answer.value.declined !== undefined)
         return yield* new MintFailure({ code: "Unavailable", loginDeclined: answer.value.declined });
-      if (
-        answer?.type !== "credential" ||
-        answer.value.username === undefined ||
-        answer.value.password === undefined
-      )
-        return yield* loginFailure(new Error("The login answer holds no username and password"));
+      if (answer?.type !== "credential" || answer.value.username === undefined)
+        return yield* loginFailure(new Error("The login answer holds no username"));
       options.register(answer.value.username);
+      // A sign-in that types no password holds none; any other needs one. The kind the question
+      // offered, or the one the owner picked, is the login's own, as a saved login's record says:
+      // its field fills the screens that accept it.
+      if (kinds !== undefined) {
+        const { username } = answer.value;
+        const kind = answer.value.identifierKind ?? (kinds.length === 1 ? kinds[0] : undefined);
+        held = {
+          username,
+          ...(kind === undefined ? {} : { primaryIdentifierKind: kind }),
+          ...(kind === "phone" ? { phone: username } : {}),
+          ...(kind === "email" ? { email: username } : {}),
+          ...(kind === "account_number" ? { accountNumber: username } : {}),
+        };
+        return held;
+      }
+      if (answer.value.password === undefined)
+        return yield* loginFailure(new Error("The login answer holds no password"));
       options.register(answer.value.password);
       held = { username: answer.value.username, password: answer.value.password };
       return held;
@@ -267,7 +300,6 @@ export const localSignInLogin = (options: {
     values: Effect.suspend(() =>
       held === undefined ? askLogin("missing_credentials") : Effect.succeed(held),
     ),
-    correct: (_field, rejected, triesLeft) =>
-      askLogin("invalid_credentials", rejected.username, triesLeft),
+    correct: (_field, rejected, triesLeft) => askLogin("invalid_credentials", rejected, triesLeft),
   };
 };

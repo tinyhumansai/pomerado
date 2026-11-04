@@ -447,6 +447,33 @@ describe("a run that failed in its operation", () => {
     expect(fail("write", new Error("Fixture failure")).journal).toBeUndefined();
   });
 
+  it("names the commit step the host refused, and reports it not applied while it stayed unsent", () => {
+    const refused = (journal: LocalOperationJournal) =>
+      fail(
+        "write",
+        new LocalOperationFailure(
+          "The host refused the commit step save",
+          journal,
+          "CommitRefused",
+          undefined,
+          undefined,
+          { commitRefused: "save" },
+        ),
+      );
+    expect(refused(commitNotEntered)).toMatchObject({
+      commitRefused: "save",
+      outcome: { writeStatus: "not_applied", possibleCommit: false },
+    });
+    // An earlier click of the step may have sent it, so the refusal leaves the write possible.
+    expect(refused(commitSent)).toMatchObject({
+      commitRefused: "save",
+      outcome: { writeStatus: "may_have_applied", possibleCommit: true },
+    });
+    expect(
+      fail("write", new LocalOperationFailure("Fixture failure", commitSent)),
+    ).not.toHaveProperty("commitRefused");
+  });
+
   it("fails closed when the tool's effect is unknown", () => {
     expect(
       fail(undefined, new LocalOperationFailure("Fixture failure", { effect: "possible", commits: [] }))

@@ -1708,6 +1708,38 @@ test("a run that stays signed in through the script signs in once and types noth
   });
 });
 
+test("a host's sign-in alone signs the session in, so a sign-in and a run after it ask and type nothing", async () => {
+  test.setTimeout(120_000);
+  await withShop(async (shop, endpoint) => {
+    const asked: InputRequest[] = [];
+    const request = { url: `${shop.origin}/orders`, intent: "Read the orders", input: {} };
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const service = yield* createPomerado({
+            browser: { endpoint },
+            ask: loginAnswers(asked, []),
+            timeoutMs: 30_000,
+          });
+          const first = yield* service.signIn(ordersReader(shop.origin), request);
+          // A signed-in visit to the sign-in page lands on the account, as many sites answer it.
+          shop.state.signedInLogin = "account";
+          const again = yield* service.signIn(ordersReader(shop.origin), request);
+          const output = yield* service.run(ordersReader(shop.origin), request);
+          return { first, again, output };
+        }),
+      ),
+    );
+    expect(result).toEqual({
+      first: { alreadySignedIn: false },
+      again: { alreadySignedIn: true },
+      output: { first: true, signedInAgain: false, second: true },
+    });
+    expect(reasons(asked)).toEqual(["missing_credentials"]);
+    expect(shop.state.loginPosts).toBe(1);
+  });
+});
+
 test("a run whose page signs it out and shows only a notice can't tell, so it signs in no more and its script finds the page signed out", async () => {
   test.setTimeout(120_000);
   await withShop(async (shop, endpoint) => {

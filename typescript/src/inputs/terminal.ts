@@ -2,7 +2,8 @@ import { createInterface, emitKeypressEvents } from "node:readline";
 import { Effect } from "effect";
 import { makeInputAsker } from "./callback.js";
 import { InputRequestFailure, publicOptionLabel } from "../runtime/input-request.js";
-import type { InputAnswers, Question } from "../runtime/input-request.js";
+import type { CurrentLoginStep, InputAnswers, Question } from "../runtime/input-request.js";
+import { emailShaped, phoneShaped } from "../runtime/login-values.js";
 
 /**
  * The owner pressed Ctrl-C or Ctrl-D, or closed the input, at a question. It stays `NoResponse` for
@@ -128,6 +129,62 @@ const answerChoices = (question: Extract<Question, { readonly type: "choice" | "
         };
   });
 
+/** An identifier kind a login question may offer (`CurrentLoginStep`). */
+type LoginKind = CurrentLoginStep["identifierKinds"][number];
+
+const kindNames: Record<LoginKind, string> = {
+  username: "username",
+  email: "email",
+  phone: "phone number",
+  account_number: "account number",
+};
+
+/** `text` with its first letter in upper case. */
+const capitalized = (text: string) => `${text.charAt(0).toUpperCase()}${text.slice(1)}`;
+
+/** The login prompt's name for the identifier kinds a question offers: "Email or phone number". */
+export const identifierLabel = (kinds: readonly LoginKind[]) => {
+  const names = kinds.map((kind) => kindNames[kind]);
+  const last = names.pop() ?? kindNames.username;
+  return capitalized(names.length === 0 ? last : `${names.join(", ")} or ${last}`);
+};
+
+/**
+ * The kind of identifier an answer is, among the kinds a login question offers: the one kind
+ * offered; else an email-shaped answer is an email address and one shaped like a phone number a
+ * phone number, where offered (`emailShaped`, `phoneShaped`), and an answer of neither shape the
+ * one other kind offered, a username or an account number. Undefined when the answer's shape fits
+ * none of the kinds offered or several, as digits alone do where a username or an account number
+ * is offered beside a phone number, so the owner is asked which it is.
+ */
+export const identifierKindOf = (
+  value: string,
+  kinds: readonly LoginKind[],
+): LoginKind | undefined => {
+  if (kinds.length === 1) return kinds[0];
+  if (kinds.includes("email") && emailShaped(value)) return "email";
+  const digitsAlone = /^\d+$/u.test(value.trim());
+  const takesDigits = kinds.includes("username") || kinds.includes("account_number");
+  if (kinds.includes("phone") && phoneShaped(value))
+    return digitsAlone && takesDigits ? undefined : "phone";
+  const others = kinds.filter((kind) => kind !== "email" && kind !== "phone");
+  return others.length === 1 ? others[0] : undefined;
+};
+
+/** Asks which of the kinds offered the identifier just typed is, by number or name. */
+const askKind = (kinds: readonly LoginKind[]) =>
+  Effect.gen(function* () {
+    process.stderr.write("Which is it?\n");
+    for (const [index, kind] of kinds.entries())
+      process.stderr.write(`${index + 1}. ${capitalized(kindNames[kind])}\n`);
+    for (;;) {
+      const reply = (yield* line("> ")).trim().toLowerCase();
+      const kind =
+        kinds[Number(reply) - 1] ?? kinds.find((offered) => kindNames[offered] === reply);
+      if (kind !== undefined) return kind;
+    }
+  });
+
 const answerQuestion = (question: Question): Effect.Effect<unknown, InputRequestFailure> =>
   Effect.gen(function* () {
     process.stderr.write(`\n${question.prompt}\n`);
@@ -137,19 +194,32 @@ const answerQuestion = (question: Question): Effect.Effect<unknown, InputRequest
       case "secret":
         return yield* line("> ", true);
       case "credential": {
+        // A login that offers identifier kinds is asked for by them, and its answer says its kind.
+        const kinds = question.currentStep?.identifierKinds ?? [];
+        const label = kinds.length === 0 ? "Username" : identifierLabel(kinds);
         const username =
           question.fields === "username_password"
             ? yield* line(
                 question.allowDecline === true
-                  ? "Username (leave empty to go on without signing in): "
-                  : "Username: ",
+                  ? `${label} (leave empty to go on without signing in): `
+                  : `${label}: `,
               )
             : undefined;
         // An empty username, where the question offers it, declines the login.
         if (question.allowDecline === true && username?.trim() === "")
           return { declined: "public_only", saveLogin: false };
+        const identifierKind =
+          username === undefined || kinds.length === 0
+            ? undefined
+            : (identifierKindOf(username, kinds) ?? (yield* askKind(kinds)));
+        const login = {
+          ...(identifierKind === undefined ? {} : { identifierKind }),
+          ...(username === undefined ? {} : { username }),
+        };
+        // A sign-in that types no password, such as by a phone number and a code, asks for none.
+        if (question.currentStep?.password === false) return { ...login, saveLogin: false };
         const password = yield* line("Password: ", true);
-        return { ...(username === undefined ? {} : { username }), password, saveLogin: false };
+        return { ...login, password, saveLogin: false };
       }
       case "confirm": {
         const reply = (yield* line("[y/N] ")).trim().toLowerCase();

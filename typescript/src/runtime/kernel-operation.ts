@@ -13,6 +13,7 @@ import type {
 import type { EffectJournal, NotCommittedOptions, WriteConfirmation } from "./context.js";
 import { timeoutDefaults, type Deadline } from "./deadline.js";
 import { CommitAlreadySent, WriteConfirmationRefused, type Dispatch } from "./errors.js";
+import { commitReportValue } from "./commit-report.js";
 import type { WriteDeclaration } from "./operation.js";
 import { kernelTimeoutSec } from "./kernel-execute-client.js";
 import type { KernelExecuteClient } from "./kernel-execute-client.js";
@@ -184,8 +185,13 @@ export interface KernelOperationContext<
    * already have the request. An offline run ignores it. During maintenance, a step the original
    * confirmed, or sent without this run's read-back finding it missing, throws `CommitAlreadySent`
    * before its execute call.
+   * `report`, optional, is what the page shows about the step just before its click, read in an
+   * earlier call, such as the button's text and the total, for a host that checks it before the
+   * click: such a host holds the next call until it accepts the step, and refuses it and every
+   * later call otherwise. It must be JSON of at most 64 KiB, nested at most 64 levels deep, or
+   * `enteringCommit` throws before marking.
    */
-  readonly enteringCommit: (name: string) => void;
+  readonly enteringCommit: (name: string, report?: unknown) => void;
   /**
    * Marks the named commit step unsent again, once the page proved that its click saved nothing:
    * `blockingRequiredFields` returned the fields that stopped it, so the same step still shows,
@@ -521,10 +527,20 @@ const makeKernelOperationContext = <Input>(
       throw new WriteConfirmationRefused({ declared: "unverifiable", recorded: kind });
     if (options.journal !== undefined) Effect.runSync(options.journal.confirmed(kind));
   },
-  // Marks a named commit step sent just before the execute call that dispatches it.
-  enteringCommit: (name) => {
+  // Marks a named commit step sent just before the execute call that dispatches it. A report that
+  // can't reach the host stops the script before the step is marked.
+  enteringCommit: (name, report) => {
     if (options.journal === undefined) return;
-    const entered = Effect.runSync(Effect.either(options.journal.enteringCommit(name)));
+    const checked = report === undefined ? undefined : commitReportValue(report);
+    if (checked !== undefined && "refused" in checked)
+      throw new OperationFailure(checked.refused, { dispatch: "not_sent" });
+    const entered = Effect.runSync(
+      Effect.either(
+        checked === undefined
+          ? options.journal.enteringCommit(name)
+          : options.journal.enteringCommit(name, checked.value),
+      ),
+    );
     if (entered._tag === "Left") throw entered.left;
   },
   // A host journal without it cannot record the click unsent, so the step stays sent.

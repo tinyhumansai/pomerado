@@ -79,8 +79,13 @@ export interface EffectJournal {
    * if the step then fails, because the site may already have the request; like
    * `enteringDispatch`, it also marks the effect as possibly dispatched. A settled step, which
    * maintenance may not redo, fails with `CommitAlreadySent` instead, leaving the journal as it was.
+   * `report` is what the script read from the page for its host, JSON already checked against
+   * `commitReportLimitBytes`; core's own journal keeps none of it, and a host's may pass it on.
    */
-  readonly enteringCommit: (name: string) => Effect.Effect<void, CommitAlreadySent>;
+  readonly enteringCommit: (
+    name: string,
+    report?: unknown,
+  ) => Effect.Effect<void, CommitAlreadySent>;
   /**
    * The page proved that the named step's latest click saved nothing, such as one that left the
    * same step showing with a required field flagged empty: the mark reads `not_sent` again, as

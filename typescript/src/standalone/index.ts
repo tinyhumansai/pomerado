@@ -18,7 +18,11 @@ export type {
 export { makePomeradoMcp, makeIntegrationMcp } from "./mcp-server.js";
 export type { PomeradoMcpOptions, IntegrationMcpOptions } from "./mcp-server.js";
 export { readArtifact, writeArtifact, readIntegration, Deployment } from "./artifact-files.js";
+export type { OperationHooks, EnteredCommit } from "../runtime/operation-hooks.js";
+export type { PlaywrightContextOptions } from "../execution/playwright-execute.js";
+export type { SavedSession, SavedSessionStorage } from "../runtime/start-state.js";
 export { SignInRunFailed } from "../runtime/sign-in-replay.js";
+export type { RevealSignInValue } from "../runtime/sign-in-replay.js";
 export { RunOutcomeFailure } from "./run-report.js";
 export type {
   RunOutcome,

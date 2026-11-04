@@ -1,6 +1,15 @@
-import { Data, Effect } from "effect";
+import { Cause, Data, Effect, Exit } from "effect";
 import type { AutofillPopup } from "../destinations/autofill-contracts.js";
-import type { AutofillSignedInCheck } from "../destinations/autofill-step.js";
+import { revealedOriginCheck } from "../destinations/autofill-fill.js";
+import { refused, withCheck } from "../destinations/autofill-refusal.js";
+import type {
+  AutofillField,
+  AutofillInspection,
+  AutofillSignedInCheck,
+  AutofillStep,
+  AutofillStepReport,
+} from "../destinations/autofill-step.js";
+import { nationalDigits, wholeDateLayouts } from "../destinations/login-field-formats.js";
 import { type MarkerSettle, settledMarkerCheck } from "../destinations/marker-settle.js";
 import {
   decodeSignInRecipe,
@@ -26,6 +35,7 @@ import type { AutofillHooks, SecretBroker } from "./autofill-state.js";
 import { typedValues } from "./autofill-values.js";
 import { logicalRejectedField } from "./autofill-rejection.js";
 import type { InputAsker } from "./input-request.js";
+import { bareCode, codeDoesNotFit, fitsCodeBoxes } from "./login-field-asks.js";
 import { makeRunLogin } from "./run-login.js";
 import { trustedUrl } from "./sign-in-origins.js";
 import { entryNamesAddress, pinnedWorkspaceOrigin, workspaceRelation } from "./workspace-origin.js";
@@ -53,6 +63,23 @@ const reasonMessages = new Map([
     "entry_page_unavailable",
     "The sign-in page didn't load, so the run stopped before the tool ran. Check that the website is reachable, then run the tool again.",
   ],
+  [
+    "reveal_refused",
+    "A sign-in value wasn't revealed for the page that asked for it, so nothing was typed on " +
+      "that page and the run stopped before the tool ran.",
+  ],
+  [
+    codeDoesNotFit,
+    "The sign-in code given doesn't fill the site's code boxes one character each, so it " +
+      "wasn't typed and the run stopped before the tool ran. Run the tool again with the code " +
+      "the site sent.",
+  ],
+  [
+    "revealed_origin_changed",
+    "The website moved a sign-in field to another part of the site after its value was " +
+      "revealed for where it was, so the value wasn't typed and the run stopped before the tool " +
+      "ran. Run the tool again.",
+  ],
 ]);
 
 /** Why a run could not sign in, value-free. The run fails with it and never runs signed out. */
@@ -60,8 +87,10 @@ export class SignInRunFailed extends Data.TaggedError("SignInRunFailed")<{
   /**
    * `CredentialsRejected`: the site rejected a value given for the sign-in, once its corrections
    * ran out or for a value that is never corrected. `NeedsInput`: a question the sign-in needs
-   * went unanswered. `RecipeFailed`: the recorded sign-in no longer matches the site, or its
-   * entry page did not load. `MissingRecipe`: the integration's recipe cannot be read.
+   * went unanswered, or a screen typed nothing of the host's reveal (`reveal_refused`,
+   * `code_does_not_fit_boxes`, `revealed_origin_changed`). `RecipeFailed`: the recorded sign-in
+   * no longer matches the site, or its entry page did not load. `MissingRecipe`: the
+   * integration's recipe cannot be read.
    */
   readonly code: "CredentialsRejected" | "NeedsInput" | "RecipeFailed" | "MissingRecipe";
   /** A finite reason: the rejected field, the replay's reason, or why the recipe is unreadable. */
@@ -114,6 +143,124 @@ export interface RunSignInSecrets {
   readonly assertAbsent: (text: string) => Effect.Effect<void, unknown>;
 }
 
+/**
+ * A host's own handles for a run's sign-in answers, such as a phone number or a code it keeps out
+ * of this process until it is typed: called just before each value is typed, with the origin of
+ * the document its field is in, it returns the value to type, or fails to refuse typing it there.
+ * A value that is no handle of the host's comes back as it is. Pomerado masks each value it gets
+ * back, in the forms it is typed in. Only a run's sign-in reveals: a build's types its answers as
+ * given.
+ * - Any failure, defect or empty answer refuses, and that screen types nothing; an interrupted
+ *   reveal interrupts the sign-in. A value is typed only in a document of the origin it was
+ *   revealed for, so a field the page moves to another origin before it is typed is refused, and
+ *   the run fails `NeedsInput` (`revealed_origin_changed`), as a run to try again.
+ * - It may be called more than once for one value, for each screen and origin that types it and
+ *   again when a screen is filled again, so it gives the same answer each time.
+ * - The engine's checks of an answer as it is asked see the handle. A code's fit to a screen's
+ *   one-character boxes is checked once it is revealed, but a phone number or date of birth the
+ *   engine asks for in place keeps its shape check, so a host answers those with the value.
+ * - Pomerado's memory of the values a site rejected compares what the host answered, so a host
+ *   gives a new value a fresh handle and the same value the same handle, and keeps its own record
+ *   of the values the site rejected.
+ */
+export type RevealSignInValue = (value: string, origin: string) => Effect.Effect<string, unknown>;
+
+/**
+ * Why a screen's fill stopped short on what the host revealed: the host refused to reveal a value
+ * there, its reveal failed, died or gave no text, or the inspection found no document for the
+ * field (`reveal_refused`); the code it revealed does not fill the screen's one-character code
+ * boxes (`codeDoesNotFit`), and the screen typed nothing; or the page moved a field to another
+ * origin after its value was revealed, and it was not typed (`revealed_origin_changed`). The run
+ * then fails `NeedsInput` with it.
+ */
+type RevealRefusal = "reveal_refused" | typeof codeDoesNotFit | "revealed_origin_changed";
+
+/** A run's reveal of its host's handles, and why the last screen's fill typed none, if it did. */
+interface RunReveal {
+  readonly reveal: RevealSignInValue;
+  refused: RevealRefusal | undefined;
+}
+
+/**
+ * The forms a value revealed for `field` is masked in besides itself, as the field takes it or a
+ * page shows it: a code without its spaces and hyphens, a date of birth in each whole-date layout,
+ * and a phone number a `national` field takes without its calling code.
+ */
+const revealedForms = (field: AutofillField | undefined, value: string) => {
+  if (field?.slot === "code") return [bareCode(value)];
+  if (field?.slot === "date_of_birth") return wholeDateLayouts(value);
+  const national = field?.slot === "phone" && field.format === "national";
+  return national ? [nationalDigits(value) ?? value] : [];
+};
+
+/**
+ * The values a screen's fill types, each handle revealed for the origin of its own field's
+ * document, each distinct handle once for each origin, and masked from then on in the forms it is
+ * typed and shown in (`revealedForms`), with the origin each was revealed for; a screen of several
+ * code fields takes its revealed code without spaces and hyphens. Else why the screen types
+ * nothing (`RevealRefusal`), and its first field concerned. An interrupted reveal interrupts it.
+ */
+const revealedValues = (
+  input: {
+    readonly step: AutofillStep;
+    readonly values: readonly string[];
+    readonly inspection: AutofillInspection;
+  },
+  reveal: RevealSignInValue,
+  secrets: RunSignInSecrets,
+): Effect.Effect<
+  | { readonly values: readonly string[]; readonly revealedFor: readonly (string | undefined)[] }
+  | { readonly refused: RevealRefusal; readonly target: number }
+> =>
+  Effect.gen(function* () {
+    const values: string[] = [];
+    const revealedFor: (string | undefined)[] = [];
+    const shown = new Map<string, string>();
+    for (const [index, value] of input.values.entries()) {
+      if (value === "") {
+        values.push(value);
+        revealedFor.push(undefined);
+        continue;
+      }
+      const origin = input.inspection.targets.fields[index]?.documentOrigin;
+      if (origin === undefined) return { refused: "reveal_refused", target: index };
+      const key = JSON.stringify([origin, value]);
+      let revealed = shown.get(key);
+      if (revealed === undefined) {
+        const exit = yield* Effect.exit(Effect.suspend(() => reveal(value, origin)));
+        if (Exit.isFailure(exit) && Cause.isInterruptedOnly(exit.cause))
+          return yield* Effect.interrupt;
+        if (Exit.isFailure(exit) || typeof exit.value !== "string" || exit.value === "")
+          return { refused: "reveal_refused", target: index };
+        revealed = exit.value;
+        shown.set(key, revealed);
+        secrets.register(revealed);
+      }
+      // Each field's own form, as one handle may fill fields that take it differently.
+      for (const form of revealedForms(input.step.fields[index], revealed)) secrets.register(form);
+      values.push(revealed);
+      revealedFor.push(origin);
+    }
+    // One-character code boxes take the code one character each, without its spaces and hyphens.
+    const boxes = input.step.fields.flatMap((field, index) =>
+      field.slot === "code" ? [index] : [],
+    );
+    if (boxes.length > 1)
+      for (const index of boxes) {
+        const code = values[index];
+        if (revealedFor[index] === undefined || code === undefined) continue;
+        if (!fitsCodeBoxes(code, boxes.length)) return { refused: codeDoesNotFit, target: index };
+        values[index] = bareCode(code);
+      }
+    return { values, revealedFor };
+  });
+
+/** A screen's refusal of what the host revealed, as its fill reports it, typing nothing. */
+const revealRefusalReport = (refusal: RevealRefusal, target: number): AutofillStepReport =>
+  refusal === "reveal_refused"
+    ? withCheck(refused("credential_target_refused", target), refusal)
+    : withCheck(refused("typing_unavailable", target), refusal);
+
 /** A browser call that failed, carried through the shared replay to the run as it failed. */
 class ReplayBrowserFailed<E> extends Data.TaggedError("ReplayBrowserFailed")<{
   readonly error: E;
@@ -126,12 +273,15 @@ type ReplayFailure<E> = SignInRunFailed | ReplayBrowserFailed<E>;
  * waits for a marker drawn late (`settledMarkerCheck`), and a read's sign-in may end on a page that
  * can't tell (`confirmCantTell`). An entry page that does not load fails `entry_page_unavailable`.
  * Every sign-in sets `startedEmpty`, so a check without values never ends on a login entry that
- * can't tell. The engine reads `pageState` only for that, so none is given.
+ * can't tell. The engine reads `pageState` only for that, so none is given. With a host's reveal
+ * (`revealing`), each fill notes why it typed none of what the host revealed, if it did.
  */
 const replayHooks = <E>(
   browser: SignInReplayBrowser<E>,
   allowCantTell: boolean,
   settle: MarkerSettle | undefined,
+  secrets: RunSignInSecrets,
+  revealing?: RunReveal,
 ): AutofillHooks<ReplayFailure<E>> => {
   const failed = (error: E) => new ReplayBrowserFailed({ error });
   const checkOn: AutofillHooks<ReplayFailure<E>>["confirm"] = (
@@ -152,8 +302,37 @@ const replayHooks = <E>(
   const readNumber = browser.approvalNumber;
   return {
     inspect: (step) => browser.inspect(step).pipe(Effect.mapError(failed)),
-    // One-character code boxes take the code one character each, as the host types it.
-    fill: (input) => browser.fill({ ...input, values: typedValues(input.step, input.values) }),
+    // One-character code boxes take the code one character each, as the host types it. A host's
+    // handle becomes its value first, so a phone number's format and the read-back see the value,
+    // and the fill types it only in the origin it was revealed for.
+    fill: (input) =>
+      revealing === undefined
+        ? browser.fill({ ...input, values: typedValues(input.step, input.values) })
+        : Effect.suspend(() => {
+            revealing.refused = undefined;
+            return revealedValues(input, revealing.reveal, secrets);
+          }).pipe(
+            Effect.flatMap((revealed) => {
+              if ("values" in revealed)
+                return browser
+                  .fill({
+                    ...input,
+                    values: typedValues(input.step, revealed.values),
+                    revealedFor: revealed.revealedFor,
+                  })
+                  .pipe(
+                    // The page moved a field after its value was revealed: trying again may do.
+                    Effect.tap((report) =>
+                      Effect.sync(() => {
+                        if (report.failureDetail?.phase === revealedOriginCheck)
+                          revealing.refused = "revealed_origin_changed";
+                      }),
+                    ),
+                  );
+              revealing.refused = revealed.refused;
+              return Effect.succeed(revealRefusalReport(revealed.refused, revealed.target));
+            }),
+          ),
     check: (indicator, screens, challengeScreens, at) =>
       browser.confirm(indicator, screens, challengeScreens ?? screens, at?.origin).pipe(
         Effect.catchAll(() =>
@@ -328,6 +507,18 @@ export const signInForRun = <E>(input: {
   readonly ask: InputAsker;
   /** Masks each value the sign-in types before any screen can send it. */
   readonly secrets: RunSignInSecrets;
+  /**
+   * The host's reveal of its own handles (`RevealSignInValue`), for a host that answers the
+   * sign-in's questions with handles in place of the values: each is revealed for the origin of
+   * its field's document just before it is typed, and typed only there. A screen the host refuses,
+   * or whose revealed code doesn't fill its one-character boxes, types nothing, and the run fails
+   * `NeedsInput` (`reveal_refused`, `code_does_not_fit_boxes`), as it does when the page moves a
+   * field to another origin after its value was revealed (`revealed_origin_changed`). It may be
+   * called more than once for a value, so it gives the same answer each time; the memory of
+   * rejected values compares the handles, so the host keeps its own record of the values the site
+   * rejected. Absent, every value is typed as given, as a build's sign-in types them.
+   */
+  readonly reveal?: RevealSignInValue;
   /** The site as a question names it. */
   readonly site: string;
   /** The site the run is authorized for, which the entry page must be on. */
@@ -371,7 +562,15 @@ export const signInForRun = <E>(input: {
     const correct = (field: CredentialRejectedField, held: WebsiteCredentials, triesLeft: number) =>
       input.login.correct(field, held, triesLeft).pipe(Effect.mapError(loginUnanswered));
     const retryState = input.retryState ?? makeAutofillRetryState();
-    const hooks = replayHooks(input.browser, input.allowCantTell === true, input.markerSettle);
+    const revealing: RunReveal | undefined =
+      input.reveal === undefined ? undefined : { reveal: input.reveal, refused: undefined };
+    const hooks = replayHooks(
+      input.browser,
+      input.allowCantTell === true,
+      input.markerSettle,
+      input.secrets,
+      revealing,
+    );
     const broker = localSecretBroker(input.secrets);
     const given = { current: {} };
     let held = runLogin.held();
@@ -397,6 +596,7 @@ export const signInForRun = <E>(input: {
           credentials: held,
           retryState,
           ask: input.ask,
+          ...(revealing === undefined ? {} : { opaqueAnswers: true }),
           answers: { given },
           broker,
           site: input.site,
@@ -429,6 +629,11 @@ export const signInForRun = <E>(input: {
             : { workspaceOrigin: replayed.workspaceOrigin }),
         };
       }
+      // The last screen typed nothing of what the host revealed: the run needs another answer from
+      // the host or the owner, never another build.
+      const refusal = revealing?.refused;
+      if (refusal !== undefined)
+        return yield* new SignInRunFailed({ code: "NeedsInput", reason: refusal });
       // Another workspace's sign-in before this login sent anything: leftover cookies or a link.
       // The site's data is cleared and the entry reopened once; a second refusal fails the run.
       if (replayed.reason === "workspace_unverified") {

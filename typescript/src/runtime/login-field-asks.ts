@@ -244,7 +244,9 @@ export const codeDoesNotFit = "code_does_not_fit_boxes";
  * asked again, twice at most: for a code, also one that does not fill its screen's code fields one
  * character each (`codeBoxes`), whose third ends the step unanswered (`codeDoesNotFit`). An
  * identifier, date of birth or ZIP is kept for the attempt (`given`), and a host's save offer
- * (`saveOffer`) hears the answers; a code is not kept.
+ * (`saveOffer`) hears the answers; a code is not kept. With `opaqueAnswers`, answers are a host's
+ * handles, revealed only as they are typed: a code is taken as given, its fit to its screen's
+ * code fields and its forms without spaces and hyphens left to its revealed value.
  */
 export const makeLoginFieldAsk = <E extends YieldableError>(dependencies: {
   readonly broker: Pick<SecretBroker, "register">;
@@ -252,7 +254,9 @@ export const makeLoginFieldAsk = <E extends YieldableError>(dependencies: {
   readonly site: string;
   readonly given: { current: AnsweredLoginFields };
   readonly saveOffer?: SaveOffer | undefined;
+  readonly opaqueAnswers?: boolean | undefined;
 }) => {
+  const opaque = dependencies.opaqueAnswers === true;
   const { given, saveOffer } = dependencies;
   const fail = (operation: string, context: Readonly<Record<string, FailureContextValue>>) =>
     Effect.fail(dependencies.unavailable(operation, { context }));
@@ -272,7 +276,8 @@ export const makeLoginFieldAsk = <E extends YieldableError>(dependencies: {
       if (kept.value !== typed) yield* register(kept.slot, kept.value);
       // One-digit boxes take a code without its spaces and hyphens, as the site then sends it.
       const bare = bareCode(typed);
-      if (kept.slot === "code" && bare !== typed && bare !== "") yield* register(kept.slot, bare);
+      if (kept.slot === "code" && !opaque && bare !== typed && bare !== "")
+        yield* register(kept.slot, bare);
       if (kept.slot === "code" || kept.slot === "recovery_code") return;
       given.current = { ...given.current, [kept.slot]: kept.value };
       saveOffer?.answered(
@@ -312,7 +317,7 @@ export const makeLoginFieldAsk = <E extends YieldableError>(dependencies: {
       if (answer?.type !== "text" && answer?.type !== "secret")
         return yield* fail("autofill.ask", { check: "answer_shape" });
       const kept = parsedAnswer(asked, answer.value);
-      const misfit = misfitCode(kept, codeBoxes);
+      const misfit = !opaque && misfitCode(kept, codeBoxes);
       if (kept === undefined || misfit) {
         if (attempt < 2)
           return yield* ask(asker, asked, notice, offerSave, attempt + 1, codeBoxes, instruction);

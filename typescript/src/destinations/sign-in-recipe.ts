@@ -220,11 +220,16 @@ export const signInRecipeText = (recipe: SignInRecipe) =>
 export interface SignInBrowser<E> {
   /** Finds the step's controls and judges where they submit, before anything is typed. */
   readonly inspect: (step: AutofillStep) => Effect.Effect<AutofillRefusal | AutofillInspection, E>;
-  /** Fills the step's values into the inspected controls and clicks its submit. */
+  /**
+   * Fills the step's values into the inspected controls and clicks its submit. `revealedFor`, by
+   * field, is the origin a host revealed each value for, when it did: the fill types that value
+   * only into a field in a document of that origin.
+   */
   readonly fill: (input: {
     readonly step: AutofillStep;
     readonly values: readonly string[];
     readonly inspection: AutofillInspection;
+    readonly revealedFor?: readonly (string | undefined)[];
   }) => Effect.Effect<AutofillStepReport>;
   /**
    * Clicks again the submit of a screen whose fill reported `blocked`, typing nothing, after the
@@ -249,6 +254,30 @@ export interface SignInBrowser<E> {
   /** The configured sign-in origins off the site. */
   readonly authenticationOrigins: readonly string[];
 }
+
+/** The identifier kinds a login question offers, as `CurrentLoginStep` names them. */
+const loginIdentifierKinds = ["username", "email", "phone", "account_number"] as const;
+
+/** A login question's `currentStep` for a login with no password. */
+export interface PasswordlessLoginStep {
+  readonly identifierKinds: readonly (typeof loginIdentifierKinds)[number][];
+  readonly password: false;
+}
+
+/**
+ * What a run's login needs from the owner when its recipe types no password, as a login question's
+ * `currentStep`: the identifier kinds its screens accept, and no password, as a sign-in by a phone
+ * number and the code the site sends. A private identifier is asked apart, like a password. A
+ * recipe that types a password, or accepts no offered identifier kind, needs the whole login, and
+ * this is undefined.
+ */
+export const recipeLoginStep = (recipe: SignInRecipe): PasswordlessLoginStep | undefined => {
+  const fields = recipe.steps.flatMap((step) => step.fields);
+  if (fields.some((field) => "slot" in field && field.slot === "password")) return undefined;
+  const accepted = new Set(fields.flatMap((field) => ("accepts" in field ? field.accepts : [])));
+  const identifierKinds = loginIdentifierKinds.filter((kind) => accepted.has(kind));
+  return identifierKinds.length === 0 ? undefined : { identifierKinds, password: false };
+};
 
 /** Where a sign-in's login comes from. */
 export interface SignInLogin<E> {
