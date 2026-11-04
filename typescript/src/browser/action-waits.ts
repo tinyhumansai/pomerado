@@ -530,6 +530,63 @@ const readyWaitCollapsed = (toggle) =>
     const details = element.closest("details");
     return details !== null && element.localName === "summary" ? !details.open : null;
   });
+// Runs in a document a frame sits in: what a click at the point would hit, through open shadow
+// roots, named as the in-page check names it; undefined when it is the frame element itself or
+// the point is outside this document's viewport.
+const readyWaitHitInPage = (frame, point) => {
+  if (point.x < 0 || point.y < 0 || point.x >= innerWidth || point.y >= innerHeight) return undefined;
+  let hit = document.elementFromPoint(point.x, point.y);
+  while (hit?.shadowRoot) {
+    const inner = hit.shadowRoot.elementFromPoint(point.x, point.y);
+    if (inner === null || inner === hit) break;
+    hit = inner;
+  }
+  if (hit === frame) return undefined;
+  return hit === null ? "nothing"
+    : hit.localName + (hit.id ? "#" + hit.id : "") +
+      [...hit.classList].slice(0, 2).map((name) => "." + name).join("") +
+      (hit.getAttribute("role") ? '[role="' + hit.getAttribute("role") + '"]' : "");
+};
+// What covers a control in a frame from above: a layer that a document the frame sits in draws
+// over the frame at the control's centre, such as a page's loader over a payment frame. Undefined
+// for a control in the page itself, or when nothing covers it there.
+const readyWaitFramedCover = async (target) => {
+  const handles = [];
+  try {
+    const control = await target.filter({ visible: true }).first().elementHandle({ timeout: 500 });
+    handles.push(control);
+    let frame = await control.ownerFrame();
+    if (frame === null || frame.parentFrame() === null) return undefined;
+    const box = await control.boundingBox();
+    if (box === null) return undefined;
+    // Boxes are in the page's viewport; each document's own viewport starts at its frame's content.
+    const centre = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    for (let parent = frame.parentFrame(); parent !== null; frame = parent, parent = parent.parentFrame()) {
+      const owner = await frame.frameElement();
+      handles.push(owner);
+      let origin = { x: 0, y: 0 };
+      if (parent.parentFrame() !== null) {
+        const parentOwner = await parent.frameElement();
+        handles.push(parentOwner);
+        const ownerBox = await parentOwner.boundingBox();
+        if (ownerBox === null) return undefined;
+        const inset = await parentOwner.evaluate((element) => {
+          const style = getComputedStyle(element);
+          return { x: element.clientLeft + parseFloat(style.paddingLeft), y: element.clientTop + parseFloat(style.paddingTop) };
+        });
+        origin = { x: ownerBox.x + inset.x, y: ownerBox.y + inset.y };
+      }
+      const covered = await owner.evaluate(readyWaitHitInPage, { x: centre.x - origin.x, y: centre.y - origin.y });
+      if (covered !== undefined) return covered;
+    }
+    return undefined;
+  } catch {
+    // A frame that went away or detached mid-look: the in-frame look already judged the control.
+    return undefined;
+  } finally {
+    for (const handle of handles) await handle.dispose().catch(() => undefined);
+  }
+};
 const readyWaitLateMs = 500;
 const readyWaitFailure = (reason, message, details) =>
   Object.assign(new Error(reason + message), { name: "ReadyWaitFailure", reason, ...details });
@@ -619,6 +676,14 @@ const waitForReady = async (target, options = {}) => {
         const state = navigating
           ? { blockers: ["absent"] }
           : await target.evaluateAll(readyWaitInPage, spec);
+        // A control in a frame is covered too by a layer a document above draws over the frame.
+        if (state.box !== undefined && !state.blockers.includes("covered")) {
+          const covered = await readyWaitFramedCover(target);
+          if (covered !== undefined) {
+            state.blockers.push("covered");
+            state.details = { ...state.details, covered };
+          }
+        }
         // Expand only a section that holds the control hidden, and only once, through a toggle
         // that says it is collapsed: a control already showing or not yet there is never clicked.
         if (options.expand !== undefined && !expandTried && state.blockers[0] === "hidden" &&

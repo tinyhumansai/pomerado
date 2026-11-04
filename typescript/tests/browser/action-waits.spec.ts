@@ -955,6 +955,46 @@ test.describe("readiness before acting", () => {
     expect(answer.message).toMatch(/: covered by div#chat-launcher\.widget\.frame; /u);
   });
 
+  /** A checkout whose Pay button sits in a frame from another origin, under `layer` in the page. */
+  const framedPay = async (page: Page, layer: string) => {
+    await page.context().route("https://shop.example.test/**", (route) =>
+      route.fulfill({
+        contentType: "text/html",
+        body: `<h1>Checkout</h1>
+<iframe title="Payment" src="https://pay.example.test/form" style="width: 320px; height: 200px; border: 0"></iframe>
+${layer}`,
+      }),
+    );
+    await page.context().route("https://pay.example.test/**", (route) =>
+      route.fulfill({ contentType: "text/html", body: `<button style="margin: 40px">Pay</button>` }),
+    );
+    await page.goto("https://shop.example.test/checkout");
+    await page.frameLocator('iframe[title="Payment"]').getByRole("button", { name: "Pay" }).waitFor();
+  };
+  const framedButton = `page.frameLocator('iframe[title="Payment"]').getByRole("button", { name: "Pay" })`;
+
+  test("a layer the page draws over a frame covers the control inside it, until it goes", async ({ page }) => {
+    await framedPay(
+      page,
+      `<div id="processing" style="position: fixed; inset: 0; background: rgba(0, 0, 0, 0.4)"></div>
+<script>window.begin = () => setTimeout(() => document.getElementById("processing").remove(), 500);</script>`,
+    );
+    const answer = await ready(page, framedButton, "stableMs: 100");
+    expect(answer.waitedFor).toContain("covered");
+    expect(answer.ms).toBeGreaterThanOrEqual(500);
+  });
+
+  test("a layer over a frame that never leaves is named as what covers the control inside it", async ({ page }) => {
+    await framedPay(page, `<div id="consent-wall" class="modal shade" style="position: fixed; inset: 0"></div>`);
+    const answer = await ready(page, framedButton, "");
+    expect(answer.message).toMatch(/: covered by div#consent-wall\.modal\.shade; /u);
+  });
+
+  test("a control in a frame with nothing over it is ready at once", async ({ page }) => {
+    await framedPay(page, `<div id="banner" style="position: fixed; bottom: 0; left: 0; right: 0; height: 40px">Offer</div>`);
+    expect(await ready(page, framedButton, "")).toMatchObject({ looks: 2, waitedFor: [] });
+  });
+
   test("a custom until condition holds the wait until it is true", async ({ page }) => {
     test.skip(
       test.info().project.name === "camoufox",
