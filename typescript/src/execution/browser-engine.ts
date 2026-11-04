@@ -46,10 +46,10 @@ export interface BrowserEngine {
    */
   readonly listsContexts: boolean;
   /**
-   * Whether page code may type key by key with synthetic key events. Where it may not, typing
-   * key by key presses trusted keys instead, which every engine's sessions send.
+   * Whether page code typing key by key may dispatch a synthetic keypress. Where it may not, each
+   * character still goes in between its key down and key up, under the same guard, with none.
    */
-  readonly syntheticKeys: boolean;
+  readonly syntheticKeypress: boolean;
 }
 
 /** Chromium answers DevTools commands itself. */
@@ -62,7 +62,7 @@ export const chromiumEngine: BrowserEngine = {
   contextOptions: {},
   attach: () => undefined,
   listsContexts: true,
-  syntheticKeys: true,
+  syntheticKeypress: true,
 };
 
 const attached = new WeakSet<BrowserContext>();
@@ -99,7 +99,7 @@ export const firefoxEngine: BrowserEngine = {
   },
   listsContexts: false,
   // Camoufox's isolated world crashes the tab on a synthetic keypress that page code dispatches.
-  syntheticKeys: false,
+  syntheticKeypress: false,
 };
 
 const engines: { readonly [Name in BrowserName]: BrowserEngine } = {

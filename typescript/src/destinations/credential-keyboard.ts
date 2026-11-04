@@ -67,8 +67,8 @@ export interface InsertionOptions {
   /**
    * Type the text one character at a time, each between a keydown, keypress and keyup on the field,
    * for a page that reacts only to key presses. The guard holds before each character, so a
-   * refusal after the first may leave part of the text typed. A Firefox executor presses trusted
-   * keys instead (`trustedKeys`), since Camoufox crashes the tab on a synthetic keypress.
+   * refusal after the first may leave part of the text typed. A keyboard made without a keypress
+   * (`makeCredentialKeyboard`), as a Firefox executor's is, sends only the keydown and keyup.
    */
   readonly keys?: true | undefined;
   /**
@@ -249,7 +249,7 @@ const bindingGuard = `(field, key, origin) => {
  * document; a moved focus never receives a value. Typed by keys, each character's key events run
  * page code, so the guard holds again before the host inserts each character.
  */
-const atomicInsert = `function(key, origin, text, keys) {
+const atomicInsert = `function(key, origin, text, keys, keypress = true) {
   const field = this;
   const guard = (${bindingGuard})(field, key, origin);
   if (!guard) return "binding_not_in_world";
@@ -262,7 +262,7 @@ const atomicInsert = `function(key, origin, text, keys) {
       key: char, keyCode: code, which: code, charCode: type === "keypress" ? code : 0,
       bubbles: true, cancelable: true, composed: true,
     }));
-    if (press("keydown") && press("keypress", char.charCodeAt(0))) {
+    if (press("keydown") && (!keypress || press("keypress", char.charCodeAt(0)))) {
       const moved = guard();
       if (moved) return moved;
       if (!document.execCommand("insertText", false, char)) return "insertion_rejected";
@@ -467,13 +467,14 @@ const GuardAnswer = Schema.Union(Schema.Literal("ready"), InsertionRefusal);
 
 type Bound = { readonly sessionId: string; readonly objectId: string };
 
-/** Guards and inserts the whole text in one call (`atomicInsert`). */
+/** Guards and inserts the whole text in one call (`atomicInsert`), with no keypress unless `keypress`. */
 const insertAtOnce = (
   cdp: PrivateCredentialCdp,
   bound: Bound,
   target: CredentialTarget,
   text: string,
   keys: boolean,
+  keypress: boolean,
 ) =>
   command(cdp, bound.sessionId, "Runtime.callFunctionOn", {
     objectId: bound.objectId,
@@ -483,6 +484,7 @@ const insertAtOnce = (
       { value: target.documentOrigin },
       { value: text },
       { value: keys },
+      ...(keypress ? [] : [{ value: false }]),
     ],
     returnByValue: true,
   }).pipe(Effect.flatMap((reply) => answerOf(reply, CredentialInsertion)));
@@ -563,6 +565,8 @@ export const makeCredentialKeyboard = (
   // error-reporting-allow: typed-recovery releasing the temporary DOM object cannot undo inserted credentials; the owned browser context also releases it when closed
   release: (effect: Effect.Effect<unknown, Error>) => Effect.Effect<void> = Effect.ignore,
   bindingWorld?: CredentialBindingWorld,
+  /** Whether typing key by key dispatches a keypress per character (`InsertionOptions.keys`). */
+  keypress = true,
 ): CredentialKeyboard => ({
   insertText: (target, text, options) =>
     Effect.gen(function* () {
@@ -571,7 +575,7 @@ export const makeCredentialKeyboard = (
       const typing =
         options?.trustedKeys === true && !/\p{Cc}/u.test(text)
           ? pressKeys(cdp, bound, target, text, release)
-          : insertAtOnce(cdp, bound, target, text, options?.keys === true);
+          : insertAtOnce(cdp, bound, target, text, options?.keys === true, keypress);
       return yield* typing.pipe(
         Effect.flatMap((inserted) =>
           inserted === "inserted" && options?.phone === true

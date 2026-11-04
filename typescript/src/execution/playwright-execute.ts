@@ -100,6 +100,18 @@ export interface PlaywrightExecutor {
 const asError = (cause: unknown): Error =>
   cause instanceof Error ? cause : new Error("Native Playwright transport failed", { cause });
 const promise = <A>(run: () => Promise<A>) => Effect.tryPromise({ try: run, catch: asError });
+/** The options the executor launches its own browser server with: the engine's, then its own. */
+export const nativeLaunchOptions = (
+  engine: BrowserEngine,
+  options: Pick<PlaywrightOptions, "headless" | "executablePath">,
+  startupTimeoutMs: number,
+) => ({
+  ...engine.launchOptions,
+  headless: options.headless ?? true,
+  timeout: startupTimeoutMs,
+  ...(options.executablePath === undefined ? {} : { executablePath: options.executablePath }),
+});
+
 const loadLauncher = (engine: BrowserEngine, library: PlaywrightLibrary) =>
   promise(async () => engine.launcher((await import(library)) as typeof import("playwright")));
 const duration = (value: number, name: string) => {
@@ -398,14 +410,7 @@ export const makePlaywrightExecutor = (
             const launcher = yield* loadLauncher(engine, library);
             if (options.endpoint === undefined)
               owner.server = yield* promise(() =>
-                launcher.launchServer({
-                  ...engine.launchOptions,
-                  headless: options.headless ?? true,
-                  timeout: startupTimeoutMs,
-                  ...(options.executablePath === undefined
-                    ? {}
-                    : { executablePath: options.executablePath }),
-                }),
+                launcher.launchServer(nativeLaunchOptions(engine, options, startupTimeoutMs)),
               );
             const playwrightEndpoint = options.endpoint ?? owner.server?.wsEndpoint();
             if (playwrightEndpoint === undefined)

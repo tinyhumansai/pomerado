@@ -45,16 +45,18 @@ interface Visit {
 interface Navigation {
   readonly request: Request;
   readonly method: string;
-  /** When its response came: its document commits soon after, if it commits one. */
-  respondedAt?: number;
+  /** When it was requested: it holds reads for at most `pendingMs` from then. */
+  readonly at: number;
+  /** The main frame reported a navigation since: its document's commit, or the old one's move. */
+  reported?: boolean;
   /** Its response commits no document: it holds no content, or is an attachment. */
   noDocument?: boolean;
 }
 /** A main-frame load that failed, whose error page Firefox commits a moment later. */
 interface FailedLoad {
-  readonly url: string;
   readonly method: string;
   readonly at: number;
+  reported?: boolean;
 }
 /** The most top-level navigations a tab keeps, newest last. */
 const visitsKept = 50;
@@ -63,16 +65,30 @@ const pending = new WeakMap<Page, Navigation>();
 const errorPageDue = new WeakMap<Page, FailedLoad>();
 /** The longest a failed load's error page is waited for. */
 const errorPageMs = 2_000;
-/** The longest a navigation whose response came holds reads before its document commits. */
-const commitMs = 5_000;
-/** The longest a stop waits for the page to run it. */
+/** The longest a navigation holds reads from its request, as long as a readiness wait's own limit. */
+const pendingMs = 30_000;
+/** The longest a stop waits for the page to run it, and the margin it keeps to that wait's end. */
 const stopMs = 2_000;
+const stopMarginMs = 250;
+/** The longest one frame's scan for marked elements takes before the frame is passed over. */
+const frameScanMs = 2_000;
+/** The longest a clear's reads of the origin's storage take. */
+const clearMs = 10_000;
 /** The failures that show no error page: a load stopped, or overtaken by another. */
 const abortedLoads = new Set(["NS_BINDING_ABORTED", "NS_ERROR_ABORT"]);
 
 const withoutFragment = (url: string) => {
   const at = url.indexOf("#");
   return at === -1 ? url : url.slice(0, at);
+};
+
+/** `promise`, or a failure with `message` once `ms` passed. */
+const bounded = <A>(promise: Promise<A>, ms: number, message: string): Promise<A> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
 };
 
 /**
@@ -84,18 +100,17 @@ export const navigationPendingKey = "__pomeradoNavigationPending";
 
 /**
  * Whether a navigation of `page`'s main frame is on its way: requested, and its document not yet
- * committed, or a failed load's error page not yet committed. A response that commits no
- * document, such as a download's, ends it, and so does a closed tab. A response whose document
- * never says it committed holds for at most `commitMs`, and an error page for `errorPageMs`.
+ * loaded, or a failed load's error page not yet loaded. A document counts as loaded at its own
+ * `DOMContentLoaded` after a navigation report, since Playwright reports the old document moving
+ * its own address as a navigation too, and Firefox may say the request finished before the new
+ * document commits. A response that commits no document, such as a download's, ends it, and so
+ * does a closed tab. A navigation holds for at most `pendingMs` from its request, and a failed
+ * load for `errorPageMs`.
  */
 export const navigationPending = (page: Page) => {
   if (page.isClosed()) return false;
   const navigation = pending.get(page);
-  if (
-    navigation !== undefined &&
-    (navigation.respondedAt === undefined || Date.now() - navigation.respondedAt < commitMs)
-  )
-    return true;
+  if (navigation !== undefined && Date.now() - navigation.at < pendingMs) return true;
   const failed = errorPageDue.get(page);
   return failed !== undefined && Date.now() - failed.at < errorPageMs;
 };
@@ -104,8 +119,10 @@ export const navigationPending = (page: Page) => {
  * Records `page`'s top-level navigations, each a `form_submit` when a POST started it, redirects
  * included, as DevTools' history types a form's answer. One a GET started is `other`; a GET
  * form's answer is too, where Chromium types it `form_submit`, which is safe to open again. A
- * same-document navigation, which Playwright reports as a navigation too, moves the current
- * entry's address and keeps its type, as `replaceState` does in Chromium.
+ * document joins the history once it loaded (`navigationPending`). A same-document navigation, which
+ * Playwright reports as a navigation too, moves the current entry's address and keeps its type, as
+ * `replaceState` does in Chromium; so does a document no request was seen for, such as a `data:`
+ * URL's.
  */
 export const recordNavigations = (page: Page) => {
   if (visits.has(page)) return;
@@ -127,18 +144,15 @@ export const recordNavigations = (page: Page) => {
     let first = request;
     for (let from = request.redirectedFrom(); from !== null; from = from.redirectedFrom())
       first = from;
-    pending.set(page, { request, method: first.method() });
+    pending.set(page, { request, method: first.method(), at: Date.now() });
   });
   page.on("response", (response) => {
     const navigation = pending.get(page);
     if (navigation?.request !== response.request()) return;
-    navigation.respondedAt = Date.now();
     const disposition = response.headers()["content-disposition"] ?? "";
     navigation.noDocument =
       response.status() === 204 || response.status() === 205 || /^\s*attachment/iu.test(disposition);
   });
-  // Firefox may say a request finished before its document says it committed, so only a response
-  // that commits none ends the navigation here.
   page.on("requestfinished", (request) => {
     const navigation = pending.get(page);
     if (navigation?.request === request && navigation.noDocument === true) pending.delete(page);
@@ -149,11 +163,7 @@ export const recordNavigations = (page: Page) => {
     pending.delete(page);
     const reason = request.failure()?.errorText ?? "";
     if (!abortedLoads.has(reason))
-      errorPageDue.set(page, {
-        url: withoutFragment(request.url()),
-        method: navigation.method,
-        at: Date.now(),
-      });
+      errorPageDue.set(page, { method: navigation.method, at: Date.now() });
   });
   page.on("download", (download) => {
     const navigation = pending.get(page);
@@ -166,25 +176,27 @@ export const recordNavigations = (page: Page) => {
   });
   page.on("framenavigated", (frame) => {
     if (frame !== page.mainFrame()) return;
-    const url = withoutFragment(frame.url());
     const navigation = pending.get(page);
     const failed = errorPageDue.get(page);
-    // A new document is the pending navigation's, at its address or once its response came; a
-    // redirect Playwright fulfilled starts no request of its own for where it leads.
-    if (
-      navigation !== undefined &&
-      (withoutFragment(navigation.request.url()) === url || navigation.respondedAt !== undefined)
-    ) {
-      pending.delete(page);
-      errorPageDue.delete(page);
-      visit(frame.url(), navigation.method);
-    } else if (failed?.url === url) {
-      errorPageDue.delete(page);
-      visit(frame.url(), failed.method);
-    } else {
+    // Whether this is the new document or the old one moving its own address, its load says.
+    if (navigation !== undefined) navigation.reported = true;
+    else if (failed !== undefined) failed.reported = true;
+    else {
       const current = entries.at(-1);
       if (current === undefined) visit(frame.url(), "GET");
       else entries[entries.length - 1] = { ...current, url: frame.url() };
+    }
+  });
+  page.on("domcontentloaded", () => {
+    const navigation = pending.get(page);
+    const failed = errorPageDue.get(page);
+    if (navigation?.reported === true) {
+      pending.delete(page);
+      errorPageDue.delete(page);
+      visit(page.mainFrame().url(), navigation.method);
+    } else if (navigation === undefined && failed?.reported === true) {
+      errorPageDue.delete(page);
+      visit(page.mainFrame().url(), failed.method);
     }
   });
 };
@@ -251,21 +263,36 @@ const markedElements = async (frame: Frame) => {
   }
 };
 
+/**
+ * `frame`'s marked elements, or none once `frameScanMs` passed: a frame whose page holds its thread
+ * that long, such as another site's, is passed over, and what it answers later is released.
+ */
+const markedWithin = async (frame: Frame) => {
+  const scan = markedElements(frame).catch((): ElementHandle<Element>[] => []);
+  const found = await bounded(scan, frameScanMs, "Frame scan timed out").catch(() => undefined);
+  if (found !== undefined) return found;
+  void scan.then((late) =>
+    Promise.all(late.map((element) => element.dispose().catch(() => undefined))),
+  );
+  return [];
+};
+
 /** An inert same-origin document, so a tab reaches an origin's storage without loading the site. */
 const blank = (route: Route) => route.fulfill({ contentType: "text/html", body: "<html></html>" });
 
 /**
- * Clears what `Storage.clearDataForOrigin` clears: the origin's cookies, local storage, IndexedDB,
- * cache storage and service workers. The tab opens an inert document on the origin to reach them;
- * a database another connection holds open is deleted once that connection closes. Where a site's
- * worker runs, as on Camoufox (`firefoxEngine`), it may answer that load in place of the routes.
+ * Clears what `Storage.clearDataForOrigin` clears: the cookies set for the origin's own host name,
+ * its local storage, IndexedDB, cache storage and service workers. The tab opens an inert document
+ * on the origin to reach them; a database another connection holds open is deleted once that
+ * connection closes. Where a site's worker runs, as on Camoufox (`firefoxEngine`), it may answer
+ * that load in place of the routes, and the page it serves may register it again.
  */
 const clearOrigin = async (context: BrowserContext, page: Page, origin: string) => {
   const pattern = `${origin}/**`;
   await page.route(pattern, blank);
   try {
     await page.goto(`${origin}/`, { waitUntil: "domcontentloaded", timeout: 10_000 });
-    await page.evaluate(async () => {
+    const clearing = page.evaluate(async () => {
       localStorage.clear();
       for (const { name } of await indexedDB.databases()) {
         if (name === undefined) continue;
@@ -279,6 +306,7 @@ const clearOrigin = async (context: BrowserContext, page: Page, origin: string) 
         for (const registration of await navigator.serviceWorker.getRegistrations())
           await registration.unregister();
     });
+    await bounded(clearing, clearMs, "Clearing the origin's storage timed out");
   } finally {
     await page.unroute(pattern, blank);
   }
@@ -307,6 +335,7 @@ const session = (context: BrowserContext, page: Page): CDPSession => {
   const nodes = new Map<number, ElementHandle<Element>>();
   const objects = new Map<string, JSHandle>();
   const pressed = new Map<string, string>();
+  let released = false;
   let nextNode = 1;
   let detached = false;
   const keep = (handle: JSHandle) => {
@@ -337,7 +366,7 @@ const session = (context: BrowserContext, page: Page): CDPSession => {
     "Page.stopLoading": async () => {
       // The page runs the stop, where Chromium's browser does, so a page that holds its thread
       // past the wait skips it rather than stopping a load started after it.
-      const until = Date.now() + stopMs;
+      const until = Date.now() + stopMs - stopMarginMs;
       let timer: ReturnType<typeof setTimeout> | undefined;
       await Promise.race([
         page
@@ -354,8 +383,8 @@ const session = (context: BrowserContext, page: Page): CDPSession => {
       const left = failed === undefined ? 0 : errorPageMs - (Date.now() - failed.at);
       if (left > 0)
         await page
-          .waitForEvent("framenavigated", {
-            predicate: (frame) => frame === page.mainFrame() && !errorPageDue.has(page),
+          .waitForEvent("domcontentloaded", {
+            predicate: () => !errorPageDue.has(page),
             timeout: left,
           })
           .catch(() => undefined);
@@ -381,7 +410,7 @@ const session = (context: BrowserContext, page: Page): CDPSession => {
       nodes.clear();
       const children: unknown[] = [];
       for (const frame of page.frames()) {
-        const elements = await markedElements(frame).catch(() => []);
+        const elements = await markedWithin(frame);
         for (const element of elements) {
           const attributes = await element
             .evaluate(
@@ -461,6 +490,12 @@ const session = (context: BrowserContext, page: Page): CDPSession => {
         return {};
       }
       const name = event.text?.length === 1 ? event.text : event.key;
+      // Playwright's keyboard keeps the modifiers a script left held, such as Shift, which would
+      // change every key typed here: the first key down of a session lets them go.
+      if (!released) {
+        released = true;
+        for (const modifier of ["Alt", "Control", "Meta", "Shift"]) await page.keyboard.up(modifier);
+      }
       try {
         await page.keyboard.down(name);
         pressed.set(event.key, name);

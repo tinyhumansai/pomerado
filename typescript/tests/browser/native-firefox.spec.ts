@@ -2,8 +2,9 @@
 // code binds its tab by the id the executor reports, a credential goes in by trusted input into
 // the bound field only, typed keys are trusted, clearing a site empties its storage and cookies,
 // clearing an origin empties its own and leaves another's and unregisters its service workers, a
-// page loads plain http as asked, a file goes into an input in a shadow root by either placement,
-// and history types a form's answer as DevTools does.
+// page loads plain http as asked, typing again key by key sends no keypress, a readiness wait
+// holds while a submit is on its way, a file goes into an input in a shadow root by either
+// placement, and history types a form's answer as DevTools does.
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -21,6 +22,7 @@ import {
 import { makeRunFiles, type FileHostHook } from "../../src/runtime/file-transfer.js";
 import { primaryPageCode } from "../../src/runtime/host-execute.js";
 import { resetPageCode } from "../../src/runtime/start-state.js";
+import { waitCode } from "../../src/browser/wait.js";
 import { startFileSite } from "./file-fixture.js";
 
 const firefox = <A>(run: (executor: PlaywrightExecutor) => Promise<A>): Promise<A> =>
@@ -233,6 +235,10 @@ test("clearing an origin on Firefox empties its storage and cookies, and keeps a
 });
 
 test("a Firefox page loads plain http as asked", async () => {
+  test.skip(
+    test.info().project.name !== "camoufox",
+    "Playwright's own Firefox ships with HTTPS-First off; Camoufox ships with it on",
+  );
   await firefox(async (executor) => {
     const plain = "http://plain.example.test";
     const url = await Effect.runPromise(
@@ -247,6 +253,12 @@ test("a Firefox page loads plain http as asked", async () => {
 });
 
 test("clearing an origin on Firefox unregisters its service workers", async () => {
+  // Playwright blocks a Firefox context's service workers with a script, which Camoufox runs apart
+  // from the page's own, so only there does the site's worker register for a clear to remove.
+  test.skip(
+    test.info().project.name !== "camoufox",
+    "Playwright's own Firefox blocks the site's worker, so there is none to clear",
+  );
   const server = createServer((request, response) => {
     if (request.url === "/worker.js") {
       response.setHeader("content-type", "text/javascript");
@@ -263,16 +275,13 @@ test("clearing an origin on Firefox unregisters its service workers", async () =
   const address = server.address();
   if (address === null || typeof address === "string") throw new Error("No fixture address");
   const origin = `http://127.0.0.1:${address.port}`;
-  // Playwright blocks a Firefox context's service workers with a script, which Camoufox runs apart
-  // from the page's own, so there the site's worker registers.
-  const registers = test.info().project.name === "camoufox";
   try {
     await firefox(async (executor) => {
       const seen = await Effect.runPromise(
         executor.execute(
           `
           await page.goto('${origin}/');
-          if (${String(registers)}) await page.locator('html[data-worker=ready]').waitFor({ state: 'attached' });
+          await page.locator('html[data-worker=ready]').waitFor({ state: 'attached' });
           const workers = () => page.evaluate(async () => (await navigator.serviceWorker.getRegistrations()).length);
           const before = await workers();
           const session = await context.newCDPSession(page);
@@ -286,11 +295,83 @@ test("clearing an origin on Firefox unregisters its service workers", async () =
           30,
         ),
       );
-      expect(seen).toEqual({ before: registers ? 1 : 0, after: 0 });
+      expect(seen).toEqual({ before: 1, after: 0 });
     });
   } finally {
     server.close();
   }
+});
+
+test("Firefox autofill types again key by key, with no keypress, when the page's submit waits for a key", async () => {
+  test.setTimeout(60_000);
+  await firefox(async (executor) => {
+    // The submit enables only on a key down, so the paste leaves it disabled and the fill types
+    // again key by key. Camoufox crashes the tab on a synthetic keypress, so none is sent: the
+    // form posts whether one came.
+    await Effect.runPromise(
+      executor.execute(`
+        await context.route('${site}/**', route => {
+          if (route.request().method() === 'POST') {
+            context.posted = route.request().postData();
+            return route.fulfill({contentType:'text/html', body:'<p>Signed in</p>'});
+          }
+          return route.fulfill({contentType:'text/html', body:\`<form action="/session" method="post"><label>Password<input id="password" name="password" type="password"></label><input type="hidden" name="keypress" value="none"><button id="continue" disabled>Sign in</button></form><script>const field = document.getElementById('password'); field.addEventListener('keydown', () => { document.getElementById('continue').disabled = false; }); field.addEventListener('keypress', () => { document.forms[0].keypress.value = 'pressed'; });</script>\`});
+        });
+        await page.goto('${site}');
+      `),
+    );
+    const submitted = { ...step, submit: "#continue" };
+    const host = { targetId: executor.targetId, execute: executor.execute };
+    const inspection = await Effect.runPromise(
+      inspectAutofillStep({ step: submitted, page: host, siteOrigin: site, authenticationOrigins: [] }),
+    );
+    if ("outcome" in inspection) throw new Error(`Fixture refused: ${inspection.reason}`);
+    const report = await Effect.runPromise(
+      fillAutofillStep({
+        step: submitted,
+        values: ["4821"],
+        inspection,
+        page: host,
+        keyboard: executor.keyboard,
+        settleMs: 0,
+      }),
+    );
+    expect(report).toMatchObject({ outcome: "filled", submit: "clicked" });
+    expect(await Effect.runPromise(executor.execute("return context.posted ?? null;"))).toBe(
+      "password=4821&keypress=none",
+    );
+  });
+});
+
+test("a Firefox readiness wait reads a page whose submit is still on its way as absent", async () => {
+  await firefox(async (executor) => {
+    // Firefox reads the old page while a POST's answer is on its way, where Chromium holds the
+    // read, so the wait would find the old Save ready. The form posts to its own address, and the
+    // page moves its own address meanwhile, which Playwright reports as navigations too.
+    const answer = await Effect.runPromise(
+      executor.execute(
+        `
+        await context.route('${site}/**', async route => {
+          if (route.request().method() !== 'POST')
+            return route.fulfill({contentType:'text/html', body:\`<form method="post"><input name="title" value="x"><button id="save">Save</button></form><script>document.forms[0].addEventListener('submit', () => setTimeout(() => { location.hash = 'saving'; history.replaceState(null, '', location.pathname + '#saving'); }, 100));</script>\`});
+          await new Promise(resolve => setTimeout(resolve, 6000));
+          await route.fulfill({contentType:'text/html', body:'<p>Saved</p>'}).catch(() => undefined);
+        });
+        await page.goto('${site}/');
+        ${waitCode}
+        await page.locator('#save').click({ noWaitAfter: true });
+        try {
+          await waitForReady(page.locator('#save'), { deadline: Date.now() + 1000, noProgressMs: 8000, timeout: 4000 });
+          return { ready: true };
+        } catch (error) {
+          return { reason: error.reason };
+        }
+      `,
+        30,
+      ),
+    );
+    expect(answer).toEqual({ reason: "ready_timeout" });
+  });
 });
 
 for (const placeByBrowserPath of [true, false]) {

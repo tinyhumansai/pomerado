@@ -7,9 +7,10 @@
 // download or a closed tab leaves pending or ends too soon; a stop that waits for an error page a
 // stopped load never shows, for a page that holds its thread, or stops a load after its wait; a key
 // down whose text goes in as another key, a key up that releases another, or a character off the
-// keyboard layout dropped; host code's own sessions bypassing the engine; a Firefox browser that
-// upgrades plain http; and a Firefox executor that accepts a DevTools attach, a remote browser or
-// Patchright.
+// keyboard layout dropped, or keys typed under a modifier a script left held; a frame or a clear
+// whose page never answers holding the host's call; host code's own sessions bypassing the engine;
+// a Firefox browser that upgrades plain http; and a Firefox executor that accepts a DevTools
+// attach, a remote browser or Patchright.
 import { EventEmitter } from "node:events";
 import type { Browser, BrowserContext, Frame, Page, Request } from "playwright";
 import { Cause, Effect, Exit } from "effect";
@@ -86,10 +87,16 @@ const fakePage = () => {
     main,
     keys,
     evaluated,
-    /** The main frame moves to `url`, and says so. */
+    /** The main frame moves to `url`, and says so: the new document, or the old one moving. */
     navigate: (url: string) => {
       address = url;
       events.emit("framenavigated", main);
+    },
+    /** A new document at `url` commits and loads. */
+    load: (url: string) => {
+      address = url;
+      events.emit("framenavigated", main);
+      events.emit("domcontentloaded", page);
     },
     close: () => {
       closed = true;
@@ -174,33 +181,47 @@ describe("the Firefox engine's DevTools stand-in", () => {
     const session = await firefoxSession(context, page);
     events.emit("request", navigation(main, "GET", navigation(main, "POST")));
     events.emit("framenavigated", main);
+    events.emit("domcontentloaded", page);
     events.emit("request", navigation({ name: "child" }, "POST"));
     events.emit("request", navigation(main, "GET"));
     events.emit("framenavigated", main);
+    events.emit("domcontentloaded", page);
     expect(await session.send("Page.getNavigationHistory")).toMatchObject({
       currentIndex: 1,
       entries: [{ transitionType: "form_submit" }, { transitionType: "other" }],
     });
   });
 
-  it("says a main-frame navigation is pending from its request until its document commits", () => {
-    const { page, events, main, navigate } = fakePage();
+  it("says a main-frame navigation is pending from its request until its new document loads", () => {
+    const { page, events, main, navigate, load } = fakePage();
     recordNavigations(page);
     expect(navigationPending(page)).toBe(false);
-    const posted = navigation(main, "POST", null, "https://shop.example/order");
+    // An order posted to the page's own address, as a form with no action does.
+    const checkout = "https://shop.example/checkout";
+    const posted = navigation(main, "POST", null, checkout);
     events.emit("request", posted);
     expect(navigationPending(page)).toBe(true);
-    // The page moves its own address while the order is on its way: the old document stays.
-    navigate("https://shop.example/cart#processing");
+    // The old document moves its own address while the order is on its way, even to that one.
+    navigate(`${checkout}#processing`);
+    navigate(`${checkout}?step=2`);
     expect(navigationPending(page)).toBe(true);
-    // Firefox may say the request finished before the new document says it committed.
+    // Firefox may say the request finished before the new document commits.
     events.emit("response", response(posted));
     events.emit("requestfinished", posted);
     expect(navigationPending(page)).toBe(true);
-    navigate("https://shop.example/order");
+    load(checkout);
     expect(navigationPending(page)).toBe(false);
     events.emit("request", navigation({ url: () => "about:blank" }, "GET"));
     expect(navigationPending(page)).toBe(false);
+  });
+
+  it("holds a navigation through the old document's own late load", () => {
+    const { page, events, main } = fakePage();
+    recordNavigations(page);
+    events.emit("request", navigation(main, "POST"));
+    // The old document, still loading when the order went, finishes before any navigation report.
+    events.emit("domcontentloaded", page);
+    expect(navigationPending(page)).toBe(true);
   });
 
   it("ends a navigation whose response commits no document, and any on a closed tab", () => {
@@ -226,16 +247,15 @@ describe("the Firefox engine's DevTools stand-in", () => {
     expect(navigationPending(page)).toBe(false);
   });
 
-  it("holds a navigation whose document never says it committed only for a while", () => {
+  it("holds a navigation whose document never loads only for a while from its request", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     try {
       const { page, events, main } = fakePage();
       recordNavigations(page);
-      const request = navigation(main, "GET");
-      events.emit("request", request);
-      events.emit("response", response(request));
+      events.emit("request", navigation(main, "GET"));
+      vi.setSystemTime(Date.now() + 29_000);
       expect(navigationPending(page)).toBe(true);
-      vi.setSystemTime(Date.now() + 5_000);
+      vi.setSystemTime(Date.now() + 1_000);
       expect(navigationPending(page)).toBe(false);
     } finally {
       vi.useRealTimers();
@@ -253,22 +273,25 @@ describe("the Firefox engine's DevTools stand-in", () => {
     events.emit("request", refused);
     events.emit("requestfailed", refused);
     expect(navigationPending(page)).toBe(true);
+    // The error page's commit, and then its load.
     navigate("https://shop.example/order");
+    expect(navigationPending(page)).toBe(true);
+    events.emit("domcontentloaded", page);
     expect(navigationPending(page)).toBe(false);
   });
 
   it("keeps a form's answer typed so when its page moves its own address", async () => {
-    const { page, events, main, navigate } = fakePage();
+    const { page, events, main, navigate, load } = fakePage();
     recordNavigations(page);
     const session = await firefoxSession(context, page);
     events.emit("request", navigation(main, "POST", null, "https://shop.example/order"));
-    navigate("https://shop.example/order");
+    load("https://shop.example/order");
     navigate("https://shop.example/thanks");
     // A redirect Playwright fulfilled starts no request of its own for where it leads.
     const fulfilled = navigation(main, "POST", null, "https://shop.example/pay");
     events.emit("request", fulfilled);
     events.emit("response", response(fulfilled, 303, { location: "/paid" }));
-    navigate("https://shop.example/paid");
+    load("https://shop.example/paid");
     expect(await session.send("Page.getNavigationHistory")).toMatchObject({
       currentIndex: 1,
       entries: [
@@ -278,8 +301,8 @@ describe("the Firefox engine's DevTools stand-in", () => {
     });
   });
 
-  it("stops a tab only once a failed load's error page has committed", async () => {
-    const { page, events, main, navigate } = fakePage();
+  it("stops a tab only once a failed load's error page has loaded", async () => {
+    const { page, events, main, navigate, load } = fakePage();
     recordNavigations(page);
     const session = await firefoxSession(context, page);
     const next = "https://shop.example/next";
@@ -294,8 +317,12 @@ describe("the Firefox engine's DevTools stand-in", () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(stopped).toBe(false);
     navigate(next);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(stopped).toBe(false);
+    const loadedAt = Date.now();
+    load(next);
     await stopping;
-    expect(stopped).toBe(true);
+    expect(Date.now() - loadedAt).toBeLessThan(500);
     // With no failed load before it, or a stopped one, the stop waits for nothing.
     const aborted = navigation(main, "GET", null, answer, "NS_BINDING_ABORTED");
     events.emit("request", aborted);
@@ -332,6 +359,46 @@ describe("the Firefox engine's DevTools stand-in", () => {
     }
   });
 
+  it("passes over a frame whose page doesn't answer the scan for marked fields in time", async () => {
+    const { page } = fakePage();
+    Object.assign(page, { frames: () => [{ evaluateHandle: () => new Promise(() => undefined) }] });
+    const session = await firefoxSession(context, page);
+    vi.useFakeTimers();
+    try {
+      const reading = session.send("DOM.getDocument");
+      await vi.advanceTimersByTimeAsync(2_000);
+      await expect(reading).resolves.toMatchObject({ root: { children: [] } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails a clear whose page doesn't answer its storage reads in time, clearing no cookies", async () => {
+    const { page, evaluating } = fakePage();
+    Object.assign(page, { route: async () => undefined, unroute: async () => undefined, goto: async () => null });
+    evaluating(() => new Promise(() => undefined));
+    let cookiesCleared = false;
+    const owned = {
+      clearCookies: async () => {
+        cookiesCleared = true;
+      },
+    } as unknown as BrowserContext;
+    const session = await firefoxSession(owned, page);
+    vi.useFakeTimers();
+    try {
+      const clearing = session.send("Storage.clearDataForOrigin", {
+        origin: "https://shop.example",
+        storageTypes: "all",
+      });
+      const refused = expect(clearing).rejects.toThrow("Clearing the origin's storage timed out");
+      await vi.advanceTimersByTimeAsync(10_000);
+      await refused;
+      expect(cookiesCleared).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("tells the readiness wait of a pending navigation under the key the wait reads", () => {
     const owned = { pages: () => [], on: () => owned } as unknown as BrowserContext;
     firefoxEngine.attach({ contexts: () => [owned] } as unknown as Browser, owned);
@@ -348,10 +415,28 @@ describe("the Firefox engine's DevTools stand-in", () => {
     await session.send("Input.dispatchKeyEvent", key("keyUp", "Enter"));
     await session.send("Input.dispatchKeyEvent", key("keyDown", "₹", "₹"));
     await session.send("Input.dispatchKeyEvent", key("keyUp", "₹"));
-    expect(keys).toEqual(["down a", "up a", "down Enter", "up Enter", "text ₹"]);
+    // A capital's key down names the key, and its text the character it types.
+    await session.send("Input.dispatchKeyEvent", key("keyDown", "a", "A"));
+    await session.send("Input.dispatchKeyEvent", key("keyUp", "a"));
+    expect(keys).toEqual([
+      // A script may have left a modifier held: the session's first key lets them all go.
+      "up Alt",
+      "up Control",
+      "up Meta",
+      "up Shift",
+      "down a",
+      "up a",
+      "down Enter",
+      "up Enter",
+      "text ₹",
+      "down A",
+      "up A",
+    ]);
   });
 
-  it("answers a service worker bypass, since its contexts block service workers", async () => {
+  // Chromium's sessions bypass a site's workers while the host clears or restores it. Firefox has no
+  // bypass: Playwright's Firefox blocks the workers, and on Camoufox a clear unregisters them.
+  it("answers a service worker bypass, which Firefox has none of, as done", async () => {
     const session = await firefoxSession(context, fakePage().page);
     await expect(session.send("Network.setBypassServiceWorker", { bypass: true })).resolves.toEqual(
       {},
@@ -378,6 +463,7 @@ describe("the Firefox engine's DevTools stand-in", () => {
     contextEvents.emit("page", page);
     events.emit("request", navigation(main, "POST"));
     events.emit("framenavigated", main);
+    events.emit("domcontentloaded", page);
     const history = await (await owned.newCDPSession(page)).send("Page.getNavigationHistory");
     expect(history.entries.at(-1)).toMatchObject({ transitionType: "form_submit" });
     const listed = await (await browser.newBrowserCDPSession()).send("Target.getBrowserContexts");

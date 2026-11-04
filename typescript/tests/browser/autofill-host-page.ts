@@ -223,22 +223,15 @@ export const hostKeyboard = async (
     undefined,
     // Camoufox binds the field in the world its evaluations use, so it needs no world of its own.
     engine.name === "firefox" ? undefined : fixtureBindingWorld,
+    // As the worker's: Camoufox crashes the tab on a synthetic keypress that page code dispatches.
+    engine.syntheticKeypress,
   );
   const keyboard: typeof native = {
     insertText: (target, text, options) =>
       Effect.suspend(() => {
         const values = typed.get(page) ?? new Set<string>();
         if (text !== "") typed.set(page, values.add(text));
-        // As the worker does: typing key by key presses trusted keys where page code may not
-        // send synthetic ones.
-        const pressed = options?.keys === true && !engine.syntheticKeys;
-        return native.insertText(
-          target,
-          text,
-          pressed
-            ? { ...(options.phone === true ? { phone: true } : {}), trustedKeys: true }
-            : options,
-        );
+        return native.insertText(target, text, options);
       }),
   };
   return { keyboard };
