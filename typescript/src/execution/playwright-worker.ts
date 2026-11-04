@@ -7,6 +7,7 @@ import { format } from "node:util";
 import type { Browser, BrowserContext, CDPSession, Frame, Page } from "playwright";
 import { Cause, Effect, Exit, Schema } from "effect";
 import type { BrowserExecuteResponse } from "../runtime/browser-execution.js";
+import type { BrowserEngine } from "./browser-engine.js";
 
 // Match the lease/screening entries: compiled packages need no hook; source tests resolve NodeNext imports.
 if (import.meta.url.endsWith(".ts"))
@@ -32,6 +33,7 @@ if (import.meta.url.endsWith(".ts"))
   });
 const { makeCredentialKeyboard } = await import("../destinations/credential-keyboard.js");
 const { NativeWorkerOptions, NativeWorkerRequest } = await import("./playwright-protocol.js");
+const { browserEngine } = await import("./browser-engine.js");
 
 const asError = (cause: unknown): Error =>
   cause instanceof Error ? cause : new Error("Native browser worker failed", { cause });
@@ -43,9 +45,9 @@ const limitLabel = (bytes: number) =>
 const Target = Schema.Struct({
   targetInfo: Schema.Struct({ targetId: Schema.String, browserContextId: Schema.String }),
 });
-const identify = (context: BrowserContext, page: Page) =>
+const identify = (engine: BrowserEngine, context: BrowserContext, page: Page) =>
   Effect.gen(function* () {
-    const session = yield* promise(() => context.newCDPSession(page));
+    const session = yield* promise(() => engine.session(context, page));
     return yield* promise(() => session.send("Target.getTargetInfo")).pipe(
       Effect.flatMap((value) => Schema.decodeUnknown(Target)(value)),
       Effect.map((value) => value.targetInfo),
@@ -61,15 +63,20 @@ const identify = (context: BrowserContext, page: Page) =>
  * a created one (`Target.getBrowserContexts` lists every context but the default) is never taken:
  * its cookies and storage are not the ones `context` reads.
  */
-const adoptPage = (browser: Browser, context: BrowserContext, targetId: string | undefined) =>
+const adoptPage = (
+  engine: BrowserEngine,
+  browser: Browser,
+  context: BrowserContext,
+  targetId: string | undefined,
+) =>
   Effect.gen(function* () {
-    const session = yield* promise(() => browser.newBrowserCDPSession());
+    const session = yield* promise(() => engine.browserSession(browser));
     const created = yield* promise(() => session.send("Target.getBrowserContexts")).pipe(
       Effect.map(({ browserContextIds }) => new Set(browserContextIds)),
       Effect.ensuring(promise(() => session.detach()).pipe(Effect.orDie)),
     );
     for (const candidate of context.pages()) {
-      const target = yield* identify(context, candidate);
+      const target = yield* identify(engine, context, candidate);
       if (created.has(target.browserContextId)) continue;
       if (targetId === undefined || target.targetId === targetId) return candidate;
     }
@@ -310,6 +317,7 @@ const script = (
 
 const credential = (
   request: Extract<typeof NativeWorkerRequest.Type, { readonly kind: "credential" }>,
+  engine: BrowserEngine,
   context: BrowserContext,
   primaryTargetId: string,
 ) =>
@@ -317,17 +325,19 @@ const credential = (
     const wanted = request.target.targetId ?? primaryTargetId;
     let owner: Page | undefined;
     for (const page of context.pages()) {
-      if ((yield* identify(context, page)).targetId === wanted) owner = page;
+      if ((yield* identify(engine, context, page)).targetId === wanted) owner = page;
     }
     if (owner === undefined) return yield* Effect.fail(new Error("Credential page closed"));
     const owningPage = owner;
     const sessions = new Map<string, CDPSession>();
     return yield* Effect.gen(function* () {
       // Same-process frames have no independent CDP target; their DOM is covered by the page session.
-      sessions.set("page", yield* promise(() => context.newCDPSession(owningPage)));
+      sessions.set("page", yield* promise(() => engine.session(context, owningPage)));
       for (const frame of owningPage.frames()) {
         if (frame === owningPage.mainFrame()) continue;
-        const connected = yield* promise(() => context.newCDPSession(frame)).pipe(Effect.either);
+        const connected = yield* promise(() => engine.session(context, frame)).pipe(
+          Effect.either,
+        );
         if (connected._tag === "Right") sessions.set(String(sessions.size), connected.right);
         else if (!connected.left.message.includes("does not have a separate CDP session"))
           return yield* Effect.fail(connected.left);
@@ -421,14 +431,15 @@ await Effect.runPromise(
       Effect.mapError(asError),
     );
     const resultLimit = options.resultLimitBytes ?? outputLimit;
-    const chromium = yield* promise(
-      async () => ((await import(options.library)) as typeof import("playwright")).chromium,
+    const engine = browserEngine(options.browser);
+    const launcher = yield* promise(async () =>
+      engine.launcher((await import(options.library)) as typeof import("playwright")),
     );
     const attached = options.cdp;
     const browser = yield* promise(() =>
       attached === undefined
-        ? chromium.connect(options.endpoint, { timeout: options.startupTimeoutMs })
-        : chromium.connectOverCDP(options.endpoint, { timeout: options.startupTimeoutMs }),
+        ? launcher.connect(options.endpoint, { timeout: options.startupTimeoutMs })
+        : launcher.connectOverCDP(options.endpoint, { timeout: options.startupTimeoutMs }),
     );
     // Over CDP the worker drives the browser's own context and page and owns neither.
     const context =
@@ -438,8 +449,8 @@ await Effect.runPromise(
     const page =
       attached === undefined
         ? yield* promise(() => context.newPage())
-        : yield* adoptPage(browser, context, attached.targetId);
-    const target = yield* identify(context, page);
+        : yield* adoptPage(engine, browser, context, attached.targetId);
+    const target = yield* identify(engine, context, page);
     if (attached !== undefined)
       browser.on("disconnected", () => port.postMessage({ kind: "disconnected" }));
     port.postMessage({
@@ -463,7 +474,7 @@ await Effect.runPromise(
               resultLimit,
               request.watch,
             );
-          return yield* credential(request, context, target.targetId);
+          return yield* credential(request, engine, context, target.targetId);
         }).pipe(Effect.either);
         port.postMessage(
           response._tag === "Right"

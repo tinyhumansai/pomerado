@@ -41,10 +41,14 @@ export const NativeWorkerReply = Schema.Union(
 );
 export const PlaywrightLibrary = Schema.Literal("playwright", "patchright");
 export type PlaywrightLibrary = typeof PlaywrightLibrary.Type;
+/** The browsers the native executor drives. */
+export const BrowserName = Schema.Literal("chromium");
+export type BrowserName = typeof BrowserName.Type;
 export const NativeWorkerOptions = Schema.Struct({
   endpoint: Schema.String,
   startupTimeoutMs: Schema.Number,
   library: PlaywrightLibrary,
+  browser: BrowserName,
   /** The most bytes of JSON a script's result may take; 1 MiB when absent. Output keeps 1 MiB. */
   resultLimitBytes: Schema.optional(Schema.Number),
   /** Attach over CDP and drive the browser's own context, at this page (its first when absent). */
