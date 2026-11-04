@@ -369,6 +369,14 @@ too. Run each step with `execute` purpose `act`, target `liveBrowser`.
   answer of that click's `waitForOutcomeResult` and the page. It applies the commit-response and
   page-error rules above in one place, so prefer it over writing your own status and body
   checks, and call `verified()` only when it reports done.
+- A commit the site confirms slowly first shows a pending state, such as "Confirming your
+  order" or "Processing payment", sometimes for a minute or more while it polls. Name that
+  state's element as `loading` of the click's `waitForOutcomeResult`, beside every answer the
+  site can give (its error first, then the confirmation that shows the order or booking number),
+  and give the wait a `timeout` that covers it, within the call's `timeout_sec` and
+  `remainingMs()`: the pending sign keeps the wait alive for as long as it shows, and a page
+  that shows neither it nor an answer for `noProgressMs` still fails. Never click again while it
+  is pending. Read the number the confirmation shows from its own element, with `visibleText`.
 - Read the site's own proof instead only when the commit request can't confirm the write:
   no such request went out; it failed, got no answer or returned an error status; its body
   shows an error, or can't be read on an endpoint that reports errors with a 200, such as
