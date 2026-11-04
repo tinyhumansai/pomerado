@@ -22,9 +22,11 @@ git clone https://github.com/YOUR_USERNAME/pomerado.git
 cd pomerado
 corepack enable
 corepack pnpm install --frozen-lockfile
-corepack pnpm exec playwright install chromium
+corepack pnpm exec playwright install chromium firefox
 corepack pnpm build
 ```
+
+The browser tests run on Chromium, and the Firefox engine's tests on Playwright's Firefox too. To run every browser test on Camoufox as well, set `CAMOUFOX_EXECUTABLE` to its binary; CI doesn't run that project.
 
 On Linux, add `--with-deps` after `install` if Chromium's system libraries are missing.
 

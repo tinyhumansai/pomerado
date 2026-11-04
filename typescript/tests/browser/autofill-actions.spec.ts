@@ -641,6 +641,40 @@ for (const [change, script, check] of [
 const carrying = (requested: readonly string[]) =>
   requested.filter((url) => url.includes(password) || decodeURIComponent(url).includes(password));
 
+// Camoufox runs the host's page code in an isolated world whose FormData and URLSearchParams can't
+// iterate keys() or values(). The guard reads them as pairs, so it refuses there as here: these
+// break both iterators in the guard's own world first, as Camoufox does.
+for (const [attack, controls] of [
+  [
+    "click handler switches the form to GET",
+    `<button id="continue" onclick="this.form.method = 'get'">Sign in</button>`,
+  ],
+  [
+    "typing puts the password in the form action",
+    `<button id="continue">Sign in</button>
+<script>document.getElementById('password').addEventListener('input', ({ target }) => { target.form.action = '/session?p=' + encodeURIComponent(target.value); });</script>`,
+  ],
+] as const)
+  test(`a sign-in whose ${attack} is refused as it fires where keys() and values() can't be iterated`, async ({
+    page,
+  }) => {
+    const requested: string[] = [];
+    page.on("request", (request) => requested.push(request.url()));
+    const received = await serve(page, controls);
+    await page.evaluate(() => {
+      for (const prototype of [FormData.prototype, URLSearchParams.prototype])
+        for (const name of ["keys", "values"])
+          Object.defineProperty(prototype, name, { configurable: true, value: () => ({}) });
+    });
+    const inspection = await inspect(page);
+    if ("outcome" in inspection) throw new Error(`Inspection refused: ${inspection.reason}`);
+    const report = await fill(page, inspection);
+    expect(carrying(requested)).toEqual([]);
+    expect(requested.filter((url) => new URL(url).pathname === "/session")).toEqual([]);
+    expect(received).toEqual([]);
+    expect(report).toMatchObject({ outcome: "filled", submit: "refused", clicked: true });
+  });
+
 // Page code that runs while the host clicks acts after the last recheck. A submission that would
 // put a value filled into a form judged to submit by POST into a URL is refused as it fires.
 for (const [attack, controls, changed] of [

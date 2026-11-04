@@ -1217,7 +1217,9 @@ const waitForChange = async (fields, options = {}) => {
  * `aria-busy` around it, no spinner inside it), in the same place on two looks, and what a click
  * at its centre would hit is the control itself, not an overlay. It also waits while an `overlays`
  * locator shows, while `pending` (a function run in the page, such as
- * `() => window.jQuery?.active ?? 0`) returns a truthy count, and until `until()` is true. Once
+ * `() => window.jQuery?.active ?? 0`) returns a truthy count, and until `until()` is true. On
+ * Camoufox `pending` runs in a world apart from the page's own scripts, so one that reads a site's
+ * variable always finds none: count something the page shows instead. Once
  * anything held it back, ready must hold for `stableMs` (default `settle`), so a spinner that
  * flickers off between two requests does not count as gone. `expand` names the toggle of the
  * control's section: it clicks it once while the control is hidden and the toggle says the

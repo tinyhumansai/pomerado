@@ -846,7 +846,7 @@ for (const [name, button, script, expected] of [
         "isolatedRefusal" in expected &&
         test.info().project.name === "camoufox"
       ) {
-        expect(inspection.reason).toBe(expected.isolatedRefusal);
+        expect(inspection).toMatchObject({ reason: expected.isolatedRefusal, target: "submit" });
         expect(await posts()).toBe(0);
         return;
       }

@@ -110,6 +110,10 @@ test("a submit's answer is the alert text a person sees that was not there befor
 test("a fill that does not ask for the count never reads the alerts before its click", async ({
   page,
 }) => {
+  test.skip(
+    test.info().project.name === "camoufox",
+    "Camoufox reads the page in an isolated world, where the page's own script can't count the reads",
+  );
   const { report, reads } = await signIn(page, {});
   expect(reads).toBe(0);
   expect(report.controls?.alerts).toContain("The password is incorrect");

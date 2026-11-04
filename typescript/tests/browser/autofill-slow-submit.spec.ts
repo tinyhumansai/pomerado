@@ -24,6 +24,10 @@ import { expectNotCarried, hostKeyboard, hostPage } from "./autofill-host-page.j
 const hostname = "slow-login.example.test";
 const browserArgs = [`--host-resolver-rules=MAP ${hostname} 127.0.0.1`];
 test.use({ ignoreHTTPSErrors: true, launchOptions: { args: browserArgs } });
+test.skip(
+  ({ browserName }) => browserName !== "chromium",
+  "The site's real server is reached only through Chromium's host resolver flag",
+);
 const username = "synthetic-agent";
 const password = "synthetic-slow-password";
 
