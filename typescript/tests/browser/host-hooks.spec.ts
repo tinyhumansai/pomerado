@@ -1,5 +1,12 @@
+import { execFile } from "node:child_process";
 import { once } from "node:events";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
+import { connect, type Socket } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import { test, expect } from "@playwright/test";
 import type { ModelProvider } from "@openai/agents";
 import { Effect } from "effect";
@@ -9,6 +16,7 @@ import { createPomerado } from "../../src/standalone/pomerado.js";
 import type { PomeradoOptions } from "../../src/standalone/contracts.js";
 import { RunOutcomeFailure } from "../../src/standalone/run-report.js";
 import { makeInputAsker } from "../../src/inputs/callback.js";
+import type { InputRequest } from "../../src/runtime/input-request.js";
 import type { EnteredCommit, OperationHooks } from "../../src/runtime/operation-hooks.js";
 import { html, startSite } from "./guardian-context-fixture.js";
 import { projectBrowser } from "./project-browser.js";
@@ -516,5 +524,277 @@ export default defineOperation(
     expect(calls).toEqual([]);
   } finally {
     await site.close();
+  }
+});
+
+/**
+ * A shop at `https://shop.test` that signs in with a phone number and the code it sends, and no
+ * password, recording each number and code its forms receive. It is reached through `proxy`,
+ * which tunnels every connection to it, as a resolver that maps its name would, so a context
+ * that sets the proxy and takes its own certificate (`ignoreHTTPSErrors`) opens it on any browser.
+ */
+const phoneShop = async () => {
+  const directory = await mkdtemp(join(tmpdir(), "pomerado-phone-shop-"));
+  await promisify(execFile)("openssl", [
+    "req",
+    "-x509",
+    "-newkey",
+    "rsa:2048",
+    "-nodes",
+    "-keyout",
+    join(directory, "key.pem"),
+    "-out",
+    join(directory, "cert.pem"),
+    "-subj",
+    "/CN=shop.test",
+    "-days",
+    "1",
+  ]);
+  const received = { phones: [] as string[], codes: [] as string[] };
+  const shop = createHttpsServer(
+    {
+      key: await readFile(join(directory, "key.pem")),
+      cert: await readFile(join(directory, "cert.pem")),
+    },
+    (request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk: string) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        const path = new URL(request.url ?? "/", "https://shop.test").pathname;
+        const form = new URLSearchParams(body);
+        if (request.method === "POST" && path === "/send-code") {
+          received.phones.push(form.get("phone") ?? "");
+          response.writeHead(303, { Location: "/verify" });
+          response.end();
+          return;
+        }
+        if (request.method === "POST" && path === "/verify") {
+          const code = form.get("code") ?? "";
+          received.codes.push(code);
+          response.writeHead(
+            303,
+            code === "424242"
+              ? { Location: "/", "Set-Cookie": "session=s-1; Path=/; Secure; HttpOnly" }
+              : { Location: "/verify" },
+          );
+          response.end();
+          return;
+        }
+        if (path === "/login") {
+          html(
+            response,
+            `<form method="post" action="/send-code"><label>Phone number <input name="phone" type="tel" autocomplete="tel"></label><button>Send code</button></form>`,
+          );
+          return;
+        }
+        if (path === "/verify") {
+          html(
+            response,
+            `<form method="post" action="/verify"><label>Code <input name="code" inputmode="numeric" autocomplete="one-time-code"></label><button>Verify</button></form>`,
+          );
+          return;
+        }
+        const signedIn = /(?:^|;\s*)session=s-1(?:;|$)/u.test(request.headers.cookie ?? "");
+        html(
+          response,
+          signedIn ? `<h1 id="account">Signed in</h1>` : `<a href="/login">Sign in</a>`,
+        );
+      });
+    },
+  );
+  shop.listen(0, "127.0.0.1");
+  await once(shop, "listening");
+  const shopAddress = shop.address();
+  if (shopAddress === null || typeof shopAddress === "string") throw new Error("No shop address");
+  const tunnel = createServer((_request, response) => {
+    response.writeHead(405);
+    response.end();
+  });
+  tunnel.on("connect", (_request, client: Socket, head: Buffer) => {
+    const upstream = connect(shopAddress.port, "127.0.0.1", () => {
+      client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      upstream.write(head);
+      upstream.pipe(client);
+      client.pipe(upstream);
+    });
+    upstream.on("error", () => client.destroy());
+    client.on("error", () => upstream.destroy());
+  });
+  tunnel.listen(0, "127.0.0.1");
+  await once(tunnel, "listening");
+  const tunnelAddress = tunnel.address();
+  if (tunnelAddress === null || typeof tunnelAddress === "string")
+    throw new Error("No proxy address");
+  const closing = (server: { close: (done: () => void) => unknown }) =>
+    new Promise<void>((resolve) => server.close(() => resolve()));
+  return {
+    origin: "https://shop.test",
+    url: "https://shop.test/",
+    /** The context that reaches the shop. */
+    context: { proxy: { server: `http://127.0.0.1:${tunnelAddress.port}` }, ignoreHTTPSErrors: true },
+    received,
+    close: async () => {
+      shop.closeAllConnections();
+      tunnel.closeAllConnections();
+      await Promise.all([closing(shop), closing(tunnel)]);
+      await rm(directory, { recursive: true, force: true });
+    },
+  };
+};
+
+/** The phone shop's sign-in as a build publishes it: the number, then the code. */
+const phoneSignIn = (origin: string) => ({
+  recipe: {
+    version: 1 as const,
+    steps: [
+      {
+        page: `${origin}/login`,
+        fields: [{ selector: "input[name=phone]", accepts: ["phone" as const] }],
+        submit: "button",
+        submittedBy: "host" as const,
+      },
+      {
+        page: `${origin}/verify`,
+        fields: [{ selector: "input[name=code]", slot: "code" as const }],
+        submit: "button",
+        submittedBy: "host" as const,
+      },
+    ],
+    signedIn: { selector: "#account" },
+  },
+  entryUrl: `${origin}/login`,
+});
+
+/** A read of the account heading, behind the phone shop's sign-in. */
+const phoneAccount = (origin: string) => ({
+  ...artifact(`import { Schema } from "effect";
+import { defineOperation } from "../runtime/index.js";
+export default defineOperation(
+  { name: "read_account", input: Schema.Struct({}), output: Schema.Struct({ account: Schema.String }) },
+  async ({ kernel, sessionId }) => {
+    const read = await kernel.browsers.playwright.execute(sessionId, {
+      code: "return await page.locator('#account').innerText();",
+      timeout_sec: 10,
+    });
+    if (!read.success) throw new Error("The account did not read");
+    return { account: read.result };
+  },
+);`),
+  signIn: phoneSignIn(origin),
+});
+
+/** Answers the login with `phone` alone and the code with `code`, recording each request. */
+const phoneAnswers = (asked: InputRequest[], phone: string, code: string) =>
+  makeInputAsker((request) =>
+    Effect.sync(() => {
+      asked.push(request);
+      return Object.fromEntries(
+        request.questions.map((question) => [
+          question.id,
+          question.type === "credential" ? { username: phone, saveLogin: false } : code,
+        ]),
+      );
+    }),
+  );
+
+test("a run whose recorded sign-in types no password asks for the phone number alone, then the code, and signs in", async () => {
+  test.setTimeout(90_000);
+  const shop = await phoneShop();
+  const calls: string[] = [];
+  const asked: InputRequest[] = [];
+  try {
+    const output = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const pomerado = yield* session(calls, {
+            browser: { ...projectBrowser(), context: shop.context },
+            ask: phoneAnswers(asked, "+919812345678", "424242"),
+          });
+          return yield* pomerado.run(phoneAccount(shop.origin), {
+            url: shop.url,
+            intent: "Read the account",
+            effect: "read",
+            input: {},
+          });
+        }),
+      ),
+    );
+    expect(output).toEqual({ account: "Signed in" });
+    const login = asked.flatMap((request) => request.questions).find((q) => q.type === "credential");
+    expect(login).toMatchObject({ currentStep: { identifierKinds: ["phone"], password: false } });
+    expect(shop.received).toEqual({ phones: ["+919812345678"], codes: ["424242"] });
+    expect(calls).toEqual([]);
+  } finally {
+    await shop.close();
+  }
+});
+
+test("a host that answers with handles gets each one revealed for its field's own origin just before it is typed, and a refused reveal types nothing", async () => {
+  test.setTimeout(120_000);
+  const shop = await phoneShop();
+  const calls: string[] = [];
+  const values: Readonly<Record<string, string>> = {
+    "sec_phone": "+919812345678",
+    "sec_code": "424242",
+  };
+  try {
+    const revealed: (readonly [string, string])[] = [];
+    const output = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const pomerado = yield* session(calls, {
+            browser: { ...projectBrowser(), context: shop.context },
+            ask: phoneAnswers([], "sec_phone", "sec_code"),
+            reveal: (value, origin) =>
+              Effect.suspend(() => {
+                revealed.push([value, origin]);
+                const held = values[value];
+                return held !== undefined && origin === shop.origin
+                  ? Effect.succeed(held)
+                  : Effect.fail(new Error("Not on this origin"));
+              }),
+          });
+          return yield* pomerado.run(phoneAccount(shop.origin), {
+            url: shop.url,
+            intent: "Read the account",
+            effect: "read",
+            input: {},
+          });
+        }),
+      ),
+    );
+    expect(output).toEqual({ account: "Signed in" });
+    expect(revealed).toEqual([
+      ["sec_phone", shop.origin],
+      ["sec_code", shop.origin],
+    ]);
+    expect(shop.received).toEqual({ phones: ["+919812345678"], codes: ["424242"] });
+
+    // A host that refuses every reveal gets nothing typed, and the run doesn't sign in.
+    const refused = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const pomerado = yield* session(calls, {
+            browser: { ...projectBrowser(), context: shop.context },
+            ask: phoneAnswers([], "sec_phone", "sec_code"),
+            reveal: () => Effect.fail(new Error("Not on this origin")),
+          });
+          return yield* pomerado.run(phoneAccount(shop.origin), {
+            url: shop.url,
+            intent: "Read the account",
+            effect: "read",
+            input: {},
+          });
+        }),
+      ).pipe(Effect.flip),
+    );
+    expect(refused).toBeInstanceOf(Error);
+    expect(shop.received).toEqual({ phones: ["+919812345678"], codes: ["424242"] });
+    expect(calls).toEqual([]);
+  } finally {
+    await shop.close();
   }
 });

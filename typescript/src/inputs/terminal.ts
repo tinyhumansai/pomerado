@@ -148,6 +148,9 @@ const answerQuestion = (question: Question): Effect.Effect<unknown, InputRequest
         // An empty username, where the question offers it, declines the login.
         if (question.allowDecline === true && username?.trim() === "")
           return { declined: "public_only", saveLogin: false };
+        // A sign-in that types no password, such as by a phone number and a code, asks for none.
+        if (question.currentStep?.password === false)
+          return { ...(username === undefined ? {} : { username }), saveLogin: false };
         const password = yield* line("Password: ", true);
         return { ...(username === undefined ? {} : { username }), password, saveLogin: false };
       }

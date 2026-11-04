@@ -1,5 +1,9 @@
 import { Data, Effect, Schema } from "effect";
-import type { SignInLogin, SignInRecipe } from "../destinations/sign-in-recipe.js";
+import {
+  recipeLoginStep,
+  type SignInLogin,
+  type SignInRecipe,
+} from "../destinations/sign-in-recipe.js";
 import { MintFailure } from "../mint/contracts.js";
 import { CredentialRejectedField, type WebsiteCredentials } from "../runtime/authentication.js";
 import { failureDetail } from "../runtime/failure-detail.js";
@@ -20,6 +24,7 @@ import {
 import { makeAutofillRetryState } from "../runtime/autofill-correction.js";
 import type { AutofillReplayTiming, AutofillRetryState } from "../runtime/autofill-replay-steps.js";
 import {
+  type RevealSignInValue,
   type RunSignInSecrets,
   signInForRun,
   SignInRunFailed,
@@ -211,6 +216,8 @@ export const makeLocalSessionSignIn = (options: {
   /** The asker `login` and the sign-in's own questions ask through. */
   readonly asks: BoundableAsk;
   readonly secrets: RunSignInSecrets;
+  /** The host's reveal of its own handles, as each sign-in types them (`RevealSignInValue`). */
+  readonly reveal?: RevealSignInValue;
   /** The values the site rejected and the corrections asked, across this host's sign-ins. */
   readonly retryState?: AutofillRetryState;
   readonly site: string;
@@ -255,6 +262,7 @@ export const makeLocalSessionSignIn = (options: {
         login,
         ask: options.asks.ask,
         secrets: options.secrets,
+        ...(options.reveal === undefined ? {} : { reveal: options.reveal }),
         site: options.site,
         siteOrigin: options.siteOrigin,
         ...(options.timing === undefined ? {} : { timing: options.timing }),
@@ -497,9 +505,19 @@ export const makeRunSignIn = (
     authenticationOrigins,
     typing: session.signInTyping,
   });
-  const login = { login: localSignInLogin({ ask: asks.ask, register: secrets.register, siteOrigin }) };
+  // A recipe that types no password asks the owner for its identifier alone.
+  const passwordless = recipeLoginStep(signIn.recipe);
+  const login = {
+    login: localSignInLogin({
+      ask: asks.ask,
+      register: secrets.register,
+      siteOrigin,
+      ...(passwordless === undefined ? {} : { passwordless }),
+    }),
+  };
   // One run's sign-ins share what the site rejected, as one attempt's do in every host.
   const retryState = makeAutofillRetryState();
+  const { reveal } = session.options;
   const before = runSignInBefore(() => session.signInTyping.typed, {
     recipe: signIn.recipe,
     entryUrl: signIn.entryUrl,
@@ -507,6 +525,7 @@ export const makeRunSignIn = (
     login: login.login,
     ask: asks.ask,
     secrets,
+    ...(reveal === undefined ? {} : { reveal }),
     site,
     siteOrigin,
     retryState,
@@ -524,6 +543,7 @@ export const makeRunSignIn = (
     login,
     asks,
     secrets,
+    ...(reveal === undefined ? {} : { reveal }),
     retryState,
     site,
     siteOrigin,

@@ -10,6 +10,7 @@ import type { FileLimits } from "../runtime/files.js";
 import type { ListCursorKeys } from "../runtime/list-cursor.js";
 import { ScriptQuestionDeclarations } from "../runtime/script-input.js";
 import type { OperationHooks } from "../runtime/operation-hooks.js";
+import type { RevealSignInValue } from "../runtime/sign-in-replay.js";
 import type { SavedSession, SavedSessionStorage } from "../runtime/start-state.js";
 export interface PomeradoOptions {
   readonly ask: InputAsker;
@@ -26,6 +27,15 @@ export interface PomeradoOptions {
    * go back on a blank page of that origin the browser serves itself, so the site sees no request.
    */
   readonly sessionStorage?: SavedSessionStorage;
+  /**
+   * For a host that answers a run's sign-in questions with its own handles in place of the values,
+   * such as a phone number or a code: called just before each sign-in value is typed, with the
+   * origin of the document its field is in, it returns the value to type, or fails to refuse typing
+   * it there, and nothing is typed in that screen. A value that is no handle comes back as it is.
+   * Pomerado masks each value it returns. A host that answers again with a new handle for a value
+   * the site rejected keeps its own record of rejected values.
+   */
+  readonly reveal?: RevealSignInValue;
   readonly minterProvider?: ModelProvider;
   readonly guardianProvider?: ModelProvider;
   /** The outcome reviewer's model provider, which judges whether each write took effect. */

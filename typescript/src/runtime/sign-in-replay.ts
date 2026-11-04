@@ -1,6 +1,10 @@
 import { Data, Effect } from "effect";
 import type { AutofillPopup } from "../destinations/autofill-contracts.js";
-import type { AutofillSignedInCheck } from "../destinations/autofill-step.js";
+import type {
+  AutofillInspection,
+  AutofillSignedInCheck,
+  AutofillStepReport,
+} from "../destinations/autofill-step.js";
 import { type MarkerSettle, settledMarkerCheck } from "../destinations/marker-settle.js";
 import {
   decodeSignInRecipe,
@@ -114,6 +118,41 @@ export interface RunSignInSecrets {
   readonly assertAbsent: (text: string) => Effect.Effect<void, unknown>;
 }
 
+/**
+ * A host's own handles for its sign-in answers, such as a phone number or a code it keeps out of
+ * this process until it is typed: called just before each value is typed, with the origin of the
+ * document its field is in, it returns the value to type, or fails to refuse typing it there. A
+ * value that is no handle of the host's comes back as it is.
+ */
+export type RevealSignInValue = (value: string, origin: string) => Effect.Effect<string, unknown>;
+
+/**
+ * The values a screen's fill types, each handle revealed for the origin of its own field's
+ * document and masked from then on, or the first field whose value the host refused to reveal
+ * there, or whose document the inspection found none for.
+ */
+const revealedValues = (
+  input: { readonly values: readonly string[]; readonly inspection: AutofillInspection },
+  reveal: RevealSignInValue,
+  secrets: RunSignInSecrets,
+) =>
+  Effect.gen(function* () {
+    const values: string[] = [];
+    for (const [index, value] of input.values.entries()) {
+      if (value === "") {
+        values.push(value);
+        continue;
+      }
+      const origin = input.inspection.targets.fields[index]?.documentOrigin;
+      if (origin === undefined) return { refused: index };
+      const shown = yield* Effect.either(reveal(value, origin));
+      if (shown._tag === "Left") return { refused: index };
+      if (shown.right !== value) secrets.register(shown.right);
+      values.push(shown.right);
+    }
+    return { values };
+  });
+
 /** A browser call that failed, carried through the shared replay to the run as it failed. */
 class ReplayBrowserFailed<E> extends Data.TaggedError("ReplayBrowserFailed")<{
   readonly error: E;
@@ -132,6 +171,8 @@ const replayHooks = <E>(
   browser: SignInReplayBrowser<E>,
   allowCantTell: boolean,
   settle: MarkerSettle | undefined,
+  secrets: RunSignInSecrets,
+  reveal?: RevealSignInValue,
 ): AutofillHooks<ReplayFailure<E>> => {
   const failed = (error: E) => new ReplayBrowserFailed({ error });
   const checkOn: AutofillHooks<ReplayFailure<E>>["confirm"] = (
@@ -152,8 +193,22 @@ const replayHooks = <E>(
   const readNumber = browser.approvalNumber;
   return {
     inspect: (step) => browser.inspect(step).pipe(Effect.mapError(failed)),
-    // One-character code boxes take the code one character each, as the host types it.
-    fill: (input) => browser.fill({ ...input, values: typedValues(input.step, input.values) }),
+    // One-character code boxes take the code one character each, as the host types it. A host's
+    // handle becomes its value first, so a phone number's format and the read-back see the value.
+    fill: (input) =>
+      reveal === undefined
+        ? browser.fill({ ...input, values: typedValues(input.step, input.values) })
+        : revealedValues(input, reveal, secrets).pipe(
+            Effect.flatMap((revealed) =>
+              "refused" in revealed
+                ? Effect.succeed<AutofillStepReport>({
+                    outcome: "refused",
+                    reason: "credential_target_refused",
+                    target: revealed.refused,
+                  })
+                : browser.fill({ ...input, values: typedValues(input.step, revealed.values) }),
+            ),
+          ),
     check: (indicator, screens, challengeScreens, at) =>
       browser.confirm(indicator, screens, challengeScreens ?? screens, at?.origin).pipe(
         Effect.catchAll(() =>
@@ -328,6 +383,11 @@ export const signInForRun = <E>(input: {
   readonly ask: InputAsker;
   /** Masks each value the sign-in types before any screen can send it. */
   readonly secrets: RunSignInSecrets;
+  /**
+   * The host's reveal of its own handles (`RevealSignInValue`), for a host that answers the
+   * sign-in's questions with handles in place of the values. Absent, every value is typed as given.
+   */
+  readonly reveal?: RevealSignInValue;
   /** The site as a question names it. */
   readonly site: string;
   /** The site the run is authorized for, which the entry page must be on. */
@@ -371,7 +431,13 @@ export const signInForRun = <E>(input: {
     const correct = (field: CredentialRejectedField, held: WebsiteCredentials, triesLeft: number) =>
       input.login.correct(field, held, triesLeft).pipe(Effect.mapError(loginUnanswered));
     const retryState = input.retryState ?? makeAutofillRetryState();
-    const hooks = replayHooks(input.browser, input.allowCantTell === true, input.markerSettle);
+    const hooks = replayHooks(
+      input.browser,
+      input.allowCantTell === true,
+      input.markerSettle,
+      input.secrets,
+      input.reveal,
+    );
     const broker = localSecretBroker(input.secrets);
     const given = { current: {} };
     let held = runLogin.held();
