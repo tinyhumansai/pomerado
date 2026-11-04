@@ -19,6 +19,7 @@ import {
   writePath,
   type RecordedReview,
 } from "./guardian-context-fixture.js";
+import { projectBrowser } from "./project-browser.js";
 
 export type Turn = (request: ModelRequest) => ModelResponse["output"];
 
@@ -52,7 +53,7 @@ export const mint = async (options: {
     Effect.scoped(
       Effect.gen(function* () {
         const service = yield* createPomerado({
-          ...(options.browser === undefined ? {} : { browser: options.browser }),
+          browser: { ...projectBrowser(), ...options.browser },
           ...(options.fileLimits === undefined ? {} : { files: { limits: options.fileLimits } }),
           minterProvider: minter,
           guardianProvider: options.guardian.provider,

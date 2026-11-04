@@ -41,6 +41,11 @@ export interface PlaywrightOptions {
   readonly library?: PlaywrightLibrary;
   /** The browser the executor launches or joins. Defaults to `chromium`. */
   readonly browser?: BrowserName;
+  /**
+   * A build of that browser to launch in place of Playwright's own, such as Camoufox for
+   * `firefox`. Only for a browser the executor launches, not one it attaches to.
+   */
+  readonly executablePath?: string;
   readonly headless?: boolean;
   readonly startupTimeoutMs?: number;
   readonly cleanupTimeoutMs?: number;
@@ -95,6 +100,18 @@ export interface PlaywrightExecutor {
 const asError = (cause: unknown): Error =>
   cause instanceof Error ? cause : new Error("Native Playwright transport failed", { cause });
 const promise = <A>(run: () => Promise<A>) => Effect.tryPromise({ try: run, catch: asError });
+/** The options the executor launches its own browser server with: the engine's, then its own. */
+export const nativeLaunchOptions = (
+  engine: BrowserEngine,
+  options: Pick<PlaywrightOptions, "headless" | "executablePath">,
+  startupTimeoutMs: number,
+) => ({
+  ...engine.launchOptions,
+  headless: options.headless ?? true,
+  timeout: startupTimeoutMs,
+  ...(options.executablePath === undefined ? {} : { executablePath: options.executablePath }),
+});
+
 const loadLauncher = (engine: BrowserEngine, library: PlaywrightLibrary) =>
   promise(async () => engine.launcher((await import(library)) as typeof import("playwright")));
 const duration = (value: number, name: string) => {
@@ -369,6 +386,14 @@ export const makePlaywrightExecutor = (
       if (library === "patchright")
         return yield* Effect.fail(new Error("patchright drives only chromium"));
     }
+    if (options.executablePath !== undefined) {
+      if (options.executablePath === "")
+        return yield* Effect.fail(new Error("executablePath must name a browser build"));
+      if (options.endpoint !== undefined || options.cdp !== undefined)
+        return yield* Effect.fail(
+          new Error("executablePath applies only to a browser the executor launches"),
+        );
+    }
     const owner: NativeOwnership = {
       remote: options.endpoint !== undefined || options.cdp !== undefined,
       engine,
@@ -385,10 +410,7 @@ export const makePlaywrightExecutor = (
             const launcher = yield* loadLauncher(engine, library);
             if (options.endpoint === undefined)
               owner.server = yield* promise(() =>
-                launcher.launchServer({
-                  headless: options.headless ?? true,
-                  timeout: startupTimeoutMs,
-                }),
+                launcher.launchServer(nativeLaunchOptions(engine, options, startupTimeoutMs)),
               );
             const playwrightEndpoint = options.endpoint ?? owner.server?.wsEndpoint();
             if (playwrightEndpoint === undefined)

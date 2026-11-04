@@ -200,6 +200,10 @@ const loginQuestion = (origin: string) =>
 const signInHost = "login.shop.test";
 /** A shop and a browser that resolves its hosts, closed after `use`. */
 const withShop = async (use: (shop: Shop, endpoint: string) => Promise<void>) => {
+  test.skip(
+    test.info().project.name !== "chromium",
+    "The shop runs on a Chromium server the test launches itself, with Chromium's flags",
+  );
   const directory = await mkdtemp(join(tmpdir(), "pomerado-sign-in-"));
   const shop = await startShop(directory);
   const browser = await chromium.launchServer({

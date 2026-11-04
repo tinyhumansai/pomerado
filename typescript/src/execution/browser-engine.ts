@@ -5,11 +5,14 @@ import type {
   BrowserType,
   CDPSession,
   Frame,
+  LaunchOptions,
   Page,
 } from "playwright";
 import {
   firefoxBrowserSession,
   firefoxSession,
+  navigationPending,
+  navigationPendingKey,
   recordNavigations,
 } from "./firefox-devtools.js";
 import type { BrowserName } from "./playwright-protocol.js";
@@ -27,6 +30,8 @@ export interface BrowserEngine {
   readonly session: (context: BrowserContext, target: Page | Frame) => Promise<CDPSession>;
   /** A DevTools session on the whole browser. */
   readonly browserSession: (browser: Browser) => Promise<CDPSession>;
+  /** The options the executor launches this browser with, beside its own. */
+  readonly launchOptions: Pick<LaunchOptions, "firefoxUserPrefs">;
   /** The options the worker opens its own context with. */
   readonly contextOptions: BrowserContextOptions;
   /**
@@ -40,6 +45,11 @@ export interface BrowserEngine {
    * worker's context closed once the worker's connection dropped.
    */
   readonly listsContexts: boolean;
+  /**
+   * Whether page code typing key by key may dispatch a synthetic keypress. Where it may not, each
+   * character still goes in between its key down and key up, under the same guard, with none.
+   */
+  readonly syntheticKeypress: boolean;
 }
 
 /** Chromium answers DevTools commands itself. */
@@ -48,29 +58,48 @@ export const chromiumEngine: BrowserEngine = {
   launcher: (library) => library.chromium,
   session: (context, target) => context.newCDPSession(target),
   browserSession: (browser) => browser.newBrowserCDPSession(),
+  launchOptions: {},
   contextOptions: {},
   attach: () => undefined,
   listsContexts: true,
+  syntheticKeypress: true,
 };
+
+const attached = new WeakSet<BrowserContext>();
+
+/**
+ * The preferences a Firefox executor's browser runs with. HTTPS-First is off, so a page loads
+ * over the scheme it was asked for, as on Playwright's Chromium, and the host's routes for a
+ * plain-http page see its load. Service workers stay on: Firefox routes no request with them off.
+ */
+export const firefoxPrefs = { "dom.security.https_first": false } as const;
 
 /**
  * Firefox answers no DevTools commands, so the engine answers those the host sends with Playwright
  * calls (`firefox-devtools`). Its contexts block service workers, which Chromium's sessions bypass
- * only while the host clears or restores a site.
+ * only while the host clears or restores a site. Playwright blocks them with a script, which
+ * Camoufox runs apart from the page's own, so there a site's worker still runs: a clear
+ * unregisters the origin's workers, but one may answer the clear's own load first.
  */
 export const firefoxEngine: BrowserEngine = {
   name: "firefox",
   launcher: (library) => library.firefox,
   session: firefoxSession,
   browserSession: firefoxBrowserSession,
+  launchOptions: { firefoxUserPrefs: firefoxPrefs },
   contextOptions: { serviceWorkers: "block" },
   attach: (browser, context) => {
+    if (attached.has(context)) return;
+    attached.add(context);
     context.newCDPSession = (target) => firefoxSession(context, target);
     browser.newBrowserCDPSession = () => firefoxBrowserSession(browser);
     for (const page of context.pages()) recordNavigations(page);
     context.on("page", recordNavigations);
+    Reflect.set(globalThis, navigationPendingKey, navigationPending);
   },
   listsContexts: false,
+  // Camoufox's isolated world crashes the tab on a synthetic keypress that page code dispatches.
+  syntheticKeypress: false,
 };
 
 const engines: { readonly [Name in BrowserName]: BrowserEngine } = {

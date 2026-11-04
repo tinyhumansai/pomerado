@@ -10,6 +10,7 @@ import { makeIntegrationMcp } from "../../src/standalone/mcp-server.js";
 import { contractJsonSchema } from "../../src/runtime/operation.js";
 import { FileInput, FileOutput, type FileLimits } from "../../src/runtime/files.js";
 import { receiptTool, startFileSite, statement, statementSha256 } from "./file-fixture.js";
+import { projectBrowser } from "./project-browser.js";
 
 const receipt = "Receipt 1042\nTotal 12.50\n";
 
@@ -46,6 +47,7 @@ const serve = async (
         },
       },
       pomerado: {
+        browser: projectBrowser(),
         files: { downloads, ...(read?.limits === undefined ? {} : { limits: read.limits }) },
       },
     }).pipe(Scope.extend(scope)),

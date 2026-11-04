@@ -90,8 +90,8 @@ export const submissionGuardCode = `(field, { key, call, actions, match, submit,
           decode(parsed.password),
           parsed.hostname,
           ...parsed.pathname.split("/").map(decode),
-          ...parsed.searchParams.keys(),
-          ...parsed.searchParams.values(),
+          // The pairs themselves: Firefox's isolated world can't iterate keys() or values().
+          ...[...parsed.searchParams].flat(),
           decode(parsed.hash.slice(1)),
         ];
       } catch {
@@ -148,7 +148,7 @@ export const submissionGuardCode = `(field, { key, call, actions, match, submit,
     view.addEventListener("formdata", (event) => {
       const form = event.target;
       if (!event.isTrusted || !(form instanceof view.HTMLFormElement)) return;
-      const held = holds(form) || [...event.formData.values()].some(carries);
+      const held = holds(form) || [...event.formData].some(([, value]) => carries(value));
       // form.submit() has no submitter, so the form's own method and action count too.
       let changed = null;
       let fired;
@@ -160,7 +160,8 @@ export const submissionGuardCode = `(field, { key, call, actions, match, submit,
       if (changed === null) return;
       // No later listener may put the form back or its entries in again.
       event.stopImmediatePropagation();
-      for (const name of new Set(event.formData.keys())) event.formData.delete(name);
+      for (const name of new Set([...event.formData].map(([name]) => name)))
+        event.formData.delete(name);
       const { parentNode, nextSibling } = form;
       form.remove();
       view.setTimeout(() => {

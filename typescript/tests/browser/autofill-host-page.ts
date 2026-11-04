@@ -5,6 +5,7 @@ import { Effect, Schema } from "effect";
 import type { AutofillPage } from "../../src/destinations/autofill-step.js";
 import { isolatedLocatorPage, isolatedWorldName } from "./isolated-locator-page.js";
 import { makeCredentialKeyboard } from "../../src/destinations/credential-keyboard.js";
+import { browserEngine } from "../../src/execution/browser-engine.js";
 import type { CredentialBindingWorld } from "../../src/destinations/credential-keyboard.js";
 
 /** Every URL a report's failure detail names is an origin alone: no path, query or fragment. */
@@ -54,6 +55,18 @@ export const expectNotCarried = (calls: readonly HostCall[], value: string) => {
 };
 
 /**
+ * The engine for a fixture page's browser, attached to the page's context, so the host's own
+ * DevTools sessions there go through it as they do on a worker.
+ */
+export const fixtureEngine = (page: Page) => {
+  const browser = page.context().browser();
+  const firefox = browser?.browserType().name() === "firefox";
+  const engine = browserEngine(firefox ? "firefox" : "chromium");
+  if (browser !== null) engine.attach(browser, page.context());
+  return engine;
+};
+
+/**
  * The host's call on a local page: Kernel's `page`, `context` and `browser`, as on a worker. It
  * keeps every call, and fails the test, without changing what the call does, when a script holds a
  * value the host's keyboard already typed on the page (no value but a date of
@@ -66,7 +79,8 @@ export const hostPage = async (
   configured: readonly string[] = [],
   { patchright = false } = {},
 ): Promise<AutofillPage & { readonly calls: readonly HostCall[] }> => {
-  const session = await page.context().newCDPSession(page);
+  const engine = fixtureEngine(page);
+  const session = await engine.session(page.context(), page);
   const { targetInfo } = await session.send("Target.getTargetInfo");
   await session.detach();
   const calls: HostCall[] = [];
@@ -177,10 +191,11 @@ export const hostKeyboard = async (
       );
     }),
   ];
+  const engine = fixtureEngine(page);
   const sessions = new Map<string, CDPSession>();
   for (const [index, frame] of candidates.entries()) {
     try {
-      sessions.set(`local-${index}`, await page.context().newCDPSession(frame));
+      sessions.set(`local-${index}`, await engine.session(page.context(), frame));
     } catch (error) {
       if (
         !(error instanceof Error) ||
@@ -206,7 +221,10 @@ export const hostKeyboard = async (
       },
     },
     undefined,
-    fixtureBindingWorld,
+    // Camoufox binds the field in the world its evaluations use, so it needs no world of its own.
+    engine.name === "firefox" ? undefined : fixtureBindingWorld,
+    // As the worker's: Camoufox crashes the tab on a synthetic keypress that page code dispatches.
+    engine.syntheticKeypress,
   );
   const keyboard: typeof native = {
     insertText: (target, text, options) =>

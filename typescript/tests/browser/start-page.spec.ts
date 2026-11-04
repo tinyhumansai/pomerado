@@ -16,6 +16,7 @@ import {
 import { makeLocalKernel } from "../../src/testing/local-kernel.js";
 import { requestSite } from "../../src/standalone/request-context.js";
 import type { StandaloneSession } from "../../src/standalone/session.js";
+import { fixtureEngine } from "./autofill-host-page.js";
 
 // The page reset a live example, live test or write session's first step starts from, on local
 // Chromium against a local site that counts each path it serves.
@@ -74,7 +75,7 @@ const host = async (page: Page) => {
           : Effect.fail(new Error(response.error ?? "Browser call failed")),
       ),
     );
-  const cdp = await page.context().newCDPSession(page);
+  const cdp = await fixtureEngine(page).session(page.context(), page);
   const { targetInfo } = await cdp.send("Target.getTargetInfo");
   await cdp.detach();
   return { execute, targetId: targetInfo.targetId, calls };

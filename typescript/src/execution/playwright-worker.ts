@@ -7,6 +7,7 @@ import { format } from "node:util";
 import type { Browser, BrowserContext, CDPSession, Frame, Page } from "playwright";
 import { Cause, Effect, Exit, Schema } from "effect";
 import type { BrowserExecuteResponse } from "../runtime/browser-execution.js";
+import type { PrivateCredentialCdp } from "../destinations/credential-keyboard.js";
 import type { BrowserEngine } from "./browser-engine.js";
 
 // Match the lease/screening entries: compiled packages need no hook; source tests resolve NodeNext imports.
@@ -342,7 +343,7 @@ const credential = (
         else if (!connected.left.message.includes("does not have a separate CDP session"))
           return yield* Effect.fail(connected.left);
       }
-      const keyboard = makeCredentialKeyboard({
+      const cdp: PrivateCredentialCdp = {
         sessions: () => [...sessions.keys()],
         send: (method, params, id) => {
           const session = sessions.get(id);
@@ -406,7 +407,9 @@ const credential = (
               );
           }
         },
-      });
+      };
+      // Camoufox crashes the tab on a synthetic keypress that page code dispatches.
+      const keyboard = makeCredentialKeyboard(cdp, undefined, undefined, engine.syntheticKeypress);
       return yield* keyboard.insertText(
         request.target,
         request.text,

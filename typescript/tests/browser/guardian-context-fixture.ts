@@ -267,12 +267,20 @@ export const actionFor = (input: Readonly<Record<string, unknown>> | undefined) 
 /** An outcome reviewer that ends every turn without assessing. */
 export const quietReviewer: ModelProvider = scripted(() => [message("No assessment yet.")]);
 
-/** A local site; `handle` answers each request, and every request line is logged. */
+/**
+ * A local site; `handle` answers each request, and every request line is logged. The icon Firefox
+ * fetches for a page on its own is no request of the page's: it is answered 404 and not logged.
+ */
 export const startSite = async (
   handle: (request: IncomingMessage, response: ServerResponse, body: string) => void,
 ) => {
   const requests: string[] = [];
   const server = createServer((request, response) => {
+    if (request.url === "/favicon.ico") {
+      response.statusCode = 404;
+      response.end();
+      return;
+    }
     let body = "";
     request.setEncoding("utf8");
     request.on("data", (chunk: string) => {

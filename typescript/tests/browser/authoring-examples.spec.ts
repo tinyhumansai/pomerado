@@ -49,6 +49,7 @@ import {
 import { makeEffectJournal } from "../../src/runtime/context.js";
 import { commitEvidenceOf, commitRetryRefusal, unenteredWrite } from "../../src/runtime/run-outcome.js";
 import { runExample, failure, localFiles } from "./authoring-fixture.js";
+import { pageGlobal } from "./page-world.js";
 
 const dialogPickerFixture = async (page: Page, mode: "success" | "ambiguous" | "no_commit") => {
   await page.setContent(
@@ -1371,12 +1372,15 @@ const checkoutSite = async (
   orders: string[],
   site: { offer: boolean; declined: number } = { offer: false, declined: 0 },
 ) => {
-  await page.exposeFunction("declineOffer", () => {
-    site.declined += 1;
-  });
+  // The offer reports its decline by a request the route counts: Camoufox exposes a function to
+  // its isolated world only, where the page's own button can't call it.
   await page.route(`${origin}/**`, async (route) => {
     const request = route.request();
     const url = new URL(request.url());
+    if (url.pathname === "/decline-offer") {
+      site.declined += 1;
+      return route.fulfill({ status: 204 });
+    }
     if (url.pathname === "/checkout")
       return route.fulfill({
         contentType: "text/html",
@@ -1461,7 +1465,7 @@ const checkoutSite = async (
       return route.fulfill({
         contentType: "text/html",
         body: `${review(url.searchParams.get("item") ?? "", `$${(Number(url.searchParams.get("quantity")) * 12.5).toFixed(2)}`)}
-          ${site.offer ? `<div role="dialog" aria-label="Membership offer"><button onclick="window.declineOffer(); this.parentElement.remove()">No thanks</button></div>` : ""}`,
+          ${site.offer ? `<div role="dialog" aria-label="Membership offer"><button onclick="fetch('/decline-offer', { method: 'POST' }); this.parentElement.remove()">No thanks</button></div>` : ""}`,
       });
     // The site answers the order's own POST with its confirmation. A sofa's order is taken, but
     // the site answers with the review again, its promo code flagged: the page can't tell whether
@@ -1507,7 +1511,7 @@ test("write-session example commits once across its act steps and reads the site
     const offer = document.createElement("div");
     offer.setAttribute("role", "dialog");
     offer.setAttribute("aria-label", "Membership offer");
-    offer.innerHTML = `<button onclick="window.declineOffer(); this.parentElement.remove()">No thanks</button>`;
+    offer.innerHTML = `<button onclick="fetch('/decline-offer', { method: 'POST' }); this.parentElement.remove()">No thanks</button>`;
     document.body.append(offer);
   });
   // The next step continues on the review page the first one left.
@@ -2800,7 +2804,7 @@ test("a write keeps the site's rewrite of a typed value and notes whether it onl
       ].join(""),
     );
     const run = await runExample(page, saveAddress, { address });
-    const saved = await page.evaluate(() => (window as unknown as { saved: string[] }).saved);
+    const saved = await pageGlobal(page, "saved");
     return { ...run, saved };
   };
   const reformatted = await save("12 Elm Parkway, Suite 4");

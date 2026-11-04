@@ -4,6 +4,11 @@ import { inspectAutofillStep, type AutofillStep } from "../../src/destinations/a
 import { fillAutofillStep } from "../../src/destinations/autofill-fill.js";
 import { hostKeyboard, hostPage } from "./autofill-host-page.js";
 
+test.skip(
+  ({ browserName }) => browserName !== "chromium",
+  "An out-of-process frame's own DevTools session is Chromium's",
+);
+
 const site = "https://login.example.test";
 const password = "p@9x";
 // A separate process is essential here: Chromium must scope the resolved native node to its OOPIF.

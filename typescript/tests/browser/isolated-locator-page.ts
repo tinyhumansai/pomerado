@@ -110,6 +110,7 @@ export const isolatedLocatorPage = async (page: Page) => {
     if (object.objectId === undefined) throw new Error("Fixture element unresolved");
     return object.objectId;
   };
+  const firefox = page.context().browser()?.browserType().name() === "firefox";
   const evaluate = async (
     locator: Locator,
     frame: Frame,
@@ -117,11 +118,25 @@ export const isolatedLocatorPage = async (page: Page) => {
     arg: unknown,
     options: unknown,
   ): Promise<unknown> => {
-    const cdp = await sessionFor(frame);
     // The evaluation's own timeout bounds each wait for the element, as Patchright's does.
     const timeout: unknown =
       typeof options === "object" && options !== null ? Reflect.get(options, "timeout") : undefined;
     const wait = typeof timeout === "number" ? { timeout } : undefined;
+    // Camoufox already evaluates in an isolated world, so each element the evaluation reads is only
+    // marked as the read starts, as below, and the evaluation then runs as it is.
+    if (firefox) {
+      const key = `data-fixture-${randomUUID()}`;
+      const toggle = (element: Element, [marker, set]: readonly [string, boolean]) =>
+        set ? element.setAttribute(marker, "") : element.removeAttribute(marker);
+      for (const set of [true, false]) await locator.evaluate(toggle, [key, set] as const, wait);
+      for (const handle of elementHandles(arg) ?? [])
+        for (const set of [true, false]) await handle.evaluate(toggle, [key, set] as const);
+      const ownEvaluate = boundMember(locator, "evaluate");
+      if (typeof ownEvaluate !== "function") throw new Error("Fixture evaluator missing");
+      const result: unknown = await Reflect.apply(ownEvaluate, locator, [fn, arg, wait]);
+      return result;
+    }
+    const cdp = await sessionFor(frame);
     const found = await markedNode(cdp, (key, marked) =>
       locator.evaluate(
         (element, [marker, on]) => (on ? element.setAttribute(marker, "") : element.removeAttribute(marker)),

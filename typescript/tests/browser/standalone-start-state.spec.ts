@@ -212,6 +212,10 @@ const body = (request: IncomingMessage) =>
  * server answers as another site, whose code field a page on the site frames.
  */
 const startSite = async () => {
+  test.skip(
+    test.info().project.name !== "chromium",
+    "The site runs on a Chromium server the test launches itself, with Chromium's flags",
+  );
   const directory = await mkdtemp(join(tmpdir(), "pomerado-start-state-"));
   await promisify(execFile)("openssl", [
     "req",

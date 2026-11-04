@@ -2,6 +2,12 @@ import { expect, test } from "@playwright/test";
 import type { Page, Request } from "playwright";
 import { waitCode } from "../../src/browser/wait.js";
 import { makeLocalKernel } from "../../src/testing/local-kernel.js";
+import { fixtureEngine } from "./autofill-host-page.js";
+
+// The page's engine watches its navigations from the start, as a worker's does.
+test.beforeEach(({ page }) => {
+  fixtureEngine(page);
+});
 
 // The runtime's outcome race and readiness wait, run as a Kernel call body runs them (`page` in
 // scope) on synthetic pages. The pages copy the markup and timing of common toast, alert, modal,
@@ -538,6 +544,10 @@ test.describe("outcome race after an action", () => {
   });
 
   test("a check hook reads the app's own state and returns its value as evidence", async ({ page }) => {
+    test.skip(
+      test.info().project.name === "camoufox",
+      "Camoufox evaluates page code in an isolated world, blind to the site's own variables",
+    );
     await site(page, {
       "/": recordForm(`window.store = { status: "saving" }; setTimeout(() => { window.store = { status: "saved", id: 12 }; }, 200);`),
     });
@@ -616,16 +626,24 @@ test.describe("outcome race after an action", () => {
  * Runs `waitForReady(target, options)` and returns its result or its failure. A page's
  * `window.begin()` starts its timers once the wait's first look has read the page, so a blocker
  * it clears later is always seen, however slow the machine: the wait's `until` hook runs last in
- * each look. A test that passes its own `until` starts them before the wait instead.
+ * each look. A test that passes its own `until` starts them before the wait instead. An inline
+ * script calls it, in the page's own world: Camoufox evaluates in an isolated world that can't
+ * see the page's functions.
  */
+const beginInPage = `await page.evaluate(() => {
+  const script = document.createElement("script");
+  script.textContent = "window.begin?.()";
+  document.documentElement.append(script);
+  script.remove();
+});`;
 const ready = async (page: Page, target: string, options: string, after = "undefined") => {
   const own = options.includes("until:");
   const answer = await call(
     page,
-    `${own ? "await page.evaluate(() => window.begin?.());" : ""}
+    `${own ? beginInPage : ""}
     let begun = false;
     const firstLook = async () => {
-      if (!begun) await page.evaluate(() => window.begin?.());
+      if (!begun) ${beginInPage}
       begun = true;
       return true;
     };
@@ -668,7 +686,7 @@ test.describe("readiness before acting", () => {
     const stuck = await ready(page, `page.getByRole("button", { name: "Apply" })`, "");
     expect(stuck.reason).toBe("not_ready");
     expect(stuck.message).toMatch(/^not_ready after \d+ ms, 600 ms without progress: it is disabled; /u);
-    await page.getByLabel("Code").press("Tab");
+    await page.getByLabel("Code").blur();
     expect(await ready(page, `page.getByRole("button", { name: "Apply" })`, "")).toMatchObject({ waitedFor: [] });
   });
 
@@ -706,13 +724,13 @@ test.describe("readiness before acting", () => {
         const spin = document.querySelector("#spin");
         // Two requests in a row: the spinner hides for 60 ms between them.
         window.begin = () => { for (const [at, shown] of [[200, false], [260, true], [700, false], [760, true], [1200, false]])
-          setTimeout(() => { spin.style.display = shown ? "block" : "none"; window.lastChange = performance.now(); }, at); };
+          setTimeout(() => { spin.style.display = shown ? "block" : "none"; spin.dataset.changedAt = performance.now(); }, at); };
       </script>`);
     const answer = await ready(
       page,
       `page.getByRole("button", { name: "Save" })`,
       "stableMs: 300, noProgressMs: 2000",
-      `page.evaluate(() => performance.now() - window.lastChange)`,
+      `page.evaluate(() => performance.now() - Number(document.querySelector("#spin").dataset.changedAt))`,
     );
     expect(answer.waitedFor).toContain("covered");
     expect(answer.extra).toBeGreaterThanOrEqual(280);
@@ -779,7 +797,13 @@ test.describe("readiness before acting", () => {
       `page.locator("#target")`,
       `dismiss: page.getByRole("button", { name: "Cancel Tour" })`,
       `(async () => {
-        await page.evaluate(() => window.openTourLater());
+        // In the page's own world, where its function lives, as beginInPage starts a page.
+        await page.evaluate(() => {
+          const script = document.createElement("script");
+          script.textContent = "window.openTourLater()";
+          document.documentElement.append(script);
+          script.remove();
+        });
         // The tour covers the button by the time it is clicked.
         await page.waitForFunction(() => document.querySelector(".shepherd-element") !== null, null, { timeout: 3000 });
         await page.locator("#target").click({ timeout: 2000 });
@@ -858,6 +882,10 @@ test.describe("readiness before acting", () => {
   });
 
   test("the page's own pending-request counter holds the wait until it reaches zero", async ({ page }) => {
+    test.skip(
+      test.info().project.name === "camoufox",
+      "Camoufox evaluates page code in an isolated world, blind to the site's own variables",
+    );
     await page.setContent(`
       <button>Save</button>
       <script>
@@ -928,6 +956,10 @@ test.describe("readiness before acting", () => {
   });
 
   test("a custom until condition holds the wait until it is true", async ({ page }) => {
+    test.skip(
+      test.info().project.name === "camoufox",
+      "Camoufox evaluates page code in an isolated world, blind to the site's own variables",
+    );
     // The app reports itself ready from its third check on.
     await page.setContent(`<button>Save</button><script>window.checks = 0;</script>`);
     const answer = await ready(

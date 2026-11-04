@@ -18,6 +18,11 @@ import { executeKernelOperation } from "../../src/runtime/kernel-operation-run.j
 import { makeRunFiles, type FileHostHook } from "../../src/runtime/file-transfer.js";
 import { startFileSite } from "./file-fixture.js";
 
+test.skip(
+  ({ browserName }) => browserName !== "chromium",
+  "The executor attaches over CDP only to Chromium",
+);
+
 const native = <A>(
   run: (executor: PlaywrightExecutor) => Promise<A>,
   options: PlaywrightOptions,

@@ -86,18 +86,18 @@ const Saved = Schema.Union(
 
 /**
  * Native page code that saves the first download any page of the context starts into `path`,
- * noting the `Content-Type` of each response so the download's own is known.
+ * noting each response's address and `Content-Type`, so the download's own type is known.
  */
 const armCode = (slot: string, path: string) => `
 const registry = (globalThis.__pomeradoDownloads ??= new Map());
-const state = { listeners: [], types: new Map() };
+const state = { listeners: [], types: new Map(), answered: new Set() };
 const capture = (download) => {
   if (state.done !== undefined) return;
   const name = download.suggestedFilename();
-  const contentType = state.types.get(download.url());
-  state.done = download.saveAs(${JSON.stringify(path)}).then(() => ({ saved: true, name, ...(contentType === undefined ? {} : { contentType }) }), () => ({ saved: false }));
+  state.done = download.saveAs(${JSON.stringify(path)}).then(() => ({ saved: true, name, url: download.url() }), () => ({ saved: false }));
 };
 const typed = (response) => {
+  state.answered.add(response.url());
   const type = response.headers()["content-type"];
   if (type !== undefined) state.types.set(response.url(), type);
 };
@@ -112,17 +112,30 @@ state.listeners.push(() => context.off("page", watch), () => context.off("respon
 registry.set(${JSON.stringify(slot)}, state);
 return true;`;
 
-/** Native page code that waits up to `timeoutMs` for the slot's download, then ends its capture. */
+/**
+ * Native page code that waits up to `timeoutMs` for the slot's download, then ends its capture.
+ * Firefox reports a download before the response it came in, and may save it first too, so a
+ * saved download from a network address whose response hasn't come yet waits up to 2 seconds more
+ * for it, within the same `timeoutMs`; one the page made itself comes in no response.
+ */
 const takeCode = (slot: string, timeoutMs: number) => `
 const registry = globalThis.__pomeradoDownloads;
 const state = registry?.get(${JSON.stringify(slot)});
 if (state === undefined) return { saved: false };
 const until = Date.now() + ${timeoutMs};
-while (state.done === undefined && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 50));
+const pause = () => new Promise((resolve) => setTimeout(resolve, 50));
+while (state.done === undefined && Date.now() < until) await pause();
+const done = state.done === undefined ? { saved: false } : await Promise.race([state.done, new Promise((resolve) => setTimeout(() => resolve({ saved: false }), Math.max(0, until - Date.now())))]);
+let saved = done;
+if (done.saved) {
+  const typeUntil = Math.min(until, Date.now() + 2000);
+  while (/^https?:/.test(done.url) && !state.answered.has(done.url) && Date.now() < typeUntil) await pause();
+  const contentType = state.types.get(done.url);
+  saved = { saved: true, name: done.name, ...(contentType === undefined ? {} : { contentType }) };
+}
 registry.delete(${JSON.stringify(slot)});
 for (const stop of state.listeners) stop();
-if (state.done === undefined) return { saved: false };
-return await Promise.race([state.done, new Promise((resolve) => setTimeout(() => resolve({ saved: false }), Math.max(0, until - Date.now())))]);`;
+return saved;`;
 
 /**
  * The native browser's file hook for one run, removing its run directory when the scope closes.

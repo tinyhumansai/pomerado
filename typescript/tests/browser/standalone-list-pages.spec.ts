@@ -9,6 +9,7 @@ import { createPomerado } from "../../src/standalone/pomerado.js";
 import { makeInputAsker } from "../../src/inputs/callback.js";
 import { listCursorTtlMs } from "../../src/runtime/list-page.js";
 import { RunOutcomeFailure } from "../../src/standalone/run-report.js";
+import { projectBrowser } from "./project-browser.js";
 
 // A list tool paged through the local host: each call is a fresh run, the host signs the cursor
 // each page returns and checks it before the next run touches the site. The tool is the
@@ -106,6 +107,7 @@ test("a list pages by signed cursors across changes and refuses a stale cursor b
       Effect.scoped(
         Effect.gen(function* () {
           const service = yield* createPomerado({
+          browser: projectBrowser(),
             ask: makeInputAsker(() => Effect.succeed({})),
             minterProvider: unreachableModel,
             guardianProvider: unreachableModel,
@@ -238,6 +240,7 @@ test("a list whose call size differs from the site's page size returns exact win
       Effect.scoped(
         Effect.gen(function* () {
           const service = yield* createPomerado({
+          browser: projectBrowser(),
             ask: makeInputAsker(() => Effect.succeed({})),
             minterProvider: unreachableModel,
             guardianProvider: unreachableModel,

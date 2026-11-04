@@ -12,6 +12,11 @@ import {
 import { fillAutofillStep } from "../../src/destinations/autofill-fill.js";
 import { expectOriginsOnly, hostKeyboard, hostPage } from "./autofill-host-page.js";
 
+test.skip(
+  ({ browserName }) => browserName !== "chromium",
+  "Its sign-in sites answer through Chromium's DevTools Fetch domain, which Firefox lacks",
+);
+
 // A sign-in whose site moves to another host after the username screen, such as a sign-in
 // service on another registrable domain, keeps the trust its host gave the first screen along the
 // redirect the site itself starts from that screen's submit, once the host's review of the new
