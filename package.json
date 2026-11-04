@@ -216,6 +216,11 @@
       "import": "./dist/typescript/src/execution/declared-questions.js",
       "default": "./dist/typescript/src/execution/declared-questions.js"
     },
+    "./core/execution/local-operation": {
+      "types": "./dist/typescript/src/execution/local-operation.d.ts",
+      "import": "./dist/typescript/src/execution/local-operation.js",
+      "default": "./dist/typescript/src/execution/local-operation.js"
+    },
     "./core/execution/playwright-execute": {
       "types": "./dist/typescript/src/execution/playwright-execute.d.ts",
       "import": "./dist/typescript/src/execution/playwright-execute.js",
@@ -840,6 +845,16 @@
       "types": "./dist/typescript/src/runtime/session-sign-in.d.ts",
       "import": "./dist/typescript/src/runtime/session-sign-in.js",
       "default": "./dist/typescript/src/runtime/session-sign-in.js"
+    },
+    "./core/runtime/operation-hooks": {
+      "types": "./dist/typescript/src/runtime/operation-hooks.d.ts",
+      "import": "./dist/typescript/src/runtime/operation-hooks.js",
+      "default": "./dist/typescript/src/runtime/operation-hooks.js"
+    },
+    "./core/runtime/sign-in-replay": {
+      "types": "./dist/typescript/src/runtime/sign-in-replay.d.ts",
+      "import": "./dist/typescript/src/runtime/sign-in-replay.js",
+      "default": "./dist/typescript/src/runtime/sign-in-replay.js"
     },
     "./core/runtime/script-card-fill": {
       "types": "./dist/typescript/src/runtime/script-card-fill.d.ts",

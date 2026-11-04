@@ -38,6 +38,11 @@ import { FileRefused } from "../runtime/files.js";
 import { outputFiles, type RunFiles } from "../runtime/file-transfer.js";
 import { HttpFailure, type HttpTransport } from "../runtime/site-http.js";
 import type { ListHost } from "../runtime/list-page.js";
+import {
+  pageFingerprint,
+  pageProgressCode,
+  type OperationHooks,
+} from "../runtime/operation-hooks.js";
 
 export interface LocalOperationOptions {
   readonly workspace: LocalWorkspace;
@@ -102,6 +107,12 @@ export interface LocalOperationOptions {
    * HTTP version fails before it sends anything; a Kernel script never uses it.
    */
   readonly http?: HttpTransport;
+  /**
+   * The host's hooks into this run: when the script starts, the pages after each of its browser
+   * calls, and each commit step it enters, whose next call that can reach the site waits for the
+   * host to accept it. Absent, the run goes as before.
+   */
+  readonly hooks?: OperationHooks;
 }
 export interface LocalOperationJournal {
   readonly effect: "not_sent" | "possible" | "verified";
@@ -124,6 +135,8 @@ export class LocalOperationFailure extends Error {
   readonly unapplied?: InputNotAppliedDetail;
   /** The authored source line that threw, such as `src/tool.mjs:12`, when the child named one. */
   readonly frame?: string;
+  /** The commit step the host's commit hook refused; nothing the script did after it ran. */
+  readonly commitRefused?: string;
   constructor(
     message: string,
     readonly journal: LocalOperationJournal,
@@ -137,6 +150,7 @@ export class LocalOperationFailure extends Error {
       readonly refusal?: InputRefusalDetail;
       readonly unapplied?: InputNotAppliedDetail;
       readonly frame?: string;
+      readonly commitRefused?: string;
     } = {},
   ) {
     super(message);
@@ -145,6 +159,7 @@ export class LocalOperationFailure extends Error {
     if (options.refusal !== undefined) this.refusal = options.refusal;
     if (options.unapplied !== undefined) this.unapplied = options.unapplied;
     if (options.frame !== undefined) this.frame = options.frame;
+    if (options.commitRefused !== undefined) this.commitRefused = options.commitRefused;
   }
 }
 export interface LocalOperationOutput extends LocalOperationJournal {
@@ -215,11 +230,30 @@ export const answerSessionSignIn = (
     yield* settle;
     return { outcome: "refused", cause: "session_sign_in_failed" } satisfies SessionSignInAnswer;
   });
+/**
+ * The host's progress hook after one of the script's browser calls, with a fingerprint of the
+ * pages then. A read that fails, or finds no page, reports nothing and leaves the run as it was.
+ */
+const reportProgress = (
+  browser: NonNullable<LocalOperationOptions["browser"]>,
+  progress: NonNullable<OperationHooks["progress"]>,
+) =>
+  browser.executeResponse(pageProgressCode, 10).pipe(
+    Effect.flatMap((read) => {
+      const fingerprint = read.success ? pageFingerprint(read.result) : undefined;
+      return fingerprint === undefined ? Effect.void : progress(fingerprint);
+    }),
+    // error-reporting-allow: typed-recovery a progress read is the host's own view of the page; one that fails reports nothing and the script's call stands
+    Effect.ignore,
+  );
+
 const handleRequest = (
   options: LocalOperationOptions,
   deadline: Deadline,
   message: Exclude<LocalOperationMessage, { kind: "result" | "error" | "cancel" | "journal" }>,
   cardHandles: RunCardHandles,
+  /** Passes once the host accepted the latest commit step the script entered; fails once refused. */
+  commitGate: Effect.Effect<void, Error>,
 ): Effect.Effect<unknown, Error> =>
   Effect.suspend<unknown, Error, never>(() => {
     if (message.kind === "execute") {
@@ -227,9 +261,16 @@ const handleRequest = (
         return Effect.fail(
           new Error("Browser access is unavailable for this local operation mode"),
         );
-      if (options.browser === undefined || message.sessionId !== options.browser.sessionId)
+      const browser = options.browser;
+      if (browser === undefined || message.sessionId !== browser.sessionId)
         return Effect.fail(new Error("Local operation browser session mismatch"));
-      return options.browser.executeResponse(message.body.code, message.body.timeout_sec);
+      const progress = options.hooks?.progress;
+      return commitGate.pipe(
+        Effect.zipRight(browser.executeResponse(message.body.code, message.body.timeout_sec)),
+        Effect.tap(() =>
+          progress === undefined ? Effect.void : reportProgress(browser, progress),
+        ),
+      );
     }
     if (
       message.kind === "file_place" ||
@@ -246,20 +287,22 @@ const handleRequest = (
             ? files.arm()
             : files.collect(message);
       // The refusal's reason crosses to the script as its code; nothing of the file does.
-      return answer.pipe(
+      const crossed = answer.pipe(
         Effect.mapError((refused) =>
           Object.assign(new Error(refused.message), {
             code: `FileRefused:${refused.reason}${refused.dispatched === true ? ":dispatched" : ""}`,
           }),
         ),
       );
+      // Arming the capture reaches no page.
+      return message.kind === "file_arm" ? crossed : commitGate.pipe(Effect.zipRight(crossed));
     }
     if (message.kind === "http") {
       const transport = options.http;
       if (transport === undefined || options.mode === "contract")
         return Effect.fail(new Error("Local operation HTTP is unavailable"));
       const { request, timeoutMs, maxResponseBytes } = message;
-      return Effect.tryPromise({
+      const sent = Effect.tryPromise({
         try: (signal) =>
           transport.send(request, {
             signal,
@@ -274,11 +317,14 @@ const handleRequest = (
               })
             : localError(error),
       });
+      return commitGate.pipe(Effect.zipRight(sent));
     }
     if (message.kind === "sign_in")
       return options.signIn === undefined
         ? Effect.fail(new Error("Local operation sign-in is unavailable"))
-        : suspended(deadline, answerSessionSignIn(options.signIn));
+        : commitGate.pipe(
+            Effect.zipRight(suspended(deadline, answerSessionSignIn(options.signIn))),
+          );
     if (message.kind === "ask") {
       if (options.ask === undefined)
         return Effect.fail(new Error("Local operation input is unavailable"));
@@ -303,7 +349,10 @@ const handleRequest = (
         options.target === "pureFiles"
       )
         return Effect.fail(new Error("Local operation card fill is unavailable"));
-      return suspended(deadline, cardFill({ step: message.step, handles: cardHandles })).pipe(
+      return commitGate.pipe(
+        Effect.zipRight(
+          suspended(deadline, cardFill({ step: message.step, handles: cardHandles })),
+        ),
         Effect.map(scriptCardFillAnswer),
       );
     }
@@ -382,6 +431,47 @@ const receiveOperation = (
     const cardHandles = makeRunCardHandles();
     let finished = false;
     let current: LocalOperationJournal = { effect: "not_sent", commits: [] };
+    // The host's answer to each commit step the script entered, in order, and the first refusal,
+    // with the journal from just before that step: nothing after it reached the site.
+    const answers: Deferred.Deferred<void, Error>[] = [];
+    let refusal: CommitRefusal | undefined;
+    const answering = new Set<Fiber.RuntimeFiber<void, never>>();
+    const refused = (name: string) =>
+      Object.assign(
+        new Error(`The host refused the commit step ${name}, so this call did not run`),
+        { code: "CommitRefused" },
+      );
+    // A call waits for every step entered before it, so a step accepted after an earlier one the
+    // host still decides on never lets a click through ahead of that answer.
+    const commitGate = Effect.suspend(() =>
+      refusal !== undefined
+        ? Effect.fail(refused(refusal.name))
+        : Effect.forEach([...answers], (answer) => Deferred.await(answer), { discard: true }),
+    );
+    /** Asks the host's commit hook about a step the script just entered, before its next call. */
+    const askCommit = (
+      commit: NonNullable<OperationHooks["commit"]>,
+      entered: { readonly name: string; readonly report?: unknown },
+      before: LocalOperationJournal,
+    ) => {
+      // Once refused, the run is over: no later step is offered, and every call stays refused.
+      if (refusal !== undefined) return;
+      const answer = Effect.runSync(Deferred.make<void, Error>());
+      answers.push(answer);
+      answering.add(
+        Effect.runFork(
+          commit(entered).pipe(
+            Effect.exit,
+            Effect.flatMap((exit) => {
+              if (Exit.isSuccess(exit)) return Deferred.succeed(answer, undefined);
+              refusal ??= { name: entered.name, journal: before };
+              return Deferred.fail(answer, refused(entered.name));
+            }),
+            Effect.asVoid,
+          ),
+        ),
+      );
+    };
     const listener = (raw: unknown) => {
       if (finished) return;
       const decoded = Effect.runSync(decodeMessage(raw).pipe(Effect.either));
@@ -391,9 +481,15 @@ const receiveOperation = (
         return;
       }
       const message = decoded.right;
+      const before = current;
       if (message.kind === "journal" || message.kind === "error" || message.kind === "result")
         current = operationJournal(message);
-      if (message.kind === "journal") return;
+      if (message.kind === "journal") {
+        const commit = options.hooks?.commit;
+        if (message.entered !== undefined && commit !== undefined)
+          askCommit(commit, message.entered, before);
+        return;
+      }
       if (message.kind === "result" || message.kind === "error" || message.kind === "cancel") {
         if (message.kind !== "cancel") finished = true;
         handleTerminalMessage(message, completed, pending);
@@ -403,7 +499,7 @@ const receiveOperation = (
         Effect.runSync(Deferred.fail(completed, new Error("Duplicate local operation request")));
         return;
       }
-      const task = handleRequest(options, deadline, message, cardHandles).pipe(
+      const task = handleRequest(options, deadline, message, cardHandles, commitGate).pipe(
         Effect.exit,
         Effect.flatMap((exit) => {
           if (Exit.isSuccess(exit))
@@ -431,6 +527,11 @@ const receiveOperation = (
     yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {
         process.child.off("message", listener);
+        // A commit hook still deciding has no call left to hold.
+        yield* Effect.forEach(answering, (fiber) => Fiber.interrupt(fiber), {
+          discard: true,
+          concurrency: "unbounded",
+        });
         yield* Effect.forEach(
           pending.values(),
           (fiber) =>
@@ -464,8 +565,30 @@ const receiveOperation = (
       completed: completion.pipe(Effect.raceFirst(exited)),
       pending,
       journal: Effect.sync(() => current),
+      refusal: Effect.sync(() => refusal),
     };
   });
+
+/** A commit step the host refused, and the journal from just before the script entered it. */
+interface CommitRefusal {
+  readonly name: string;
+  readonly journal: LocalOperationJournal;
+}
+
+/**
+ * The run's failure once the host refused a commit step, whatever the script did next: its journal
+ * is the one from just before the step, since that step's call and every later one were refused.
+ * Only the child's own final report makes it a reported one.
+ */
+const refusedRun = (refusal: CommitRefusal, reported: boolean) =>
+  new LocalOperationFailure(
+    `The host refused the commit step ${refusal.name}, so nothing was sent for it`,
+    refusal.journal,
+    "CommitRefused",
+    undefined,
+    undefined,
+    { reported, commitRefused: refusal.name },
+  );
 
 const operationJournal = (
   result: Pick<LocalOperationResult, "effect" | "commits" | "confirmation">,
@@ -541,6 +664,7 @@ export const runLocalOperation = (
         ipc: true,
       });
       const response = yield* receiveOperation(process, options, deadline);
+      if (options.hooks?.started !== undefined) yield* options.hooks.started();
       yield* sendToChild(process, {
         kind: "start",
         entrypoint: staged.entrypoint,
@@ -585,19 +709,30 @@ export const runLocalOperation = (
             ),
           ),
         ),
+        // A run whose commit step the host refused fails, whatever its script returned after it.
+        Effect.tap(() =>
+          response.refusal.pipe(
+            Effect.flatMap((refusal) =>
+              refusal === undefined ? Effect.void : Effect.fail(refusedRun(refusal, true)),
+            ),
+          ),
+        ),
         Effect.catchAll((error) =>
           Effect.gen(function* () {
+            const refusal = yield* response.refusal;
             const failure =
-              error instanceof LocalOperationFailure
-                ? error
-                : new LocalOperationFailure(
-                    error.message,
-                    yield* response.journal,
-                    failureCode(error),
-                    undefined,
-                    undefined,
-                    { reported: false },
-                  );
+              refusal !== undefined
+                ? refusedRun(refusal, error instanceof LocalOperationFailure && error.reported)
+                : error instanceof LocalOperationFailure
+                  ? error
+                  : new LocalOperationFailure(
+                      error.message,
+                      yield* response.journal,
+                      failureCode(error),
+                      undefined,
+                      undefined,
+                      { reported: false },
+                    );
             yield* process.close;
             const channels = yield* process.result.pipe(Effect.either);
             return yield* Effect.fail(

@@ -20,6 +20,7 @@ import { noIncidents } from "../runtime/incidents.js";
 import { siteDomain } from "../runtime/same-site.js";
 import { localStartHooks, startPage } from "../runtime/start-state.js";
 import type { MintArtifact } from "../mint/input-feedback.js";
+import type { OperationHooks } from "../runtime/operation-hooks.js";
 import type { PomeradoRequest } from "./contracts.js";
 import { makeRunSignIn } from "./session-sign-in.js";
 import { sessionCardFill } from "./card-fill.js";
@@ -72,10 +73,45 @@ const admitDeclaredFiles = (
  * sign-in that fails fails with its `SignInRunFailed`; any other run fails with a
  * `RunOutcomeFailure` that says what it did to the website and how to retry.
  */
+/** A run's sign-in, through the request's sign-in origins and the ones its tool saved. */
+const artifactSignIn = (
+  session: StandaloneSession,
+  signIn: NonNullable<MintArtifact["signIn"]>,
+  siteOrigin: string,
+  request: Pick<PomeradoRequest, "authenticationOrigins"> & { readonly effect?: "read" | "write" },
+) =>
+  makeRunSignIn(
+    session,
+    signIn,
+    siteOrigin,
+    [...new Set([...(request.authenticationOrigins ?? []), ...(signIn.authenticationOrigins ?? [])])],
+    request.effect,
+  );
+
+/**
+ * Signs the session in with the artifact's recorded sign-in, as a run does before its operation,
+ * and runs nothing else. An artifact without one fails before the browser is touched.
+ */
+export const signInOnly = (
+  session: StandaloneSession,
+  artifact: MintArtifact,
+  request: Omit<PomeradoRequest, "effect"> & { readonly effect?: "read" | "write" },
+) => {
+  const recorded = artifact.signIn;
+  return recorded === undefined
+    ? Effect.fail(new Error("This artifact records no sign-in to sign in with"))
+    : Effect.gen(function* () {
+        const { siteOrigin } = yield* requestSite(session, request);
+        const signedIn = yield* artifactSignIn(session, recorded, siteOrigin, request).before;
+        return { alreadySignedIn: signedIn.alreadySignedIn };
+      }).pipe(Effect.mapError(beforeOperationFailure(request.effect)));
+};
+
 export const runOperation = (
   session: StandaloneSession,
   artifact: MintArtifact,
   request: Omit<PomeradoRequest, "effect"> & { readonly effect?: "read" | "write" },
+  hooks?: OperationHooks,
 ) =>
   Effect.gen(function* () {
     const { options, browser, ask, secrets } = session;
@@ -88,22 +124,10 @@ export const runOperation = (
     const workspace = yield* createLocalWorkspace();
     yield* seedLocalRuntime(workspace);
     const sources = artifact.files.map(({ path, content }) => [path, content] as const);
-    // A run signs in through the request's sign-in origins and the ones its tool saved.
     const signIn =
       artifact.signIn === undefined
         ? undefined
-        : makeRunSignIn(
-            session,
-            artifact.signIn,
-            siteOrigin,
-            [
-              ...new Set([
-                ...(request.authenticationOrigins ?? []),
-                ...(artifact.signIn.authenticationOrigins ?? []),
-              ]),
-            ],
-            request.effect,
-          );
+        : artifactSignIn(session, artifact.signIn, siteOrigin, request);
     if (signIn !== undefined) yield* signIn.before;
     // A tool whose sign-in moved to the login's own workspace runs there: its start page, its
     // script's siteOrigin and its relative URLs. The tool's site origin stays its identity.
@@ -167,6 +191,7 @@ export const runOperation = (
       // A card the script asked for is typed by the host; the script holds only its handles.
       cardFill: sessionCardFill(session, siteOrigin),
       files,
+      ...(hooks === undefined ? {} : { hooks }),
     }).pipe(
       Effect.mapError((error) =>
         runOutcomeFailure(request.effect, "operation", dialogs.unanswered())(error),

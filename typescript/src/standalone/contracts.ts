@@ -9,14 +9,23 @@ import type { InputAsker } from "../runtime/input-request.js";
 import type { FileLimits } from "../runtime/files.js";
 import type { ListCursorKeys } from "../runtime/list-cursor.js";
 import { ScriptQuestionDeclarations } from "../runtime/script-input.js";
+import type { OperationHooks } from "../runtime/operation-hooks.js";
+import type { SavedSession, SavedSessionStorage } from "../runtime/start-state.js";
 export interface PomeradoOptions {
   readonly ask: InputAsker;
   /**
    * The browser the host launches or attaches to. It never attaches over CDP (`cdp`): its runs
    * close other tabs and reset site data, which would change a browser it doesn't own. Its browser
-   * calls keep the executor's 1 MiB result limit (`resultLimitBytes`).
+   * calls keep the executor's 1 MiB result limit unless `resultLimitBytes` raises it, as for a
+   * `saveSession` of a site that keeps more.
    */
-  readonly browser?: Omit<PlaywrightOptions, "cdp" | "resultLimitBytes">;
+  readonly browser?: Omit<PlaywrightOptions, "cdp">;
+  /**
+   * The tab's session storage to put back before the session's first page loads, as
+   * `saveSession` returned it, beside the browser's restored storage state. Each origin's entries
+   * go back on a blank page of that origin the browser serves itself, so the site sees no request.
+   */
+  readonly sessionStorage?: SavedSessionStorage;
   readonly minterProvider?: ModelProvider;
   readonly guardianProvider?: ModelProvider;
   /** The outcome reviewer's model provider, which judges whether each write took effect. */
@@ -71,7 +80,28 @@ export interface Pomerado {
   readonly run: (
     artifact: MintArtifact,
     request: Omit<PomeradoRequest, "effect"> & { readonly effect?: "read" | "write" },
+    /**
+     * The host's hooks into this run (`OperationHooks`): when its code starts, the pages after
+     * each browser call, and each commit step, whose click waits for the host to accept it.
+     */
+    hooks?: OperationHooks,
   ) => Effect.Effect<unknown, Error>;
+  /**
+   * Signs the session in with the artifact's recorded sign-in, as a run does before its
+   * operation, and runs nothing else, so a host can save the session right after it. A session
+   * that already shows signed in types nothing (`alreadySignedIn`). An artifact with no recorded
+   * sign-in fails, and a failed sign-in fails with its `SignInRunFailed`.
+   */
+  readonly signIn: (
+    artifact: MintArtifact,
+    request: Omit<PomeradoRequest, "effect"> & { readonly effect?: "read" | "write" },
+  ) => Effect.Effect<{ readonly alreadySignedIn: boolean }, Error>;
+  /**
+   * The session's site data as a host saves it to start a later session from: the browser's
+   * storage state, IndexedDB included, which Playwright restores, and the session storage of the
+   * tab's frames on `url`'s site. Its JSON counts against the browser's result limit.
+   */
+  readonly saveSession: (url: string) => Effect.Effect<SavedSession, Error>;
 }
 
 /** A web page a run can open: an http or https URL with no credentials and no fragment. */

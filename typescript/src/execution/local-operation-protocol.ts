@@ -162,7 +162,18 @@ export const LocalOperationMessage = Schema.Union(
     maxResponseBytes: Schema.optionalWith(Schema.Int.pipe(Schema.positive()), { exact: true }),
   }),
   Schema.Struct({ kind: Schema.Literal("cancel"), id: Id }),
-  Schema.Struct({ kind: Schema.Literal("journal"), ...JournalFields }),
+  Schema.Struct({
+    kind: Schema.Literal("journal"),
+    ...JournalFields,
+    /** The commit step this update entered, with the script's report, for the host's hook. */
+    entered: Schema.optionalWith(
+      Schema.Struct({
+        name: Schema.String,
+        report: Schema.optionalWith(Schema.Unknown, { exact: true }),
+      }),
+      { exact: true },
+    ),
+  }),
   Schema.Struct({
     kind: Schema.Literal("result"),
     output: Schema.optionalWith(Schema.Unknown, { exact: true }),

@@ -205,6 +205,47 @@ return { state, sessionStorage };`;
 };
 
 /**
+ * Saved session storage whose every origin is a page's own, http or https, as `URL.origin` writes
+ * it, or undefined: the origins it puts back routes, which a malformed one must not widen.
+ */
+export const pageOriginsOnly = (saved: SavedSessionStorage): SavedSessionStorage | undefined =>
+  saved.every(({ origin }) => {
+    const url = URL.parse(origin);
+    return url !== null && /^https?:$/u.test(url.protocol) && url.origin === origin;
+  })
+    ? saved
+    : undefined;
+
+/**
+ * One browser call that puts saved session storage back into the primary tab, before any of the
+ * site's pages load, and leaves the tab blank: each origin's entries are set on a blank document of
+ * that origin that Playwright serves locally in the same tab, as `resetPageCode` restores them, so
+ * no request reaches the site. The tab keeps each origin's session storage across its later loads.
+ */
+export const sessionStorageRestoreCode = (targetId: string, saved: SavedSessionStorage) => `${primaryPageCode(targetId)}
+const tabStorage = ${JSON.stringify(saved.map(({ origin, entries }) => [origin, entries]))};
+const local = (route) => route.fulfill({ contentType: "text/html", body: "<html></html>" });
+const navigation = await context.newCDPSession(primary);
+await navigation.send("Network.setBypassServiceWorker", { bypass: true });
+try {
+  for (const [origin, entries] of tabStorage) {
+    await primary.route(origin + "/**", local);
+    try {
+      await primary.goto(origin + "/", { waitUntil: "domcontentloaded", timeout: 10_000 });
+      await primary.evaluate((entries) => {
+        for (const [key, value] of entries) sessionStorage.setItem(key, value);
+      }, entries);
+    } finally {
+      await primary.unroute(origin + "/**", local);
+    }
+  }
+} finally {
+  await navigation.send("Network.setBypassServiceWorker", { bypass: false });
+  await navigation.detach();
+}
+await primary.goto("about:blank", { timeout: 10_000 });`;
+
+/**
  * Browser code that stops the primary tab's loading. A failed goto can reject before Chromium
  * commits its error document; stopping it keeps that late commit from cancelling the next goto.
  */

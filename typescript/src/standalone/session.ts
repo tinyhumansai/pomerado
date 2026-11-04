@@ -4,6 +4,7 @@ import { makePlaywrightExecutor } from "../execution/playwright-execute.js";
 import { makeRunSecrets, registerSecretAnswer } from "../inputs/secrets.js";
 import { localRuntimeAssets } from "../execution/local-runtime-assets.js";
 import type { InputAsker } from "../runtime/input-request.js";
+import { pageOriginsOnly, sessionStorageRestoreCode } from "../runtime/start-state.js";
 import type { SessionTyping } from "./authentication.js";
 import type { PomeradoOptions } from "./contracts.js";
 import { error, mintError } from "./errors.js";
@@ -15,7 +16,16 @@ export const makeSession = (options: PomeradoOptions) =>
           "The local host doesn't attach over CDP: its runs close other tabs and reset site data in the browser. Use endpoint or a launched browser.",
         ),
       );
+    // Saved session storage goes back on the session's own tab, checked before the browser starts.
+    const sessionStorage =
+      options.sessionStorage === undefined ? undefined : pageOriginsOnly(options.sessionStorage);
+    if (sessionStorage === undefined && options.sessionStorage !== undefined)
+      return yield* Effect.fail(
+        new Error("sessionStorage names an origin that is not an http or https page's own"),
+      );
     const browser = yield* makePlaywrightExecutor(options.browser);
+    if (sessionStorage !== undefined && sessionStorage.length > 0)
+      yield* browser.execute(sessionStorageRestoreCode(browser.targetId, sessionStorage), 60);
     const policy =
       options.policy ??
       (yield* Effect.tryPromise({

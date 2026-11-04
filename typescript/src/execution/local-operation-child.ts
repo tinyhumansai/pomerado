@@ -44,9 +44,10 @@ const { ExecutionContext, makeEffectJournal } = await import("../runtime/context
 const { Deadline } = await import("../runtime/deadline.js");
 const { makeKernelCompatibility } = await import("../runtime/kernel-compatibility.js");
 const { InvalidInput, InvalidOutput } = await import("../runtime/errors.js");
-const { boundedInputDetail, boundedRefusalDetail } = await import(
+const { boundedInputDetail, boundedRefusalDetail, OperationFailure } = await import(
   "../runtime/operation-failure.js"
 );
+const { commitReportValue } = await import("../runtime/commit-report.js");
 const { BrowserExecuteResponse } = await import("../runtime/browser-execution.js");
 const { makeScriptInput, ScriptInput, ScriptInputFailure } =
   await import("../runtime/script-input.js");
@@ -160,11 +161,36 @@ const publishJournal = journalState.pipe(
   Effect.flatMap((metadata) => send({ kind: "journal", ...metadata })),
   Effect.orDie,
 );
+/**
+ * The journal once a commit step was entered, naming it with its report. It goes out before the
+ * script's next call, so the host holds that call when its commit hook must accept the step first.
+ */
+const publishEntered = (name: string, report: unknown) =>
+  journalState.pipe(
+    Effect.flatMap((metadata) =>
+      send({
+        kind: "journal",
+        ...metadata,
+        entered: report === undefined ? { name } : { name, report },
+      }),
+    ),
+    Effect.orDie,
+  );
 const revertCommit = baseJournal.notCommitted;
 const journal: typeof baseJournal = {
   ...baseJournal,
   enteringDispatch: baseJournal.enteringDispatch.pipe(Effect.tap(() => publishJournal)),
-  enteringCommit: (name) => baseJournal.enteringCommit(name).pipe(Effect.tap(() => publishJournal)),
+  // An HTTP version passes its report here unchecked: one that can't reach the host fails the run
+  // before the step is marked.
+  enteringCommit: (name, report) =>
+    Effect.suspend(() => {
+      const checked = report === undefined ? undefined : commitReportValue(report);
+      if (checked !== undefined && "refused" in checked)
+        return Effect.die(new OperationFailure(checked.refused, { dispatch: "not_sent" }));
+      return baseJournal
+        .enteringCommit(name)
+        .pipe(Effect.tap(() => publishEntered(name, checked?.value)));
+    }),
   ...(revertCommit === undefined
     ? {}
     : { notCommitted: (name: string) => revertCommit(name).pipe(Effect.tap(() => publishJournal)) }),
