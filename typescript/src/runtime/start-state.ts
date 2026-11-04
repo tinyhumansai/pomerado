@@ -249,15 +249,25 @@ export type EntryNavigationOutcome =
 const maxRedirects = 20;
 const maxMessage = 2048;
 
+/** Chromium's `net::ERR_*` names for a failed load, and Firefox's names for the same failures. */
 const failureKind = (message: string): EntryNavigationFailureKind => {
   if (/Timeout \d+ms exceeded/u.test(message)) return "timeout";
-  if (/net::ERR_NAME_NOT_RESOLVED|net::ERR_NAME_RESOLUTION_FAILED/u.test(message)) return "dns";
-  if (/net::ERR_CONNECTION_REFUSED/u.test(message)) return "refused";
-  if (/net::ERR_CONNECTION_(RESET|CLOSED|ABORTED)|net::ERR_EMPTY_RESPONSE/u.test(message))
+  if (/net::ERR_NAME_(NOT_RESOLVED|RESOLUTION_FAILED)|NS_ERROR_UNKNOWN_HOST/u.test(message))
+    return "dns";
+  if (/net::ERR_CONNECTION_REFUSED|NS_ERROR_CONNECTION_REFUSED/u.test(message)) return "refused";
+  if (
+    /net::ERR_CONNECTION_(RESET|CLOSED|ABORTED)|net::ERR_EMPTY_RESPONSE/u.test(message) ||
+    /NS_ERROR_NET_(RESET|INTERRUPT|EMPTY_RESPONSE)/u.test(message)
+  )
     return "reset";
-  if (/net::ERR_(CERT_|SSL_)/u.test(message)) return "tls";
-  if (/net::ERR_BLOCKED_BY_(CLIENT|RESPONSE|ADMINISTRATOR)/u.test(message)) return "blocked";
-  if (/net::ERR_ABORTED/u.test(message)) return "aborted";
+  if (/net::ERR_(CERT_|SSL_)|\b(SSL_ERROR_|SEC_ERROR_|MOZILLA_PKIX_ERROR_)/u.test(message))
+    return "tls";
+  if (
+    /net::ERR_BLOCKED_BY_(CLIENT|RESPONSE|ADMINISTRATOR)/u.test(message) ||
+    /NS_ERROR_(CONTENT_BLOCKED|BLOCKED_BY_POLICY)/u.test(message)
+  )
+    return "blocked";
+  if (/net::ERR_ABORTED|NS_BINDING_ABORTED|NS_ERROR_ABORT\b/u.test(message)) return "aborted";
   if (/has been closed|Target closed|Browser closed/u.test(message)) return "closed";
   return "other";
 };

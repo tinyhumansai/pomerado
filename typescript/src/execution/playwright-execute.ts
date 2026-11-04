@@ -126,6 +126,8 @@ const verifyOwnedContextClosed = (owner: NativeOwnership) =>
   Effect.gen(function* () {
     const { supervisor, contextId } = owner;
     if (contextId === undefined) return;
+    // Such a browser runs only on a server the executor owns, whose shutdown ends the context.
+    if (!owner.engine.listsContexts) return;
     if (supervisor === undefined || !supervisor.isConnected()) {
       if (owner.remote)
         return yield* Effect.fail(
@@ -192,7 +194,7 @@ const releaseNativeOwnership = (owner: NativeOwnership, reason: Error) =>
       const server = owner.server;
       yield* release(
         promise(() => server.close()),
-        "Owned Chromium shutdown",
+        owner.engine.name === "firefox" ? "Owned Firefox shutdown" : "Owned Chromium shutdown",
       );
     }
     const failure =
@@ -352,9 +354,21 @@ export const makePlaywrightExecutor = (
       options.library ?? "playwright",
     ).pipe(Effect.mapError(() => new Error("library must be playwright or patchright")));
     const browser = yield* Schema.decodeUnknown(BrowserName)(options.browser ?? "chromium").pipe(
-      Effect.mapError(() => new Error("browser must be chromium")),
+      Effect.mapError(() => new Error("browser must be chromium or firefox")),
     );
     const engine = browserEngine(browser);
+    if (browser !== "chromium") {
+      if (options.cdp !== undefined)
+        return yield* Effect.fail(new Error("cdp attaches only to chromium"));
+      // Its connection can't list the worker's contexts, so only an owned server's shutdown
+      // confirms the worker's context closed.
+      if (options.endpoint !== undefined)
+        return yield* Effect.fail(
+          new Error(`${browser} runs only on a browser the executor launches`),
+        );
+      if (library === "patchright")
+        return yield* Effect.fail(new Error("patchright drives only chromium"));
+    }
     const owner: NativeOwnership = {
       remote: options.endpoint !== undefined || options.cdp !== undefined,
       engine,

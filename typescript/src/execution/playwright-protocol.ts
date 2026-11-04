@@ -42,7 +42,7 @@ export const NativeWorkerReply = Schema.Union(
 export const PlaywrightLibrary = Schema.Literal("playwright", "patchright");
 export type PlaywrightLibrary = typeof PlaywrightLibrary.Type;
 /** The browsers the native executor drives. */
-export const BrowserName = Schema.Literal("chromium");
+export const BrowserName = Schema.Literal("chromium", "firefox");
 export type BrowserName = typeof BrowserName.Type;
 export const NativeWorkerOptions = Schema.Struct({
   endpoint: Schema.String,

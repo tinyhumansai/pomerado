@@ -89,6 +89,18 @@ describe("loadEntry", () => {
     ["net::ERR_CERT_AUTHORITY_INVALID", "tls"],
     ["net::ERR_BLOCKED_BY_CLIENT", "blocked"],
     ["net::ERR_ABORTED", "aborted"],
+    // Firefox's names for the same failures.
+    ["NS_ERROR_UNKNOWN_HOST", "dns"],
+    ["NS_ERROR_CONNECTION_REFUSED", "refused"],
+    ["NS_ERROR_NET_RESET", "reset"],
+    ["NS_ERROR_NET_INTERRUPT", "reset"],
+    ["SSL_ERROR_UNKNOWN", "tls"],
+    ["SEC_ERROR_UNKNOWN_ISSUER", "tls"],
+    ["MOZILLA_PKIX_ERROR_SELF_SIGNED_CERT", "tls"],
+    ["NS_ERROR_BLOCKED_BY_POLICY", "blocked"],
+    ["NS_BINDING_ABORTED; maybe frame was detached?", "aborted"],
+    ["NS_ERROR_ABORT", "aborted"],
+    ["NS_ERROR_NET_TIMEOUT", "other"],
     ["Target page, context or browser has been closed", "closed"],
     ["Something else went wrong", "other"],
   ])("reads %s as a failed load of kind %s", async (message, kind) => {
