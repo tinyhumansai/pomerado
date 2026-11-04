@@ -41,6 +41,22 @@ const native = <A>(
   );
 
 /**
+ * The DevTools endpoint Chromium writes to its profile once its DevTools server listens, which can
+ * come after the launch returns, so the file is read again until it holds both lines.
+ */
+const devtoolsEndpoint = async (profile: string) => {
+  const until = Date.now() + 10_000;
+  for (;;) {
+    const [port, path] = (
+      await readFile(join(profile, "DevToolsActivePort"), "utf8").catch(() => "")
+    ).split("\n");
+    if (port && path) return { port, path };
+    if (Date.now() > until) throw new Error("Missing DevTools endpoint");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+};
+
+/**
  * A Chromium reachable only through its DevTools websocket, as a cloud browser is. The test keeps
  * its own (pipe) connection to the same browser to set up pages and look at them afterwards.
  */
@@ -50,10 +66,7 @@ const devtoolsBrowser = async (args: readonly string[] = []) => {
     headless: true,
     args: ["--remote-debugging-port=0", ...args],
   });
-  const [port, path] = (
-    await readFile(join(directory, "profile", "DevToolsActivePort"), "utf8")
-  ).split("\n");
-  if (!port || !path) throw new Error("Missing DevTools endpoint");
+  const { port, path } = await devtoolsEndpoint(join(directory, "profile"));
   const page = context.pages()[0] ?? (await context.newPage());
   return {
     url: `ws://127.0.0.1:${port}${path}`,
