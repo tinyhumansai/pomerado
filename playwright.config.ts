@@ -37,6 +37,7 @@ export default defineConfig({
         "**/native-firefox.spec.ts",
         "**/host-hooks.spec.ts",
         "**/choose.spec.ts",
+        "**/quantity.spec.ts",
       ],
     },
     // Camoufox, a Firefox build, when CAMOUFOX_EXECUTABLE names its binary.
