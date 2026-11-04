@@ -231,6 +231,16 @@ export const answerSessionSignIn = (
     return { outcome: "refused", cause: "session_sign_in_failed" } satisfies SessionSignInAnswer;
   });
 /**
+ * `call`, held until the host accepted every commit step the script entered before it, when the
+ * host gave a commit hook (`commitGate`); without one, `call` runs as it always did.
+ */
+const gated = <A>(
+  commitGate: Effect.Effect<void, Error> | undefined,
+  call: Effect.Effect<A, Error>,
+): Effect.Effect<A, Error> =>
+  commitGate === undefined ? call : commitGate.pipe(Effect.zipRight(call));
+
+/**
  * The host's progress hook after one of the script's browser calls, with a fingerprint of the
  * pages then. A read that fails, or finds no page, reports nothing and leaves the run as it was.
  */
@@ -252,8 +262,11 @@ const handleRequest = (
   deadline: Deadline,
   message: Exclude<LocalOperationMessage, { kind: "result" | "error" | "cancel" | "journal" }>,
   cardHandles: RunCardHandles,
-  /** Passes once the host accepted the latest commit step the script entered; fails once refused. */
-  commitGate: Effect.Effect<void, Error>,
+  /**
+   * With a commit hook, passes once the host accepted every commit step the script entered, and
+   * fails once it refused one. Absent without a commit hook.
+   */
+  commitGate: Effect.Effect<void, Error> | undefined,
 ): Effect.Effect<unknown, Error> =>
   Effect.suspend<unknown, Error, never>(() => {
     if (message.kind === "execute") {
@@ -265,12 +278,13 @@ const handleRequest = (
       if (browser === undefined || message.sessionId !== browser.sessionId)
         return Effect.fail(new Error("Local operation browser session mismatch"));
       const progress = options.hooks?.progress;
-      return commitGate.pipe(
-        Effect.zipRight(browser.executeResponse(message.body.code, message.body.timeout_sec)),
-        Effect.tap(() =>
-          progress === undefined ? Effect.void : reportProgress(browser, progress),
-        ),
+      const call = gated(
+        commitGate,
+        browser.executeResponse(message.body.code, message.body.timeout_sec),
       );
+      return progress === undefined
+        ? call
+        : call.pipe(Effect.tap(() => reportProgress(browser, progress)));
     }
     if (
       message.kind === "file_place" ||
@@ -295,7 +309,7 @@ const handleRequest = (
         ),
       );
       // Arming the capture reaches no page.
-      return message.kind === "file_arm" ? crossed : commitGate.pipe(Effect.zipRight(crossed));
+      return message.kind === "file_arm" ? crossed : gated(commitGate, crossed);
     }
     if (message.kind === "http") {
       const transport = options.http;
@@ -317,14 +331,12 @@ const handleRequest = (
               })
             : localError(error),
       });
-      return commitGate.pipe(Effect.zipRight(sent));
+      return gated(commitGate, sent);
     }
     if (message.kind === "sign_in")
       return options.signIn === undefined
         ? Effect.fail(new Error("Local operation sign-in is unavailable"))
-        : commitGate.pipe(
-            Effect.zipRight(suspended(deadline, answerSessionSignIn(options.signIn))),
-          );
+        : gated(commitGate, suspended(deadline, answerSessionSignIn(options.signIn)));
     if (message.kind === "ask") {
       if (options.ask === undefined)
         return Effect.fail(new Error("Local operation input is unavailable"));
@@ -349,12 +361,10 @@ const handleRequest = (
         options.target === "pureFiles"
       )
         return Effect.fail(new Error("Local operation card fill is unavailable"));
-      return commitGate.pipe(
-        Effect.zipRight(
-          suspended(deadline, cardFill({ step: message.step, handles: cardHandles })),
-        ),
-        Effect.map(scriptCardFillAnswer),
-      );
+      return gated(
+        commitGate,
+        suspended(deadline, cardFill({ step: message.step, handles: cardHandles })),
+      ).pipe(Effect.map(scriptCardFillAnswer));
     }
     return options.decideDialog === undefined
       ? Effect.fail(new Error("Local operation dialog decision is unavailable"))
@@ -443,11 +453,16 @@ const receiveOperation = (
       );
     // A call waits for every step entered before it, so a step accepted after an earlier one the
     // host still decides on never lets a click through ahead of that answer.
-    const commitGate = Effect.suspend(() =>
-      refusal !== undefined
-        ? Effect.fail(refused(refusal.name))
-        : Effect.forEach([...answers], (answer) => Deferred.await(answer), { discard: true }),
-    );
+    const commitGate =
+      options.hooks?.commit === undefined
+        ? undefined
+        : Effect.suspend(() =>
+            refusal !== undefined
+              ? Effect.fail(refused(refusal.name))
+              : Effect.forEach([...answers], (answer) => Deferred.await(answer), {
+                  discard: true,
+                }),
+          );
     /** Asks the host's commit hook about a step the script just entered, before its next call. */
     const askCommit = (
       commit: NonNullable<OperationHooks["commit"]>,
@@ -528,10 +543,11 @@ const receiveOperation = (
       Effect.gen(function* () {
         process.child.off("message", listener);
         // A commit hook still deciding has no call left to hold.
-        yield* Effect.forEach(answering, (fiber) => Fiber.interrupt(fiber), {
-          discard: true,
-          concurrency: "unbounded",
-        });
+        if (answering.size > 0)
+          yield* Effect.forEach(answering, (fiber) => Fiber.interrupt(fiber), {
+            discard: true,
+            concurrency: "unbounded",
+          });
         yield* Effect.forEach(
           pending.values(),
           (fiber) =>
@@ -699,6 +715,18 @@ export const runLocalOperation = (
           ? { cardFill: true }
           : {}),
       });
+      const refusedRunFails = <A>(completed: Effect.Effect<A, Error>) =>
+        options.hooks?.commit === undefined
+          ? completed
+          : completed.pipe(
+              Effect.tap(() =>
+                response.refusal.pipe(
+                  Effect.flatMap((refusal) =>
+                    refusal === undefined ? Effect.void : Effect.fail(refusedRun(refusal, true)),
+                  ),
+                ),
+              ),
+            );
       const result = yield* response.completed.pipe(
         Effect.raceFirst(
           deadline.awaitExpiry.pipe(
@@ -710,16 +738,11 @@ export const runLocalOperation = (
           ),
         ),
         // A run whose commit step the host refused fails, whatever its script returned after it.
-        Effect.tap(() =>
-          response.refusal.pipe(
-            Effect.flatMap((refusal) =>
-              refusal === undefined ? Effect.void : Effect.fail(refusedRun(refusal, true)),
-            ),
-          ),
-        ),
+        refusedRunFails,
         Effect.catchAll((error) =>
           Effect.gen(function* () {
-            const refusal = yield* response.refusal;
+            const refusal =
+              options.hooks?.commit === undefined ? undefined : yield* response.refusal;
             const failure =
               refusal !== undefined
                 ? refusedRun(refusal, error instanceof LocalOperationFailure && error.reported)
