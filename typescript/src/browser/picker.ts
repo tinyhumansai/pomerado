@@ -200,6 +200,14 @@ const pickerPageCode = String.raw`(element, args) => {
     /(^|[\s_-])(group|header|heading|separator|divider|no-?results?|no-?options|no-?matches|no-?data|empty|loading|searching|optgroup|placeholder|footer|message)([\s_-]|$)/i;
   const creation = (node, text) =>
     /^\+?\s*(add|create)\s+(new\b|["\u201C\u2018'])/i.test(text) || node.matches('[class*="create-option" i], [class*="option-create" i], [data-create]');
+  // A row that would have the site locate the device ("Use my current location", "Detect
+  // location"), never a place: a tool sets the place it was given. A store's "Use this location"
+  // names that store, so it stays a row to pick.
+  const locating = (node, text) =>
+    /\b(use|detect|share|fetch|get)\s+((my|your)\s+)?current\s+location\b|\b(use|detect|share)\s+(my|your)\s+location\b|\bdetect(ing)?\s+location\b|\blocate\s+me\b/i.test(text) ||
+    /geo-?locat|detect-?location|locate-?me/i.test(
+      [typeof node.className === "string" ? node.className : "", node.id, node.getAttribute("data-testid") ?? ""].join(" "),
+    );
   const tiers = [
     "[role=option]",
     "[role=menuitem], [role=menuitemradio], [role=menuitemcheckbox], [role=treeitem]",
@@ -422,7 +430,7 @@ const pickerPageCode = String.raw`(element, args) => {
       names,
       value,
       disabled,
-      creation: creation(node, text),
+      creation: creation(node, text) || locating(node, text),
       selected: node.getAttribute("aria-selected") === "true" || node.getAttribute("aria-checked") === "true",
       top: scroller ? scroller.scrollTop : 0,
     };
@@ -535,7 +543,8 @@ const pickerPageCode = String.raw`(element, args) => {
  * (as whole words, only after the value's other words and ending the name or one of its parts),
  * and the like) are tried against names, so Fifth Avenue for 5th Avenue outranks an option with
  * the same words in another order. Two options at the best rank are ambiguous; an "Add ..." or "Create
- * ..." row is never matched.
+ * ..." row is never matched, nor is a row that would have the site use or detect the device's
+ * location, such as "Use my current location".
  *
  * The query is typed key by key, as a person types it, never filled at once, after clearing any
  * text the field holds. Waits follow the page, never a fixed pause: after typing, the options count once no loading

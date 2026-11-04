@@ -1143,6 +1143,57 @@ input.addEventListener("input", () => {
   });
 });
 
+// An area search whose suggestions always start with rows that would share the browser's location:
+// a tool sets the place it was given and never lets the site locate the device.
+test("pickValue never picks or offers a row that uses or detects the device's location", async ({ page }) => {
+  await serve(page, `<form><label>Area <input id="area" role="combobox" aria-controls="areas" autocomplete="off"></label>
+<ul id="areas" role="listbox"></ul><input type="hidden" name="area"><output id="located">0</output></form>
+<script>
+const input = document.getElementById("area"), list = document.getElementById("areas");
+input.addEventListener("input", () => {
+  const areas = ["Lake Road, Sector 4", "Lakeview Colony", "Old Market"].filter((name) => name.toLowerCase().includes(input.value.toLowerCase()));
+  list.innerHTML = '<li role="option" class="locate">Use my current location</li><li role="option" class="locate">Detect location using GPS</li>' +
+    areas.map((name) => '<li role="option">' + name + "</li>").join("");
+});
+list.addEventListener("click", (event) => {
+  const option = event.target.closest("[role=option]");
+  if (option.classList.contains("locate")) document.getElementById("located").value = "1";
+  else document.querySelector("[name=area]").value = option.textContent;
+  input.value = option.textContent;
+});
+</script>`);
+  expect(await call(page, `return await pickValue(page.getByLabel("Area"), "Current location", fast);`)).toMatchObject({
+    result: { picked: false, reason: "option_missing", matches: [] },
+  });
+  expect(await call(page, `return await pickValue(page.getByLabel("Area"), "Lake Road, Sector 4", fast);`)).toMatchObject({
+    result: { picked: true, label: "Lake Road, Sector 4" },
+  });
+  expect(await page.locator("#located").textContent()).toBe("0");
+});
+
+// A store search whose rows each offer to use that store: the words "Use this location" choose a
+// store, never the device's location, so the rows stay ones to pick.
+test("pickValue still picks a store row that offers to use that location", async ({ page }) => {
+  await serve(page, `<form><label>Store <input id="store" role="combobox" aria-controls="stores" autocomplete="off"></label>
+<ul id="stores" role="listbox"></ul><input type="hidden" name="store"></form>
+<script>
+const input = document.getElementById("store"), list = document.getElementById("stores");
+input.addEventListener("input", () => {
+  const stores = ["Lakeside Store", "Hillcrest Store"].filter((name) => name.toLowerCase().includes(input.value.toLowerCase()));
+  list.innerHTML = stores.map((name) => '<li role="option" data-value="' + name + '"><span>' + name + '</span><br><small>Use this location</small></li>').join("");
+});
+list.addEventListener("click", (event) => {
+  const option = event.target.closest("[role=option]");
+  document.querySelector("[name=store]").value = option.dataset.value;
+  input.value = option.dataset.value;
+});
+</script>`);
+  expect(await call(page, `return await pickValue(page.getByLabel("Store"), "Lakeside Store", fast);`)).toMatchObject({
+    result: { picked: true, label: "Lakeside Store" },
+  });
+  expect(await submitted(page)).toEqual({ store: "Lakeside Store" });
+});
+
 test("pickValue fails fast as popup_missing when the control opens nothing", async ({ page }) => {
   await serve(page, `<button type="button" aria-label="Broken" aria-haspopup="listbox">Choose</button>`);
   expect(await call(page, `return await pickValue(page.getByRole("button", { name: "Broken" }), "Anything", fast);`)).toEqual({
