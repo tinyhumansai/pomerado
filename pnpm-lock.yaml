@@ -59,6 +59,9 @@ importers:
       patchright:
         specifier: 1.64.2
         version: 1.64.2
+      qrcode-generator:
+        specifier: 2.0.4
+        version: 2.0.4
       typescript:
         specifier: 7.0.2
         version: 7.0.2
@@ -766,6 +769,9 @@ packages:
   pure-rand@6.1.0:
     resolution: {integrity: sha512-bVWawvoZoBYpp6yIoQtQXHZjmz35RSVHnUOTefl8Vcjr8snTPY1wnpSPMWekcFwbxI6gtmT7rSYPFvz71ldiOA==}
 
+  qrcode-generator@2.0.4:
+    resolution: {integrity: sha512-mZSiP6RnbHl4xL2Ap5HfkjLnmxfKcPWpWe/c+5XxCuetEenqmNFf1FH/ftXPCtFG5/TDobjsjz6sSNL0Sr8Z9g==}
+
   rolldown@1.2.15:
     resolution: {integrity: sha512-6odND+fel5zVw3I4Yc2e69gvguDnX0CAAGiNDZSq4ik5WUcaLrkD2GLuog0XcODbor31hZ5ayEMgVDno+KPV5g==}
     engines: {node: ^20.19.0 || >=22.12.0}
@@ -1426,6 +1432,8 @@ snapshots:
       source-map-js: 1.2.2
 
   pure-rand@6.1.0: {}
+
+  qrcode-generator@2.0.4: {}
 
   rolldown@1.2.15:
     dependencies:

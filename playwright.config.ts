@@ -39,6 +39,7 @@ export default defineConfig({
         "**/choose.spec.ts",
         "**/quantity.spec.ts",
         "**/amounts.spec.ts",
+        "**/qr-code.spec.ts",
       ],
     },
     // Camoufox, a Firefox build, when CAMOUFOX_EXECUTABLE names its binary.
