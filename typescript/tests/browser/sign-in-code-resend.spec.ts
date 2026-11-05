@@ -493,6 +493,13 @@ const codeForm = `<form method="post" action="/verify">
 <label>Code <input id="code" name="code" autocomplete="one-time-code"></label>
 <button id="verify">Verify</button>
 </form>`;
+// What a click's path takes in beyond the page's parents, with each of them leading to `to`.
+const slotted = (to: string) => `<div id="shadow"><span id="press">Resend code</span></div>
+<script>document.getElementById("shadow").attachShadow({ mode: "open" }).innerHTML = '<a href="${to}"><slot></slot></a>';</script>`;
+const svgLink = (to: string) =>
+  `<svg width="200" height="40"><a xlink:href="${to}"><text id="press" x="0" y="20">Resend code</text></a></svg>`;
+const imageMap = (to: string) =>
+  `<img id="press" alt="Resend code" width="120" height="40" usemap="#resend" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="><map name="resend"><area shape="rect" coords="0,0,120,40" href="${to}"></map>`;
 const offSiteForm =
   '<form id="off" action="https://elsewhere.example.org/take" method="post"><input type="hidden" name="phone" value="+15555550123"></form>';
 for (const [name, control] of [
@@ -512,6 +519,9 @@ for (const [name, control] of [
     "a span a link to another origin of the site holds",
     '<a href="https://accounts.phone.example.test/resend"><span id="press">Resend code</span></a>',
   ],
+  ["a span slotted into an off-site link", slotted("https://elsewhere.example.org/resend")],
+  ["an off-site SVG link", svgLink("https://elsewhere.example.org/resend")],
+  ["an image whose map holds an off-site area", imageMap("https://elsewhere.example.org/resend")],
   [
     "a span the button of an off-site form holds",
     `${offSiteForm}<button form="off"><span id="press">Resend code</span></button>`,
@@ -571,19 +581,24 @@ for (const [name, control, form] of [
     expect(posts).toEqual([{ path: "/resend", form }]);
   });
 
-test("a press goes out through a span a link on the same site holds", async ({ page }) => {
-  const opened: string[] = [];
-  page.on("request", (request) => {
-    if (request.isNavigationRequest()) opened.push(new URL(request.url()).pathname);
+for (const [name, control] of [
+  ["a span a link on the same site holds", '<a href="/resend"><span id="press">Resend code</span></a>'],
+  ["a span slotted into a link on the same site", slotted("/resend")],
+  ["an SVG link on the same site", svgLink("/resend")],
+  ["an image whose map holds an area on the same site", imageMap("/resend")],
+] as const)
+  test(`a press goes out through ${name}`, async ({ page }) => {
+    const opened: string[] = [];
+    page.on("request", (request) => {
+      if (request.isNavigationRequest()) opened.push(new URL(request.url()).pathname);
+    });
+    const { pressed } = await pressOn(page, `${codeForm}${control}`, {
+      ...codeOnly,
+      resend: "#press",
+    });
+    expect(pressed).toBe(true);
+    expect(opened).toContain("/resend");
   });
-  const { pressed } = await pressOn(
-    page,
-    `${codeForm}<a href="/resend"><span id="press">Resend code</span></a>`,
-    { ...codeOnly, resend: "#press" },
-  );
-  expect(pressed).toBe(true);
-  expect(opened).toContain("/resend");
-});
 
 test("a press goes out through a link whose address is a script that does nothing", async ({
   page,

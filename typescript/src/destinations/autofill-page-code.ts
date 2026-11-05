@@ -533,13 +533,16 @@ const noticeCoverCode = `(element, own, scroll) => {
  * Page code, as statements for a function to open with: `parentOf`, `ancestry` and `clickReach`,
  * every element a click of `element` may reach (`dismissCode`, `resendChecksCode`). A selector may
  * name what a control holds or a label for it, so the element alone says too little: a click at
- * its centre lands on whatever it holds there and bubbles through what holds it, and a label
- * among them clicks its control, which bubbles in turn. A label that holds both a box and the
- * element counts the box, though a browser skips a label's click from a button inside it: refusing
- * is the safe side.
+ * its centre lands on whatever it holds there and bubbles along the path a click takes, through a
+ * slot it is assigned to, and a label among them clicks its control, which bubbles in turn. An
+ * image counts the areas of its map, since one of them takes the click. A label that holds both a
+ * box and the element counts the box, though a browser skips a label's click from a button inside
+ * it: refusing is the safe side.
  */
-const clickReachCode = `// Open shadow roots count as part of their host: a host holds what its root holds.
-  const parentOf = (node) => (node.parentNode instanceof ShadowRoot ? node.parentNode.host : node.parentNode);
+const clickReachCode = `// Open shadow roots count as part of their host: a host holds what its root holds, and a slot what
+  // is assigned to it.
+  const parentOf = (node) =>
+    node.assignedSlot ?? (node.parentNode instanceof ShadowRoot ? node.parentNode.host : node.parentNode);
   const ancestry = (node) => {
     const chain = [];
     for (let at = node; at instanceof Element; at = parentOf(at)) chain.push(at);
@@ -558,10 +561,17 @@ const clickReachCode = `// Open shadow roots count as part of their host: a host
     walk(root);
     return found;
   };
+  const mapAreas = (node) => {
+    if (!(node instanceof HTMLImageElement) || !node.useMap.startsWith("#")) return [];
+    const name = node.useMap.slice(1);
+    const map = [...node.getRootNode().querySelectorAll("map")].find((each) => each.name === name || each.id === name);
+    return [...(map?.querySelectorAll("area") ?? [])];
+  };
   const clickReach = (element) => {
     const held = [...ancestry(element), ...within(element)];
     return [
       ...held,
+      ...held.flatMap(mapAreas),
       ...held.flatMap((node) => (node instanceof HTMLLabelElement && node.control !== null ? ancestry(node.control) : [])),
     ];
   };`;
@@ -1014,7 +1024,8 @@ const otherOrigin = await resendControl
     const formAction = Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, "action").get;
     const address = (node) => {
       if (submits(node)) return node.getAttribute("formaction") ?? formAction.call(node.form);
-      return node.matches("a[href], area[href]") ? node.getAttribute("href") : null;
+      if (node.localName !== "a" && node.localName !== "area") return null;
+      return node.getAttribute("href") ?? node.getAttributeNS("http://www.w3.org/1999/xlink", "href");
     };
     return clickReach(element).some((node) => {
       const at = address(node);
