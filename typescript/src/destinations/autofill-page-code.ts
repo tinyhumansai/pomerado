@@ -282,9 +282,11 @@ export type AutofillFillCall =
        * A code screen's resend press (`resendAutofillCode`), whose submit is its resend control:
        * before the click every field of the step holds nothing (lengths only); the control is
        * none of them, and none of the elements `apartFrom` names in its frame, the screen's own
-       * submit, methods and dismiss; and its document holds no password in any form, as one an
-       * earlier screen typed may still be (`resendRefused`). So nothing typed goes out with the
-       * press, and it presses no other control of the screen.
+       * submit, methods and dismiss; its document holds no password in any form, as one an earlier
+       * screen typed may still be; and the form it submits, if it submits one, holds no value in
+       * a text field a person could have typed (`resendRefused`). So nothing typed goes out with
+       * the press's own post, and it presses no other control of the screen. A control that
+       * submits no form may still send what its own script reads, as any click may.
        */
       readonly resend?: { readonly apartFrom: readonly string[] };
     };
@@ -888,9 +890,10 @@ const pickerBesideCode = `(element, code) => {
 /**
  * Page code for a resend press's submit call, before its click (`AutofillFillCall`'s `resend`): a
  * field that still holds something fails the check, with its index; a control that is one of the
- * step's fields or of the elements `apartFrom` names in its frame refuses as `same_control`, and
- * one whose document holds a password anywhere, by its type or its autocomplete, as
- * `password_held`. Lengths only, never a value; a read that fails refuses.
+ * step's fields or of the elements `apartFrom` names in its frame refuses as `same_control`, one
+ * whose document holds a password anywhere, by its type or its autocomplete, as `password_held`,
+ * and one that submits a form with a value in a text field a person could have typed, as
+ * `value_held`. Lengths only, never a value; a read that fails refuses.
  */
 const resendChecksCode = (apartFrom: readonly string[]) => `for (const [index, field] of fields.entries()) {
   const empty = await field.locator
@@ -936,11 +939,32 @@ const passwordHeld = await resendControl
     return false;
   })
   .catch(() => true);
-if (passwordHeld) return { resendRefused: "password_held", url: primary.url() };`;
+if (passwordHeld) return { resendRefused: "password_held", url: primary.url() };
+// What the control's own post would send: a value in a text field of the form it submits, as an
+// earlier screen may leave one typed there. A hidden, read-only or disabled field holds what the
+// site wrote, and a control that submits no form posts none of it.
+const valueHeld = await resendControl
+  .evaluate((element) => {
+    const submits =
+      (element instanceof HTMLButtonElement && element.type === "submit") ||
+      (element instanceof HTMLInputElement && (element.type === "submit" || element.type === "image"));
+    if (!submits || element.form === null) return false;
+    const notText = ["hidden", "checkbox", "radio", "file", "range", "color", "submit", "image", "button", "reset"];
+    return [...element.form.elements].some(
+      (field) =>
+        (field instanceof HTMLTextAreaElement ||
+          (field instanceof HTMLInputElement && !notText.includes(field.type))) &&
+        field.value.length > 0 &&
+        !field.readOnly &&
+        !field.matches(":disabled"),
+    );
+  })
+  .catch(() => true);
+if (valueHeld) return { resendRefused: "value_held", url: primary.url() };`;
 
 /** A resend press's submit call that refused its control before the click (`resendChecksCode`). */
 export const ResendRefusedAnswer = Schema.Struct({
-  resendRefused: Schema.Literal("same_control", "password_held"),
+  resendRefused: Schema.Literal("same_control", "password_held", "value_held"),
   url: Schema.String,
 });
 

@@ -350,6 +350,95 @@ test("a press never sends a password from a form its control sits outside of", a
   expect(posts).toEqual([]);
 });
 
+for (const [name, field] of [
+  ["a number", '<input id="phone" name="phone" type="tel" value="+15555550123">'],
+  ["a number in a box the page hides", '<div hidden><input id="phone" name="phone" value="+15555550123"></div>'],
+  ["an email address", '<input id="email" name="email" type="email" value="ada@example.test">'],
+  ["a note", '<textarea id="note" name="note">typed before</textarea>'],
+] as const)
+  test(`a press never re-posts ${name} an earlier screen left in the form its control submits`, async ({
+    page,
+  }) => {
+    const { pressed, posts, events } = await pressOn(
+      page,
+      `<form method="post" action="/verify">
+${field}
+<label>Code <input id="code" name="code" autocomplete="one-time-code"></label>
+<button id="verify">Verify</button>
+<button id="resend" formaction="/resend">Resend code</button>
+</form>`,
+      codeOnly,
+    );
+    expect(pressed).toBe(false);
+    expect(posts).toEqual([]);
+    expect(events).toEqual([expect.objectContaining({ outcome: "refused", part: "value_held" })]);
+  });
+
+test("a press never re-posts a value in a form its control names from outside", async ({ page }) => {
+  const { pressed, posts } = await pressOn(
+    page,
+    `<form id="code-form" method="post" action="/verify">
+<input id="phone" name="phone" type="tel" value="+15555550123">
+<label>Code <input id="code" name="code" autocomplete="one-time-code"></label>
+<button id="verify">Verify</button>
+</form>
+<button id="resend" form="code-form" formaction="/resend">Resend code</button>`,
+    codeOnly,
+  );
+  expect(pressed).toBe(false);
+  expect(posts).toEqual([]);
+});
+
+for (const [name, field, sent] of [
+  [
+    "a hidden value the site wrote",
+    '<input name="phone" type="hidden" value="+15555550123">',
+    { phone: "+15555550123", code: "" },
+  ],
+  [
+    "a read-only box the site filled",
+    '<input name="phone" value="+15555550123" readonly>',
+    { phone: "+15555550123", code: "" },
+  ],
+  ["a disabled box", '<input name="phone" value="+15555550123" disabled>', { code: "" }],
+  ["a box left empty", '<input name="phone" type="tel">', { phone: "", code: "" }],
+  ["a choice", '<input name="remember" type="checkbox" value="yes" checked>', { remember: "yes", code: "" }],
+] as const)
+  test(`a press goes out from a form that holds ${name}`, async ({ page }) => {
+    const { pressed, posts } = await pressOn(
+      page,
+      `<form method="post" action="/verify">
+${field}
+<label>Code <input id="code" name="code" autocomplete="one-time-code"></label>
+<button id="verify">Verify</button>
+<button id="resend" formaction="/resend">Resend code</button>
+</form>`,
+      codeOnly,
+    );
+    expect(pressed).toBe(true);
+    expect(posts).toEqual([{ path: "/resend", form: sent }]);
+  });
+
+test("a press of a control that submits no form goes out beside a value that form holds", async ({
+  page,
+}) => {
+  const { pressed, posts } = await pressOn(
+    page,
+    `<form method="post" action="/verify">
+<input id="phone" name="phone" type="tel" value="+15555550123">
+<label>Code <input id="code" name="code" autocomplete="one-time-code"></label>
+<button id="verify">Verify</button>
+<button type="button" id="resend">Resend code</button>
+</form>
+<script>document.getElementById("resend").addEventListener("click", () => {
+  fetch("/resend", { method: "POST" });
+});</script>`,
+    codeOnly,
+  );
+  expect(pressed).toBe(true);
+  expect(posts).toEqual([{ path: "/resend", form: {} }]);
+});
+
 test("a press never sends a code its box put back once emptied", async ({ page }) => {
   const { pressed, posts } = await pressOn(
     page,

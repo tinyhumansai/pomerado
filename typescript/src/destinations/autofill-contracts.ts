@@ -80,9 +80,10 @@ export const callingCodeMessage =
   "a calling_code field accepts phone alone, a step names one at most, and a later field that accepts phone alone says format national";
 /**
  * Whether a step's `resend` fits it: none, or the code screen's own control that asks the site to
- * send a new code, on a step whose every field takes a code, so no other value the host typed
- * there goes out with a press, and never its submit, one of its fields or methods or its
- * `dismiss`. The host presses it only when the owner asks for a new code.
+ * send a new code, on a step whose every field takes a code, so the press has no other value of
+ * this step to send, and never its submit, one of its fields or methods or its `dismiss`. The host
+ * presses it only when the owner asks for a new code, and only when the form it submits holds no
+ * value an earlier screen may have left (`resendChecksCode`).
  */
 export const resendFits = (step: {
   readonly fields: readonly ({ readonly selector: string } & object)[];
