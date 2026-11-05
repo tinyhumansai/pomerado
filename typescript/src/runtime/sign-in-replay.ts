@@ -80,6 +80,23 @@ const reasonMessages = new Map([
       "revealed for where it was, so the value wasn't typed and the run stopped before the tool " +
       "ran. Run the tool again.",
   ],
+  [
+    "calling_code_missing",
+    "The phone number for this sign-in doesn't say its country calling code, so the sign-in " +
+      "couldn't pick its country in the website's calling-code picker, and nothing was typed. Run " +
+      "the tool again with the number in international form, starting with + and its calling code.",
+  ],
+  [
+    "calling_code_unoffered",
+    "The website's calling-code picker offers no country for the phone number's calling code, so " +
+      "nothing was typed and the run stopped before the tool ran.",
+  ],
+  [
+    "calling_code_ambiguous",
+    "The website's calling-code picker lists more than one country for the phone number's " +
+      "calling code, so the sign-in couldn't tell which to pick, and nothing was typed: a guess " +
+      "could send the sign-in code to someone else's phone.",
+  ],
 ]);
 
 /** Why a run could not sign in, value-free. The run fails with it and never runs signed out. */
@@ -88,9 +105,12 @@ export class SignInRunFailed extends Data.TaggedError("SignInRunFailed")<{
    * `CredentialsRejected`: the site rejected a value given for the sign-in, once its corrections
    * ran out or for a value that is never corrected. `NeedsInput`: a question the sign-in needs
    * went unanswered, or a screen typed nothing of the host's reveal (`reveal_refused`,
-   * `code_does_not_fit_boxes`, `revealed_origin_changed`). `RecipeFailed`: the recorded sign-in
-   * no longer matches the site, or its entry page did not load. `MissingRecipe`: the
-   * integration's recipe cannot be read.
+   * `code_does_not_fit_boxes`, `revealed_origin_changed`), or of a phone number that says no
+   * calling code for its screen's calling-code picker (`calling_code_missing`). `RecipeFailed`:
+   * the recorded sign-in no longer matches the site, or its entry page did not load, or its
+   * calling-code picker offers no option, or several, for the number's calling code
+   * (`calling_code_unoffered`, `calling_code_ambiguous`). `MissingRecipe`: the integration's
+   * recipe cannot be read.
    */
   readonly code: "CredentialsRejected" | "NeedsInput" | "RecipeFailed" | "MissingRecipe";
   /** A finite reason: the rejected field, the replay's reason, or why the recipe is unreadable. */
@@ -461,6 +481,9 @@ const afterRejection = (
   Effect.gen(function* () {
     const { reason } = replayed;
     if (reason === "code_rejected") return yield* rejected("code");
+    // The number given says no calling code: another answer may do, never another build.
+    if (reason === "calling_code_missing")
+      return yield* new SignInRunFailed({ code: "NeedsInput", reason });
     if (reason === "extra_rejected")
       return yield* rejected(replayed.rejectedFields?.[0] ?? "password");
     if (reason !== "password_rejected" && reason !== "username_rejected")

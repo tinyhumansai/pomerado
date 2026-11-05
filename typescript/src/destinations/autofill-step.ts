@@ -96,7 +96,9 @@ export interface AutofillField<Slot extends FillSlot = AutofillSlot> {
   /**
    * How a `date_of_birth` field takes the date, or the one part of it a dropdown takes; or, on an
    * identifier field that accepts a phone, `national`: it takes the number without its calling
-   * code (`PhoneFormat`), which the host types when it sends a phone there (`typedValues`).
+   * code (`PhoneFormat`), which the host types when it sends a phone there (`typedValues`); or
+   * `calling_code`: it is the screen's calling-code picker, where the host picks the option for
+   * the number's calling code before it types the national number beside it.
    */
   readonly format?: DateOfBirthFormat | PhoneFormat | undefined;
   /** The control a `date_of_birth` field was filled into, as the host found it. */
@@ -119,7 +121,10 @@ export interface AutofillStepRequest {
         readonly selector: string;
         readonly accepts: readonly IdentifierKind[];
         readonly label?: string | undefined;
-        /** `national` on a field that accepts a phone and keeps only the local number. */
+        /**
+         * `national` on a field that accepts a phone and keeps only the local number, and
+         * `calling_code` on the calling-code picker before it (`callingCodeFits`).
+         */
         readonly format?: PhoneFormat | undefined;
       }
     | {
@@ -172,6 +177,11 @@ export interface AutofillStep<Slot extends FillSlot = AutofillSlot> {
    */
   readonly submitVia?: "keyboard" | undefined;
 }
+
+/** Whether a field is a calling-code picker, where the host picks a phone's calling code. */
+export const isCallingCode = (
+  field: { readonly slot: FillSlot; readonly format?: string | undefined } | undefined,
+) => field?.slot === "phone" && field.format === "calling_code";
 
 /** Whether the host submits the step itself: it clicks its submit or presses its submit key. */
 export const hostSubmits = (step: {
@@ -373,6 +383,12 @@ const Located = Schema.Union(
 /** Why the host typed and clicked nothing. Nothing of the step reached the site. */
 export type AutofillRefusal = {
   readonly outcome: "refused";
+  /**
+   * A calling-code picker's own (`isCallingCode`): the phone number says no calling code
+   * (`calling_code_missing`), or the picker offers no option for it (`calling_code_unoffered`) or
+   * several, as two countries that share +1 do (`calling_code_ambiguous`), so the host picked and
+   * typed nothing rather than guess a country.
+   */
   readonly reason:
     | "not_found"
     | "ambiguous_match"
@@ -384,7 +400,10 @@ export type AutofillRefusal = {
     | "popup_missing"
     | "popup_ambiguous"
     | "code_boxes_incomplete"
-    | "dismiss_refused";
+    | "dismiss_refused"
+    | "calling_code_missing"
+    | "calling_code_unoffered"
+    | "calling_code_ambiguous";
   /** The field (by its index in the step) or the submit control the refusal is about. */
   readonly target?: number | "submit" | "popup" | "dismiss";
   /**
@@ -767,9 +786,10 @@ export const untrustedTarget = (
       const { part: cardCheck, ...evidence } = carded;
       return refusedAt(index, target, cardCheck, evidence);
     }
-    // A date also goes into an enabled select or dropdown, which takes a choice, not typing.
+    // A date, and a phone's calling code, also go into an enabled select or dropdown, which
+    // takes a choice, not typing.
     const choosable =
-      step.fields[index]?.slot === "date_of_birth" &&
+      (step.fields[index]?.slot === "date_of_birth" || isCallingCode(step.fields[index])) &&
       (target.control === "select" || target.control === "combobox");
     if (index >= from && !target.editable && !choosable)
       return withCheck(refused("not_editable", index), "not_editable", {

@@ -64,3 +64,22 @@ export const nationalDigits = (number: string) => {
   const code = callingCode(number);
   return code === undefined ? undefined : internationalDigits(number)?.slice(code.length);
 };
+
+/**
+ * The calling codes a picker's text names, each as its digits: a `+` and those digits, as in
+ * "India (+91)", "+91" or "🇮🇳 +91". Digits that a space or hyphen joins to them belong to the
+ * code, so "+1 268" names 1268 and never 1, and digits with no `+` before them name nothing, as
+ * they may be a list position or a number of the page's own. Self-contained: page code runs it
+ * from its own source.
+ */
+export const shownCallingCodes = (text: string): readonly string[] =>
+  Array.from(String(text).matchAll(/\+(\d+(?:[\s\-‐-–]\d+)*)/gu), (match) =>
+    (match[1] ?? "").replace(/\D/gu, ""),
+  );
+
+/**
+ * Whether a picker's text names the calling code `code` (`shownCallingCodes`). Page code runs it
+ * from its own source, beside `shownCallingCodes`.
+ */
+export const namesCallingCode = (text: string, code: string): boolean =>
+  shownCallingCodes(text).includes(code);

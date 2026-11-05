@@ -7,6 +7,8 @@ import { pageCode, primaryPageCode } from "../runtime/host-execute.js";
 import { hostOnSiteSource } from "../runtime/same-site.js";
 import { submissionGuardCode } from "./autofill-submission-guard.js";
 import { holdsFocusCode } from "./field-focus-code.js";
+import { phoneReadBackMs } from "./credential-keyboard.js";
+import { namesCallingCode, shownCallingCodes } from "./login-field-formats.js";
 import { pageControlsCode } from "./page-controls.js";
 
 /**
@@ -145,9 +147,10 @@ return {
 };`;
 
 /**
- * One call of a step's fill, after its inspection. None carries a value but a date's: the host
- * types every other value itself over its own DevTools socket, into the field `focus` left focused. `check` names the field the host typed just before, which must now hold
- * something, so typing that went to another element never leads to a click.
+ * One call of a step's fill, after its inspection. None carries a value but a date's and a phone's
+ * calling code: the host types every other value itself over its own DevTools socket, into the
+ * field `focus` left focused. `check` names the field the host typed just before, which must now
+ * hold something, so typing that went to another element never leads to a click.
  * - `focus`: empties the field when it holds something and focuses it, then reads that the field
  *   itself holds the focus, inside a shadow root too (`holdsFocusCode`), and names the tag of the
  *   element that holds it otherwise.
@@ -196,6 +199,15 @@ export type AutofillFillCall =
       readonly index: number;
       readonly iso: string;
       readonly format: DateOfBirthFormat;
+    }
+  | {
+      /**
+       * Picks a phone's calling code in a calling-code picker (`callingCodeChoiceCode`): `code` is
+       * its digits alone, never the number, so this call's code holds that code.
+       */
+      readonly kind: "calling_code";
+      readonly index: number;
+      readonly code: string;
     }
   | {
       readonly kind: "submit";
@@ -668,8 +680,83 @@ if (navigated && noticeFrame !== null) {
 await notice.locator.waitFor({ state: "hidden", timeout: 2000 }).catch(() => undefined);
 return { dismiss: "clicked", ...(emptied ? { emptied } : {}), url: primary.url() };`;
 
+/**
+ * Page code: `chooseCallingCode` picks a calling code (its digits) in a picker with the authoring
+ * library's own chooser, a native select's or a custom dropdown's (`formControlsCode`): the one
+ * option whose label names it with its `+` (`namesCallingCode`), or whose value is it with its
+ * `+`. Options that share a label and a value are one, as a list that repeats a country among its
+ * favourites does. None, several or a disabled one throws, having picked nothing; a picker that is
+ * neither throws `control_unsupported`. A moment after the choice, as long as the host gives a
+ * phone's read-back (`phoneReadBackMs`), the picker must still show it: a select's chosen option,
+ * else the control's own words, `aria-label` or `title`, names the code, or holds the chosen
+ * option's words or some of them, as a control that shows only the country does. Otherwise it
+ * throws `not_committed`, as a page that puts its picker back does.
+ */
+const callingCodeChoiceCode = String.raw`const shownCallingCodes = ${String(shownCallingCodes)};
+const namesCallingCode = ${String(namesCallingCode)};
+const callingCodePick = (options, wanted) => {
+  const code = wanted[0].slice(1);
+  const named = options.filter((option) => namesCallingCode(option.label, code) || option.value === wanted[0]);
+  const distinct = named.filter(
+    (option, at) => named.findIndex((other) => other.label === option.label && other.value === option.value) === at,
+  );
+  if (distinct.length === 0) return { failure: "option_missing" };
+  if (distinct.length > 1) return { failure: "option_ambiguous" };
+  return distinct[0].disabled ? { failure: "option_disabled" } : { option: distinct[0] };
+};
+const chooseCallingCode = async (control, code) => {
+  const wanted = ["+" + code];
+  const shape = await formControlShape(control, { timeout: 5000 });
+  if (shape !== "select" && shape !== "combobox") throw formControlFailure("control_unsupported");
+  const chosen = shape === "select"
+    ? await formControlChooseNative(control, wanted, 5000, callingCodePick)
+    : await formControlChooseCustom(control, wanted, 5000, callingCodePick);
+  await new Promise((resolve) => setTimeout(resolve, ${phoneReadBackMs}));
+  const shown = await control.evaluate((element) => {
+    if (element instanceof HTMLSelectElement) {
+      const option = element.selectedOptions[0];
+      return option === undefined ? [] : [option.label || option.textContent || "", option.value];
+    }
+    const own = element instanceof HTMLInputElement ? element.value : element.textContent;
+    return [own ?? "", element.getAttribute("aria-label") ?? "", element.getAttribute("title") ?? ""];
+  }, undefined, { timeout: ${elementReadMs} });
+  const words = (text) => " " + formControlText(text).split(/[^\p{L}\p{N}]+/u).filter(Boolean).join(" ") + " ";
+  const label = words(chosen.label);
+  const holdsChoice = (text) => {
+    const said = words(text);
+    return said.trim() !== "" && (said.includes(label) || label.includes(said));
+  };
+  if (!shown.some((text) => namesCallingCode(text, code) || holdsChoice(text)))
+    throw formControlFailure("not_committed");
+};
+`;
+
+/** What a calling-code call answers when it threw: a reason `chooseCallingCode` gives, else `failed`. */
+const callingCodeFailures = [
+  "option_missing",
+  "option_disabled",
+  "option_ambiguous",
+  "control_unsupported",
+  "listbox_missing",
+  "not_committed",
+] as const;
+/** A calling-code call's answer: the code picked, or why not (`callingCodeFailures`). */
+export const CallingCodeAnswer = Schema.Struct({
+  calling: Schema.Literal("chosen", ...callingCodeFailures, "failed"),
+  url: Schema.String,
+  document: Schema.optional(Schema.Number),
+});
+
 const fillCallBody = (call: AutofillFillCall) => {
   if (call.kind === "dismiss") return dismissCode(call.selector);
+  if (call.kind === "calling_code")
+    return `try {
+  await chooseCallingCode(fields[${call.index}].locator, ${JSON.stringify(call.code)});
+  return { calling: "chosen", url: primary.url(), document: await documentStart() };
+} catch (error) {
+  const reason = error instanceof Error && error.name === "FormControlFailure" ? error.message : "failed";
+  return { calling: ${JSON.stringify(callingCodeFailures)}.includes(reason) ? reason : "failed", url: primary.url() };
+}`;
   if (call.kind === "focus")
     return `const field = fields[${call.index}].locator;
 const fieldLocated = located.fields[${call.index}];
@@ -1040,6 +1127,7 @@ finally { await authTargetSession.detach(); }
 ${fill === undefined ? "" : `if (popupTargetId !== ${JSON.stringify(fill.popupTargetId)}) return {error:"target_changed", target:"popup"};`}`
 }
 ${formControlsCode}
+${fill?.call.kind === "calling_code" ? callingCodeChoiceCode : ""}
 ${locateCode}
 ${documentStartCode}
 const observed = ${JSON.stringify(observed)};

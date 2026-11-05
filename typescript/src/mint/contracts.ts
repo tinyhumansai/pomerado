@@ -33,6 +33,8 @@ import type { SignInVersionFinding } from "./sign-in-version.js";
 import {
   AutofillPopup,
   AutofillApproval,
+  callingCodeFits,
+  callingCodeMessage,
   DateOfBirthFormat,
   IdentifierKinds,
   maximumCodeBoxes,
@@ -667,7 +669,8 @@ export const SignInStep = Schema.Union(
       Schema.Union(
         // An identifier field lists every kind it accepts; the host picks what it sends. A
         // private identifier is accepted alone, with the site's own label for its field. One that
-        // accepts a phone and keeps only the local number names `format: "national"`.
+        // accepts a phone and keeps only the local number names `format: "national"`, and the
+        // calling-code picker before it `format: "calling_code"`.
         Schema.Struct({
           selector: SignInSelector,
           accepts: Schema.Array(IdentifierKinds).pipe(
@@ -684,7 +687,7 @@ export const SignInStep = Schema.Union(
         }).pipe(
           Schema.filter(privateIdentifierFits, { message: () => privateIdentifierMessage }),
           Schema.filter((field) => field.format === undefined || field.accepts.includes("phone"), {
-            message: () => "only a field that accepts a phone names format national",
+            message: () => "only a field that accepts a phone names a phone format",
           }),
         ),
         // A date of birth names how the field takes it, or the one part a dropdown takes. A
@@ -708,6 +711,7 @@ export const SignInStep = Schema.Union(
       Schema.maxItems(maximumStepFields + maximumCodeBoxes),
       Schema.filter(stepFieldsFit, { message: () => stepFieldsMessage }),
       Schema.filter(onePrivateIdentifier, { message: () => onePrivateIdentifierMessage }),
+      Schema.filter(callingCodeFits, { message: () => callingCodeMessage }),
     ),
     submit: Schema.optional(SignInSelector),
     /**

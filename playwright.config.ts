@@ -44,6 +44,7 @@ export default defineConfig({
         "**/order-press.spec.ts",
         "**/location-pick.spec.ts",
         "**/autofill-phone-read-back.spec.ts",
+        "**/autofill-calling-code.spec.ts",
         "**/autofill-code-boxes.spec.ts",
         "**/sign-in-code-boxes.spec.ts",
         "**/sign-in-code-sends-itself.spec.ts",

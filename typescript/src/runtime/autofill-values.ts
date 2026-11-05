@@ -7,7 +7,11 @@ import type {
   FillSlot,
   IdentifierKind,
 } from "../destinations/autofill-step.js";
-import { nationalDigits, wholeDateLayouts } from "../destinations/login-field-formats.js";
+import {
+  callingCode,
+  nationalDigits,
+  wholeDateLayouts,
+} from "../destinations/login-field-formats.js";
 import type { WebsiteCredentials } from "./authentication.js";
 import { correctionTriesLeft } from "./credential-prompts.js";
 import type { InputAsker } from "./input-request.js";
@@ -201,14 +205,18 @@ const boxedCode = (found: Found, boxes: number): Found => {
     : new Unanswered(codeDoesNotFit);
 };
 
-/** The values with each `national` phone field's number written without its calling code. */
+/**
+ * The values with each `national` phone field's number written without its calling code, and each
+ * `calling_code` picker's number as that code alone, or nothing for a number that does not say it,
+ * which the fill refuses before it types anything (`calling_code_missing`).
+ */
 const localValues = (step: Pick<AutofillStep<FillSlot>, "fields">, values: readonly string[]) =>
-  step.fields.some((field) => field.slot === "phone" && field.format === "national")
+  step.fields.some((field) => field.slot === "phone" && field.format !== undefined)
     ? values.map((value, index) => {
         const field = step.fields[index];
-        return field?.slot === "phone" && field.format === "national"
-          ? (nationalDigits(value) ?? value)
-          : value;
+        if (field?.slot !== "phone") return value;
+        if (field.format === "national") return nationalDigits(value) ?? value;
+        return field.format === "calling_code" ? (callingCode(value) ?? "") : value;
       })
     : values;
 
@@ -220,7 +228,9 @@ const localValues = (step: Pick<AutofillStep<FillSlot>, "fields">, values: reado
  * refusal rules out is the code. A phone field whose step says `format: "national"` takes the
  * digits after the number's calling code (`nationalDigits`), which its read-back then checks; a
  * number saved without its calling code is typed as saved, since nothing says which digits are
- * the calling code.
+ * the calling code. A calling-code picker (`format: "calling_code"`) takes the number's calling
+ * code alone (`callingCode`), which the fill picks in it, or nothing when the number does not say
+ * it.
  */
 export const typedValues = (
   step: Pick<AutofillStep<FillSlot>, "fields">,

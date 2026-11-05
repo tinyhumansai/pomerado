@@ -179,9 +179,15 @@ attribute.
     the label, type and placeholder. The host sends a kind the login holds (username first, then email, phone and
     account number) or asks the caller once for one it accepts. If it refuses the step as
     `identifier_conflict`, the answer was not this login's: send the step again to ask again.
-    For a phone box that keeps only the local number and has no country picker, or a picker that
-    already shows the number's country as the screen loads, prefer adding `format: "national"` to
-    that field: the host then types the number without its calling code.
+    For a phone box that keeps only the local number and has no country picker, prefer adding
+    `format: "national"` to that field: the host then types the number without its calling code.
+    When a calling-code picker sits before such a box, a select or a dropdown whose options show
+    their codes, such as `+91` or `India (+91)`, name the picker as its own field before the box,
+    `accepts: ["phone"]` with `format: "calling_code"`, and the box with `format: "national"`
+    (its select, or the control that opens its list, never an option). The host picks the option
+    for the number's own calling code, checks it stuck, then types the national number. It types
+    nothing for a number that doesn't say its calling code, or a picker with no option, or several,
+    for it.
   - `slot: "password"` for the password.
   - `slot: "code"` for a one-time or authenticator code. A saved authenticator seed answers it;
     otherwise the host asks the caller for the code. Never ask for a code yourself. A code split

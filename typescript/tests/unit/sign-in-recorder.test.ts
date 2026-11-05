@@ -990,7 +990,7 @@ it("tells the agent the calling code of a phone the field changed, asking nobody
     ]),
   );
   expect(changed.result["nextStep"]).toBe(
-    "The phone field kept different digits than the number the host typed, as when the site's country picker is set to another country. Nothing was submitted and nobody was asked. The number's country calling code is +7. If the screen has a country picker, prefer setting it to that country with an explore step, then send this signInStep again.",
+    "The phone field kept different digits than the number the host typed, as when the site's country picker is set to another country. Nothing was submitted and nobody was asked. The number's country calling code is +7. If the screen has a country picker, prefer sending this signInStep again with the picker as its own field before the phone field, accepting phone with format calling_code, and the phone field's format set to national: the host then picks the number's calling code there, checks it stuck, and types the number without it.",
   );
   expect(JSON.stringify(changed.result)).not.toContain("912");
   expect(again.report).toMatchObject({ submit: "clicked" });

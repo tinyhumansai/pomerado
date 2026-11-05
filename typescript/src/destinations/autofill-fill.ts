@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { Effect, Either, Schema } from "effect";
 import { failureDetail } from "../runtime/failure-detail.js";
-import { type AutofillFillCall, autofillStepCode } from "./autofill-page-code.js";
+import { type AutofillFillCall, autofillStepCode, CallingCodeAnswer } from "./autofill-page-code.js";
 import { frameCrossing, unsupportedSelector } from "./autofill-locate-code.js";
 import { firedRefusal, guardedSubmit, GuardRefusal } from "./autofill-submission-guard.js";
 import {
@@ -30,6 +30,7 @@ import {
   coveringElement,
   ReadCoveringElement,
   hostSubmits,
+  isCallingCode,
   LocatedError,
   notingHostTrust,
   Targets,
@@ -109,6 +110,7 @@ const FillAnswer = Schema.Union(
     url: Schema.String,
   }),
   GuardRefusal,
+  CallingCodeAnswer,
 );
 type FillAnswer = typeof FillAnswer.Type;
 /** A call that found a control changed since the host last judged it did nothing: each as found. */
@@ -524,7 +526,8 @@ const revealedElsewhere = (
   progress: FillProgress,
   call: AutofillFillCall,
 ) => {
-  if (call.kind !== "focus" && call.kind !== "date") return undefined;
+  if (call.kind !== "focus" && call.kind !== "date" && call.kind !== "calling_code")
+    return undefined;
   const revealed = input.revealedFor?.[call.index];
   const judged = progress.judged.fields[call.index];
   if (revealed === undefined || judged?.documentOrigin === revealed) return undefined;
@@ -789,10 +792,11 @@ const submitWhenEnabled = (
   });
 
 /**
- * One field: a date's call fills it; any other field's call focuses it and binds its original node/document/frame; the host inserts its
- * value atomically. Undefined when the fill goes on to the next field, else the step's report.
- * The focus call of the first of the step's code boxes (`boxes`) first empties every box that
- * still holds something (`emptyBoxes`).
+ * One field: a date's call fills it, a calling-code picker's picks its code; any other field's
+ * call focuses it and binds its original node/document/frame; the host inserts its value
+ * atomically. Undefined when the fill goes on to the next field, else the step's report. The focus
+ * call of the first of the step's code boxes (`boxes`) first empties every box that still holds
+ * something (`emptyBoxes`).
  */
 const fillField = (
   input: FillInput,
@@ -810,23 +814,27 @@ const fillField = (
         : isDateOfBirthFormat(field.format)
           ? field.format
           : "YYYY-MM-DD";
+    const picker = isCallingCode(field);
     const answered = yield* fillCall(
       input,
       progress,
     )(
-      format === undefined
-        ? {
-            kind: "focus",
-            index,
-            bindingKey,
-            ...(index === boxes[0] ? { emptyBoxes: boxes } : {}),
-          }
-        : { kind: "date", index, iso: value, format },
+      picker
+        ? { kind: "calling_code", index, code: value }
+        : format === undefined
+          ? {
+              kind: "focus",
+              index,
+              bindingKey,
+              ...(index === boxes[0] ? { emptyBoxes: boxes } : {}),
+            }
+          : { kind: "date", index, iso: value, format },
     );
+    // A date's or a calling code's call holds its value and may have changed the page.
     if (answered._tag === "Left")
       return failedCall(progress, answered.left, {
-        ...(format === undefined ? {} : { held: input.values }),
-        mayMutate: format !== undefined,
+        ...(format === undefined && !picker ? {} : { held: input.values }),
+        mayMutate: format !== undefined || picker,
       });
     const answer = answered.right;
     if ("refusal" in answer || "checked" in answer)
@@ -881,6 +889,7 @@ const afterFieldCall = (
         ? undefined
         : filledReport(input.step, progress, "not_attempted", answer.url);
     }
+    if ("calling" in answer) return calledCode(input, progress, index, answer);
     if (!("focused" in answer)) return refused("page_unavailable");
     let insertion: InsertionRefusal | undefined;
     if (answer.focused) {
@@ -950,14 +959,70 @@ const afterFieldCall = (
     return filledReport(input.step, progress, "not_attempted", answer.url, refusal);
   });
 
+/** A calling-code call that threw before it picked an option, and the refusal that says why. */
+const unpicked: Partial<Record<typeof CallingCodeAnswer.Type.calling, AutofillRefusal["reason"]>> = {
+  option_missing: "calling_code_unoffered",
+  option_disabled: "calling_code_unoffered",
+  option_ambiguous: "calling_code_ambiguous",
+  control_unsupported: "not_editable",
+  listbox_missing: "not_editable",
+};
+
+/**
+ * What a calling-code picker's call found (`calling_code`): the code picked, which stuck, and the
+ * fill goes on; else a refusal when it picked nothing (`unpicked`) before anything was typed, and
+ * otherwise the field failed, as a picker that may now show another choice, with nothing typed
+ * after it. A chosen code counts as typed, since the picker shows part of the number.
+ */
+const calledCode = (
+  input: FillInput,
+  progress: FillProgress,
+  index: number,
+  answer: typeof CallingCodeAnswer.Type,
+): AutofillStepReport | undefined => {
+  if (answer.calling === "chosen") {
+    progress.typed = true;
+    progress.typedIn = answer.document;
+    progress.statuses.push("filled");
+    return undefined;
+  }
+  const reason = unpicked[answer.calling];
+  const refusal = withCheck(refused(reason ?? "typing_unavailable", index), callingCodeCheck, {
+    picked: answer.calling,
+    ...foundEvidence(answer.url, undefined, evidenceOrigins(input, progress)),
+  });
+  if (reason !== undefined && !progress.typed) return refusal;
+  if (reason === undefined) progress.typed = true;
+  progress.statuses.push("failed");
+  return filledReport(input.step, progress, "not_attempted", answer.url, refusal);
+};
+
+/** The check a calling-code picker's refusal names (its failure detail's phase). */
+const callingCodeCheck = "calling_code";
+
+/**
+ * A step whose calling-code picker gets no code (`typedValues` gives none for a number that does
+ * not say its calling code, and a code is 1 to 3 digits), refused before anything is touched.
+ */
+const missingCallingCode = (step: AutofillStep<FillSlot>, values: readonly string[]) => {
+  const index = step.fields.findIndex(
+    (field, at) => isCallingCode(field) && !/^[0-9]{1,3}$/u.test(values[at] ?? ""),
+  );
+  return index === -1
+    ? undefined
+    : withCheck(refused("calling_code_missing", index), callingCodeCheck, {
+        picked: "no_calling_code",
+      });
+};
+
 /**
  * Fills the values into the step's fields, in order, and clicks its submit, on the stable primary tab or its inspected authentication popup,
  * judging every control again before each call acts. Kernel calls
  * focus and bind each field and click; the host inserts each value atomically into that original
  * node over its own encrypted DevTools socket (`keyboard`), or with `typing: "keyboard"` presses a
  * trusted key per character into it there for each slot but the `pastedSlots`, so no value but a
- * date of birth ever enters a Kernel call's script text or its request to Kernel's REST API. It reports per-field outcomes and never a
- * value. Once anything was typed, a call that fails or finds a control refused can no longer say
+ * date of birth or a phone's calling code ever enters a Kernel call's script text or its request
+ * to Kernel's REST API. It reports per-field outcomes and never a value. Once anything was typed, a call that fails or finds a control refused can no longer say
  * nothing reached the site: a lost answer is `uncertain`, a control refused before a field's typing
  * fails that field, and one refused before the click, or a submission refused as it fires, refuses
  * the submit. That click ran, though, so the report says so (`clicked`): the page's own handlers
@@ -973,7 +1038,12 @@ const afterFieldCall = (
  * under a country picker set to another country, is `changed`, with `cutShort` when its
  * `maxLength` is shorter than the number as typed, and the fill types nothing more and never
  * clicks the submit. A phone field whose step says `format: "national"` gets the number without
- * its calling code, as the host's `typedValues` gives it, and is read back against that. On a step
+ * its calling code, as the host's `typedValues` gives it, and is read back against that. A
+ * calling-code picker (`format: "calling_code"`) before it gets that calling code picked with the
+ * authoring library's own chooser, which must stick, before the box is typed; a step whose picker
+ * gets no code, or whose picker offers none or several options for it, is refused with nothing
+ * picked or typed (`calling_code_missing`, `calling_code_unoffered`, `calling_code_ambiguous`),
+ * and a choice that does not stick fails the picker's field with nothing typed after it. On a step
  * with fields and no submit, a
  * page that moves on once every field is typed sent what was typed itself (`page`), never a
  * refusal:
@@ -1016,6 +1086,8 @@ export const fillAutofillStep = (input: FillInput): Effect.Effect<AutofillStepRe
     const crossing = crossingSelector(step);
     if (crossing !== undefined)
       return withCheck(refused("selector_unsupported", crossing), "selector_unsupported");
+    const missing = missingCallingCode(step, input.values);
+    if (missing !== undefined) return missing;
     const progress: FillProgress = {
       statuses: [],
       typed: false,
@@ -1123,12 +1195,14 @@ const isBlocked = (report: AutofillStepReport) =>
 
 /**
  * The fields the host typed itself and that still count as filled, which a submit it clicks again
- * checks still hold something: never a date, which the authoring library fills into the page's
- * own controls.
+ * checks still hold something: never a date or a calling-code picker, which the authoring
+ * library fills into the page's own controls.
  */
 const typedFields = (step: AutofillStep<FillSlot>, progress: FillProgress) =>
   step.fields.flatMap((field, index) =>
-    field.slot !== "date_of_birth" && progress.statuses[index] === "filled" ? [index] : [],
+    field.slot !== "date_of_birth" && !isCallingCode(field) && progress.statuses[index] === "filled"
+      ? [index]
+      : [],
   );
 
 /**
