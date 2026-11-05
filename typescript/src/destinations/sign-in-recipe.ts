@@ -263,6 +263,7 @@ export const PasswordlessLoginStep = Schema.Struct({
   identifierKinds: Schema.Array(Schema.Literal(...loginIdentifierKinds)).pipe(
     Schema.minItems(1),
     Schema.maxItems(loginIdentifierKinds.length),
+    Schema.filter((kinds) => new Set(kinds).size === kinds.length),
   ),
   password: Schema.Literal(false),
 });

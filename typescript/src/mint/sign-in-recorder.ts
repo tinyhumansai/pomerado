@@ -568,7 +568,15 @@ export const makeSignInRecorder = (input: {
         held = yield* login.values;
         step = values.resolve(request, held);
       }
-      const password = step.fields.findIndex((field) => field.slot === "password");
+      // A login with no password types nothing into a password input, whatever the step calls it,
+      // bar a code, which some sites draw in one, and a private identifier, kept like a password.
+      const password = step.fields.findIndex(
+        (field, index) =>
+          field.slot === "password" ||
+          (isIdentifier(field.slot) &&
+            field.slot !== "private_identifier" &&
+            inspected.screen.fields[index]?.type?.toLowerCase() === "password"),
+      );
       if (held !== undefined && held.password === undefined && password !== -1)
         return shown(yield* refusedStep(h, "credential_unavailable", password, noPasswordNotice));
       const valued =

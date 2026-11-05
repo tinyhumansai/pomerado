@@ -585,6 +585,8 @@ const phoneShop = async (
   options: {
     readonly codeBoxes?: boolean;
     readonly passwordField?: boolean;
+    /** The code screen's field is a password input, as some sites draw a one-time code. */
+    readonly codeInPassword?: boolean;
     /** What the code screen says of the number it received, in its text and in its field's label. */
     readonly echo?: (phone: string) => readonly [text: string, label: string];
   } = {},
@@ -656,7 +658,7 @@ const phoneShop = async (
                     `<input id="otp-${box}" name="d${box}" maxlength="1" inputmode="numeric" aria-label="Digit ${box}">`,
                 )
                 .join("")
-            : `<label>Code ${echoed?.[1] ?? ""} <input name="code" inputmode="numeric" autocomplete="one-time-code"></label>`;
+            : `<label>Code ${echoed?.[1] ?? ""} <input name="code" ${options.codeInPassword === true ? 'type="password"' : ""} inputmode="numeric" autocomplete="one-time-code"></label>`;
           html(
             response,
             `${echoed === undefined ? "" : `<p>We sent a code to ${echoed[0]}</p>`}<form method="post" action="/verify">${fields}<button>Verify</button></form>`,
@@ -1284,6 +1286,80 @@ test("a mint on an account with no password refuses a screen that takes one, typ
   }
 });
 
+test("a mint on an account with no password types no identifier into a password input, whatever the step calls it", async () => {
+  test.setTimeout(120_000);
+  const shop = await phoneShop({ passwordField: true });
+  try {
+    const { built, requests } = await mint({
+      effect: "read",
+      url: `${shop.origin}/login`,
+      guardian: recordingGuardian(),
+      intent: "Read the account's heading",
+      browser: { context: shop.context },
+      passwordless: byPhone,
+      answer: () => ({ login: { username: "+15555550123", saveLogin: false } }),
+      turns: [
+        () => patch({ "src/tool.mjs": searchHeading }),
+        () => [
+          call(
+            "execute",
+            execution("authenticate", "src/tool.mjs", {
+              signInStep: {
+                fields: [{ selector: "input[name=password]", accepts: ["phone"] }],
+                submit: "button",
+              },
+            }),
+            "password",
+          ),
+        ],
+        () => [said("This shop needs a password.")],
+      ],
+    });
+
+    expect(built.build).toBe("incomplete");
+    const refused = JSON.stringify(requests[2]);
+    expect(refused).toContain("credential_unavailable");
+    expect(refused).toContain("This login has no password");
+    expect(shop.received).toEqual({ phones: [], codes: [] });
+  } finally {
+    await shop.close();
+  }
+});
+
+test("a mint on an account with no password types a code into a password input, as some sites draw one", async () => {
+  test.setTimeout(120_000);
+  const shop = await phoneShop({ codeInPassword: true });
+  try {
+    await mint({
+      effect: "read",
+      url: `${shop.origin}/login`,
+      guardian: recordingGuardian(),
+      intent: "Read the account's heading",
+      timeoutMs: 120_000,
+      browser: { context: shop.context },
+      passwordless: byPhone,
+      answer: (request) =>
+        Object.fromEntries(
+          request.questions.map((question) => [
+            question.id,
+            question.type === "credential"
+              ? { username: "+15555550123", saveLogin: false }
+              : "424242",
+          ]),
+        ),
+      turns: [
+        () => patch({ "src/tool.mjs": searchHeading, "explore/body.mjs": readBody }),
+        ...phoneSignInTurns.filter((_turn, index) => index !== 1).slice(0, 2),
+        () => [said("Stop here.")],
+      ],
+    });
+
+    expect(shop.received).toEqual({ phones: ["+15555550123"], codes: ["424242"] });
+  } finally {
+    await shop.close();
+  }
+});
+
 for (const [what, passwordless] of [
   ["no identifier kind", { identifierKinds: [], password: false }],
   ["a kind a login doesn't offer", { identifierKinds: ["fax"], password: false }],
@@ -1292,6 +1368,8 @@ for (const [what, passwordless] of [
     { identifierKinds: ["username", "email", "phone", "account_number", "phone"], password: false },
   ],
   ["a password", { identifierKinds: ["phone"], password: true }],
+  ["the same kind twice", { identifierKinds: ["phone", "phone"], password: false }],
+  ["a key of its own", { identifierKinds: ["phone"], password: false, code: "424242" }],
 ] as const)
   test(`a mint refuses a login with no password that names ${what} before it starts`, async () => {
     const calls: string[] = [];
