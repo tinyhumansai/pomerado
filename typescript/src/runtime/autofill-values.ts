@@ -215,19 +215,20 @@ const takesIdentifier = (slot: FillSlot) =>
  * pasted with (`unmarkedNumber`), each `national` field's written without its calling code, and
  * each `calling_code` picker's as that code alone, or nothing for a number that does not say it,
  * which the fill refuses before it types anything (`calling_code_missing`). An identifier not
- * written as a number keeps its marks, as a joiner may be a letter's own.
+ * written as a number keeps its marks, as a joiner may be a letter's own. The very list when that
+ * changes nothing: a host empties a private answer in its own list once the fill is over.
  */
-const localValues = (step: Pick<AutofillStep<FillSlot>, "fields">, values: readonly string[]) =>
-  step.fields.some((field) => takesIdentifier(field.slot))
-    ? values.map((value, index) => {
-        const field = step.fields[index];
-        if (field === undefined || !takesIdentifier(field.slot)) return value;
-        if (field.slot !== "phone") return writtenAsNumber(value) ? unmarkedNumber(value) : value;
-        const number = unmarkedNumber(value);
-        if (field.format === "national") return nationalDigits(number) ?? number;
-        return field.format === "calling_code" ? (callingCode(number) ?? "") : number;
-      })
-    : values;
+const localValues = (step: Pick<AutofillStep<FillSlot>, "fields">, values: readonly string[]) => {
+  const local = values.map((value, index) => {
+    const field = step.fields[index];
+    if (field === undefined || !takesIdentifier(field.slot)) return value;
+    if (field.slot !== "phone") return writtenAsNumber(value) ? unmarkedNumber(value) : value;
+    const number = unmarkedNumber(value);
+    if (field.format === "national") return nationalDigits(number) ?? number;
+    return field.format === "calling_code" ? (callingCode(number) ?? "") : number;
+  });
+  return local.some((value, index) => value !== values[index]) ? local : values;
+};
 
 /**
  * The digits each `national` phone field of a screen takes (`localValues`), which it types and a

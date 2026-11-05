@@ -101,6 +101,16 @@ describe("typedValues", () => {
     },
   );
 
+  // The host empties a private answer in its own list once the fill is over, so no copy may hold it.
+  it.each(["username", "phone"] as const)(
+    "gives back the very list for a %s field that changes nothing",
+    (slot) => {
+      const box: Pick<AutofillStep, "fields"> = { fields: [{ selector: "#login", slot }] };
+      const values = ["+91 98765 43210"];
+      expect(typedValues(box, values)).toBe(values);
+    },
+  );
+
   // A joiner may be a letter's own, in a name or an address: it is no mark pasted with a number.
   it.each([
     ["username", "ada\u200downer"],
