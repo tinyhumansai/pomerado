@@ -458,7 +458,8 @@ export const makeAutofillValues = <
   /**
    * A private identifier, such as a national identity number or a PIN that is itself the sign-in
    * identifier: the record's, the owner's answer, else asked by the field's label with the save
-   * offer, and masked like a password.
+   * offer, and masked like a password, but for one of a few digits alone, which as any identifier
+   * of so few counts only as a whole token (`digitToken`).
    */
   const privateIdentifierValue = (field: AutofillField, login: AutofillLogin) =>
     Effect.gen(function* () {
