@@ -155,6 +155,13 @@ export const SecretQuestion = Schema.Struct({
     "billing_postal_code",
   ),
   maxLength: Schema.optional(Length),
+  /**
+   * Only on the host's own sign-in code question (`one_time_code`, from a `system` request): the
+   * screen has a control that asks the site to send a new code, so the answer may be
+   * `{ resend: true }` instead of a code (`ResendAnswer`). The host then waits for the site to
+   * enable the control, presses it once and asks again for the newest code.
+   */
+  allowResend: Schema.optional(Schema.Boolean),
 });
 export type SecretKind = typeof SecretQuestion.Type.secretKind;
 /** A website login. Only the host raises it, and its answer goes only to the credential store. */
@@ -250,6 +257,16 @@ export const InputRequest = Schema.Struct({
     { message: () => "only the host asks for a login" },
   ),
   Schema.filter(
+    (request) =>
+      !request.questions.some(
+        (question) =>
+          question.type === "secret" &&
+          question.allowResend === true &&
+          (request.source !== "system" || question.secretKind !== "one_time_code"),
+      ),
+    { message: () => "only the host's own one-time code question offers a resend" },
+  ),
+  Schema.filter(
     (request) => {
       const save = request.savedLoginFieldSave;
       if (save === undefined) return true;
@@ -296,6 +313,8 @@ const MultiChoiceAnswer = Schema.Union(
     note: Schema.optional(Text),
   }),
 );
+/** The answer to a code question that offers a resend (`allowResend`): send a new code. */
+export const ResendAnswer = Schema.Struct({ resend: Schema.Literal(true) });
 const ConfirmAnswer = Schema.Struct({
   confirmed: Schema.Boolean,
   text: Schema.optional(Schema.String.pipe(Schema.maxLength(maximumAnswerLength))),
@@ -357,6 +376,8 @@ export type ValidAnswer =
   | { readonly type: "text"; readonly value: string }
   | { readonly type: "confirm"; readonly value: typeof ConfirmAnswer.Type }
   | { readonly type: "secret"; readonly value: string }
+  /** A code question's `{ resend: true }`, where it offers one (`allowResend`): a new code. */
+  | { readonly type: "resend"; readonly value: typeof ResendAnswer.Type }
   | { readonly type: "credential"; readonly value: CredentialAnswer };
 export type ValidAnswers = Readonly<Record<string, ValidAnswer>>;
 
@@ -441,6 +462,11 @@ const validateOne = (
     }
     case "text":
     case "secret": {
+      // A code question that offers a resend takes the request for a new code instead.
+      if (question.type === "secret" && Either.isRight(decodeAs(ResendAnswer, value)))
+        return question.allowResend === true
+          ? Either.right({ type: "resend", value: { resend: true } })
+          : invalid("unexpected_answer");
       const decoded = decodeAs(Text, value);
       if (Either.isLeft(decoded)) return invalid("malformed");
       if (decoded.right.length > (question.maxLength ?? maximumAnswerLength))

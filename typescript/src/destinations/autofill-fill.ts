@@ -111,6 +111,8 @@ const FillAnswer = Schema.Union(
   }),
   GuardRefusal,
   CallingCodeAnswer,
+  /** An `empty` call's answer: how many of the step's fields held something it emptied. */
+  Schema.Struct({ cleared: Schema.Number, url: Schema.String }),
 );
 type FillAnswer = typeof FillAnswer.Type;
 /** A call that found a control changed since the host last judged it did nothing: each as found. */
@@ -381,6 +383,11 @@ interface CallInput {
    * that reads the count asks; a read that takes longer than `alertsBeforeMs` counts nothing.
    */
   readonly countNewAlerts?: boolean;
+  /**
+   * How long the host waits for the page to enable a disabled submit, `submitEnableMs` by default:
+   * a code screen's resend waits on the site's own timer (`resendAutofillCode`).
+   */
+  readonly enableMs?: number;
 }
 
 interface FillInput extends CallInput {
@@ -436,10 +443,14 @@ const rejudge = (
   changes: number,
 ) => {
   // A dismiss call acts before the step's fields are typed or before its submit is clicked again,
-  // so the controls it finds changed are judged as a submit's would be at that point.
-  const target = call.kind === "submit" || call.kind === "dismiss" ? "submit" : call.index;
+  // so the controls it finds changed are judged as a submit's would be at that point, and so does
+  // a call that only empties the fields before a resend, which types none of them.
+  const target =
+    call.kind === "submit" || call.kind === "dismiss" || call.kind === "empty"
+      ? "submit"
+      : call.index;
   const from =
-    call.kind === "submit"
+    call.kind === "submit" || call.kind === "empty"
       ? input.step.fields.length
       : call.kind === "dismiss"
         ? progress.statuses.length
@@ -781,7 +792,7 @@ const submitWhenEnabled = (
       const unsent = unclicked(answered, "none") || failed;
       if (unsent) unsentSince ??= Date.now();
       const waiting = unclicked(answered, "disabled")
-        ? Date.now() - started < submitEnableMs
+        ? Date.now() - started < (input.enableMs ?? submitEnableMs)
         : unsent &&
           (Date.now() - (unsentSince ?? started) < sendMs || (failed && !lastLost));
       if (failed) lost ??= answered;
@@ -1179,6 +1190,43 @@ export const resubmitAutofillStep = (input: CallInput): Effect.Effect<AutofillSt
     );
   });
 
+/**
+ * Presses a code screen's resend control, typing nothing. `input.step` is the screen's code
+ * fields with the control as its submit (`AutofillStep.resend`), as the host inspected them. Each
+ * field that holds something, as a refused code may, is emptied first (`empty`), so nothing typed
+ * goes out with the press, even when the control submits the code's own form. Then the control is
+ * judged, guarded and clicked as a click again of a fill's submit is, with no look first and
+ * pressed from the keyboard when another element covers it, once the site enables it: the host
+ * calls again while the site keeps it disabled, as its timer does, for up to `waitMs`. The report
+ * says what became of it, `clicked` when it went out and `stayed_disabled` when the site never
+ * enabled it in time, with no field filled; a control the host refuses is refused before any
+ * click.
+ */
+export const resendAutofillCode = (
+  input: CallInput & { readonly waitMs: number },
+): Effect.Effect<AutofillStepReport> =>
+  Effect.gen(function* () {
+    const { step } = input;
+    if (step.submit === undefined) return refused("not_found", "submit");
+    const crossing = crossingSelector(step);
+    if (crossing !== undefined)
+      return withCheck(refused("selector_unsupported", crossing), "selector_unsupported");
+    const progress: FillProgress = {
+      statuses: [],
+      typed: false,
+      check: [],
+      judged: input.inspection.targets,
+      judgment: input.inspection.judgment,
+      typedAt: randomUUID(),
+      typedIn: undefined,
+      trusted: new Set(),
+    };
+    const emptied = yield* fillCall(input, progress)({ kind: "empty" });
+    if (Either.isLeft(emptied)) return failedCall(progress, emptied.left, { mayMutate: false });
+    if ("refusal" in emptied.right) return emptied.right.refusal;
+    return yield* submitStep({ ...input, enableMs: input.waitMs }, progress, [], undefined, true);
+  });
+
 /** The keyboard, typing each value key by key (`InsertionOptions.keys`). */
 const byKeys = (keyboard: CredentialKeyboard): CredentialKeyboard => ({
   insertText: (target, text, options) => keyboard.insertText(target, text, { ...options, keys: true }),
@@ -1297,7 +1345,7 @@ const submitStep = (
         "stayed_disabled",
         answer.url,
         withCheck(refused("not_editable", "submit"), "submit_disabled", {
-          waitedMs: submitEnableMs,
+          waitedMs: input.enableMs ?? submitEnableMs,
           ...foundEvidence(answer.url, undefined, evidenceOrigins(input, progress)),
         }),
       );

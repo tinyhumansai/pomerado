@@ -320,6 +320,7 @@ const replayHooks = <E>(
       settle,
     );
   const readNumber = browser.approvalNumber;
+  const pressResend = browser.resend;
   return {
     inspect: (step) => browser.inspect(step).pipe(Effect.mapError(failed)),
     // One-character code boxes take the code one character each, as the host types it. A host's
@@ -353,6 +354,12 @@ const replayHooks = <E>(
               return Effect.succeed(revealRefusalReport(revealed.refused, revealed.target));
             }),
           ),
+    // A resend types nothing, so it reveals nothing.
+    ...(pressResend === undefined
+      ? {}
+      : {
+          resend: (input: Parameters<typeof pressResend>[0]) => pressResend.call(browser, input),
+        }),
     check: (indicator, screens, challengeScreens, at) =>
       browser.confirm(indicator, screens, challengeScreens ?? screens, at?.origin).pipe(
         Effect.catchAll(() =>

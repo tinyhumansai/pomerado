@@ -50,6 +50,7 @@ export default defineConfig({
         "**/sign-in-code-sends-itself.spec.ts",
         "**/sign-in-code-closes-in-place.spec.ts",
         "**/sign-in-code-either-side.spec.ts",
+        "**/sign-in-code-resend.spec.ts",
       ],
     },
     // Camoufox, a Firefox build, when CAMOUFOX_EXECUTABLE names its binary.

@@ -124,7 +124,7 @@ describe("version 11", () => {
   it("is refused by a host that knows version 10 at most, and a version 10 recipe with a picker is refused", () => {
     expect(Either.isLeft(Schema.decodeUnknownEither(NationalPhoneAutofillRecipe)({ ...recipe, version: 10 }))).toBe(true);
     expect(decodeSignInRecipe(JSON.stringify({ ...recipe, version: 10 }))).toBe("invalid");
-    expect(decodeSignInRecipe(JSON.stringify({ ...recipe, version: 12 }))).toBe("unknown_version");
+    expect(decodeSignInRecipe(JSON.stringify({ ...recipe, version: 13 }))).toBe("unknown_version");
   });
 
   it("writes version 11 only when a field takes the calling code, in the bytes every host writes", () => {

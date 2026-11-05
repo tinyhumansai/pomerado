@@ -95,7 +95,7 @@ export const maskedMethodRefusal = (h: Host, step: Pick<AutofillStep, "methods" 
 export const stepIdentityRefusal = (
   h: Host,
   open: AutofillSignInState | undefined,
-  step: Pick<AutofillStep, "fields" | "methods" | "submit" | "rejectedMarkers">,
+  step: Pick<AutofillStep, "fields" | "methods" | "submit" | "rejectedMarkers" | "resend">,
   page: string,
   filled: readonly string[],
 ) => {
@@ -109,6 +109,7 @@ export const stepIdentityRefusal = (
     ...step.fields.map((field) => field.selector),
     ...(step.submit === undefined ? [] : [step.submit]),
     ...(step.methods ?? []).map((option) => option.selector),
+    ...(step.resend === undefined ? [] : [step.resend]),
   ];
   const named = selectors.findIndex((selector) => namesIdentityOrSharedMask(selector, values));
   if (named !== -1)

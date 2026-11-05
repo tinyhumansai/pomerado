@@ -36,6 +36,8 @@ import {
   callingCodeFits,
   callingCodeMessage,
   DateOfBirthFormat,
+  resendFits,
+  resendMessage,
   IdentifierKinds,
   maximumCodeBoxes,
   maximumStepFields,
@@ -738,6 +740,13 @@ export const SignInStep = Schema.Union(
      * field. Never a submit, a field or a control of the sign-in's own form.
      */
     dismiss: Schema.optional(SignInSelector),
+    /**
+     * On a code screen, its own control that asks the site to send a new code, such as "Resend
+     * code" or "Send again". The host presses it only when the owner answers the code question by
+     * asking for a new code, once the site enables it, and runs do the same. Never the step's
+     * submit, a field, a method or its dismiss.
+     */
+    resend: Schema.optional(SignInSelector),
   }).pipe(
     Schema.filter((step) => step.fields.length > 0 || step.submit !== undefined, {
       message: () => "a sign-in step fills a field or clicks a control",
@@ -750,6 +759,7 @@ export const SignInStep = Schema.Union(
           !(step.methods ?? []).some((option) => option.selector === step.dismiss)),
       { message: () => "dismiss names the covering notice's own control, none of the step's" },
     ),
+    Schema.filter(resendFits, { message: () => resendMessage }),
     Schema.filter(
       (step) =>
         step.submitKey === undefined ||

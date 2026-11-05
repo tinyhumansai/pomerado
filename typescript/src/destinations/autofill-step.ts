@@ -143,6 +143,8 @@ export interface AutofillStepRequest {
     readonly { readonly method: SignInMethodChoice; readonly selector: string }[] | undefined;
   /** The own close, reject or accept control of a notice that covers the screen (`AutofillStep`). */
   readonly dismiss?: string | undefined;
+  /** A code screen's own control that asks the site to send a new code (`AutofillStep`). */
+  readonly resend?: string | undefined;
 }
 
 /**
@@ -176,6 +178,12 @@ export interface AutofillStep<Slot extends FillSlot = AutofillSlot> {
    * keyboard by itself.
    */
   readonly submitVia?: "keyboard" | undefined;
+  /**
+   * A code screen's own control that asks the site to send a new code, such as "Resend code"
+   * (`resendFits`). The host presses it only when the owner answers the code question by asking
+   * for a new code, once the site enables it, and never as part of a fill (`resendAutofillCode`).
+   */
+  readonly resend?: string | undefined;
 }
 
 /** Whether a field is a calling-code picker, where the host picks a phone's calling code. */

@@ -656,6 +656,11 @@
       "import": "./dist/typescript/src/runtime/challenge.js",
       "default": "./dist/typescript/src/runtime/challenge.js"
     },
+    "./core/runtime/code-resend": {
+      "types": "./dist/typescript/src/runtime/code-resend.d.ts",
+      "import": "./dist/typescript/src/runtime/code-resend.js",
+      "default": "./dist/typescript/src/runtime/code-resend.js"
+    },
     "./core/runtime/context": {
       "types": "./dist/typescript/src/runtime/context.d.ts",
       "import": "./dist/typescript/src/runtime/context.js",

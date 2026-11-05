@@ -238,6 +238,11 @@ export interface BoundedSignInHooks<E> {
     readonly values: readonly string[];
     readonly inspection: AutofillInspection;
   }) => Effect.Effect<AutofillStepReport>;
+  readonly resend?: (input: {
+    readonly step: AutofillStep;
+    readonly inspection: AutofillInspection;
+    readonly waitMs: number;
+  }) => Effect.Effect<AutofillStepReport>;
 }
 
 /** The failure a host's hooks open a page with, which a step past the bound fails with too. */
@@ -249,7 +254,8 @@ type OpenFailure<Hooks> =
  * each step's start: once the bound passed or the stop was raised, no page opens, no screen is
  * inspected and nothing is typed, so the host never fills after the script could have given up
  * and taken its browser back. A step already filling finishes; the next one never starts. An
- * open or inspection past the bound fails with the host's `expired` failure.
+ * open or inspection past the bound fails with the host's `expired` failure. A code screen's
+ * resend presses nothing past the bound either, and waits for the site's timer only until it.
  */
 export const boundedSignInHooks = <Hooks extends BoundedSignInHooks<unknown>>(
   hooks: Hooks,
@@ -261,6 +267,7 @@ export const boundedSignInHooks = <Hooks extends BoundedSignInHooks<unknown>>(
       passed ? Effect.fail(expired(sessionSignInExpiredDetail())) : Effect.void,
     ),
   );
+  const resend = hooks.resend;
   return {
     ...hooks,
     open: (url: string) => gate.pipe(Effect.zipRight(hooks.open(url))),
@@ -274,6 +281,23 @@ export const boundedSignInHooks = <Hooks extends BoundedSignInHooks<unknown>>(
           failureDetail: sessionSignInExpiredDetail(),
         });
       }),
+    ...(resend === undefined
+      ? {}
+      : {
+          resend: (input: Parameters<NonNullable<BoundedSignInHooks<unknown>["resend"]>>[0]) =>
+            Effect.flatMap(Clock.currentTimeMillis, (now): Effect.Effect<AutofillStepReport> => {
+              if (bound.stop.aborted || now >= bound.untilMs)
+                return Effect.succeed({
+                  outcome: "refused",
+                  reason: "typing_unavailable",
+                  failureDetail: sessionSignInExpiredDetail(),
+                });
+              return resend.call(hooks, {
+                ...input,
+                waitMs: Math.min(input.waitMs, bound.untilMs - now),
+              });
+            }),
+        }),
   };
 };
 

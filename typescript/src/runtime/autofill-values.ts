@@ -247,6 +247,16 @@ export const typedValues = (
   });
 };
 
+/**
+ * A code screen's resend control the owner may ask the host to press (`AutofillStep.resend`): how
+ * many presses the screen has left, and the press, which says whether it went through. It never
+ * fails: a press that could not go through answers false.
+ */
+export interface CodeResend {
+  readonly left: () => number;
+  readonly press: Effect.Effect<boolean>;
+}
+
 /** What the host holds of a login for one step's values. */
 export interface AutofillLogin {
   readonly credentials: WebsiteCredentials;
@@ -275,6 +285,11 @@ export interface AutofillLogin {
    * which the owner is asked for the code with.
    */
   readonly codeInstruction?: string;
+  /**
+   * The code screen's resend control, when it has one and the host can press it: the code
+   * question offers a resend while presses are left (`askedCode`).
+   */
+  readonly resend?: CodeResend | undefined;
   /** Whether an asked field may be kept with the login, with the owner's yes (`SaveOffer`). */
   readonly offerSave?: boolean;
   /** Whether a corrected answer to a rejected field may be kept, with the owner's yes. */

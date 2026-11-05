@@ -45,6 +45,7 @@ import {
   submittedLoginProof,
 } from "../runtime/autofill-state.js";
 import { makeAutofillValues, typedValues } from "../runtime/autofill-values.js";
+import { makeCodeResend, resendWaitMs } from "../runtime/code-resend.js";
 import { failureDetail, type FailureContextValue } from "../runtime/failure-detail.js";
 import type { InputAsker } from "../runtime/input-request.js";
 import { Unanswered } from "../runtime/login-field-asks.js";
@@ -179,6 +180,7 @@ const maskedSelector = (step: Extract<SignInStep, { readonly fields: unknown }>)
     ...(step.submit === undefined ? [] : [step.submit]),
     ...(step.methods ?? []).map((option) => option.selector),
     ...(step.dismiss === undefined ? [] : [step.dismiss]),
+    ...(step.resend === undefined ? [] : [step.resend]),
   ].findIndex(holdsMask);
 
 /** A host call that failed, as the build's failure. */
@@ -292,7 +294,10 @@ export const makeSignInRecorder = (input: {
     open: (url) => browser.open(url),
     markerVisible: (selector, page, popup) => browser.markerVisible(selector, page, popup),
     ...(browser.approvalNumber === undefined ? {} : { approvalNumber: browser.approvalNumber }),
+    ...(browser.resend === undefined ? {} : { resend: browser.resend }),
   };
+  /** Each code screen's presses of its resend control in this build (`makeCodeResend`). */
+  const resendPresses = new Map<string, number>();
 
   /** Sign-ins whose screens reached the site; a verified one publishes while it is the latest. */
   let signIns = 0;
@@ -402,14 +407,27 @@ export const makeSignInRecorder = (input: {
     }),
   });
 
-  /** The step's values from the held login, asking the owner for what it does not hold. */
+  /**
+   * The step's values from the held login, asking the owner for what it does not hold. A code
+   * screen's resend, when the step names one, is offered with its code question, and each press
+   * the owner's answers had the host make counts in `pressed`.
+   */
   const stepValues = (
     step: AutofillStep,
     credentials: WebsiteCredentials,
     opensSignIn: boolean,
     inspected: AutofillInspection,
+    pressed: { count: number },
   ) =>
     Effect.gen(function* () {
+      const resend = makeCodeResend({
+        hooks,
+        step,
+        presses: resendPresses,
+        waitMs: resendWaitMs,
+        pollMs: 250,
+        emit: (details) => emit(h, details),
+      });
       if (ambiguousRecoveredCode(h, step)) return new Unanswered("code_already_rejected");
       const codeRequests = {
         get current() {
@@ -434,6 +452,14 @@ export const makeSignInRecorder = (input: {
           rejectedCodes: new Set(h.autofillRejectedValues.current.code ?? []),
           codeRequests,
           ...(codeAgain === undefined ? {} : { codeAgain }),
+          ...(resend === undefined
+            ? {}
+            : {
+                resend: {
+                  ...resend,
+                  press: Effect.tap(resend.press, () => Effect.sync(() => pressed.count++)),
+                },
+              }),
         },
         inspected.screen.fields,
       );
@@ -564,18 +590,24 @@ export const makeSignInRecorder = (input: {
         held = yield* login.values;
         step = values.resolve(request, held);
       }
+      const pressed = { count: 0 };
       const valued =
         held === undefined
           ? { values: [] as string[], step }
-          : yield* stepValues(step, held, opens, inspected);
+          : yield* stepValues(step, held, opens, inspected, pressed);
       if (valued instanceof Unanswered) return yield* unansweredStep(h, valued);
       step = valued.step;
       filled = valued.values;
+      // A resend the owner asked for may have loaded the code screen anew: it is judged again.
+      const inspection = pressed.count === 0 ? inspected : yield* browser.inspect(step);
+      if (inspection !== inspected) noteInspection(step, inspection);
+      if ("outcome" in inspection)
+        return { report: inspection, result: { nextStep: notice(inspection) } };
       const named = yield* stepIdentityRefusal(
         h,
         h.autofillSignIn.current,
         step,
-        inspected.page,
+        inspection.page,
         filled,
       );
       if (named !== undefined) return shown(named);
@@ -595,12 +627,12 @@ export const makeSignInRecorder = (input: {
       const { state, refund } =
         open === undefined ? openSignIn(at) : { state: open, refund: () => undefined };
       const reasked = reasksPassword(open, step, refills);
-      yield* armStep(state, step, inspected, filled, secretIn);
+      yield* armStep(state, step, inspection, filled, secretIn);
       if (reasked) noteRefill(state);
       afterSubmit = undefined;
-      const report = yield* hooks.fill({ step, values: filled, inspection: inspected });
+      const report = yield* hooks.fill({ step, values: filled, inspection });
       settleAutofillValues(h, step, previous, report);
-      screens.push(screenOf(step, inspected));
+      screens.push(screenOf(step, inspection));
       // A first screen that reached nothing leaves no sign-in open.
       if (!recordStep(state, step, report)) refund();
       else {

@@ -65,6 +65,17 @@ export interface AutofillHooks<E = unknown, V extends string = string> {
     readonly step: AutofillStep;
     readonly inspection: AutofillInspection;
   }) => Effect.Effect<AutofillStepReport>;
+  /**
+   * Presses a code screen's resend control, typing nothing, after emptying its code fields
+   * (`resendAutofillCode`): `step` is the screen's code fields with the control as its submit,
+   * waited on for up to `waitMs` while the site keeps it disabled. A host without it never offers
+   * the owner a resend.
+   */
+  readonly resend?: (input: {
+    readonly step: AutofillStep;
+    readonly inspection: AutofillInspection;
+    readonly waitMs: number;
+  }) => Effect.Effect<AutofillStepReport>;
   /** The marker check alone, which verifies nothing: a replay polls it. */
   readonly check: (
     indicator: AutofillSignedIn,
@@ -194,22 +205,25 @@ interface AutofillRecordedStep {
   readonly refills?: AutofillRecipeStep["refills"];
   /** The covering notice's own control the host clicks on this screen (`AutofillStep.dismiss`). */
   readonly dismiss?: string;
+  /** A code screen's own control that asks the site for a new code (`AutofillStep.resend`). */
+  readonly resend?: string;
   /** The page the step ran on, origin and path only. */
   readonly page: string;
 }
 
 /**
- * A screen's popup, how it submits, from the keyboard included, and the covering notice's control
- * it dismisses, which a step rebuilt for that screen keeps.
+ * A screen's popup, how it submits, from the keyboard included, the covering notice's control it
+ * dismisses and a code screen's resend control, which a step rebuilt for that screen keeps.
  */
 export const screenSubmit = (
-  screen: Pick<AutofillStep, "popup" | "submit" | "submitKey" | "submitVia" | "dismiss">,
+  screen: Pick<AutofillStep, "popup" | "submit" | "submitKey" | "submitVia" | "dismiss" | "resend">,
 ) => ({
   ...(screen.popup === undefined ? {} : { popup: screen.popup }),
   ...(screen.submit === undefined ? {} : { submit: screen.submit }),
   ...(screen.submitKey === undefined ? {} : { submitKey: screen.submitKey }),
   ...(screen.submitVia === undefined ? {} : { submitVia: screen.submitVia }),
   ...(screen.dismiss === undefined ? {} : { dismiss: screen.dismiss }),
+  ...(screen.resend === undefined ? {} : { resend: screen.resend }),
 });
 
 /** A recorded screen as the minter reads it back: without what only the signed-in check uses. */
@@ -450,6 +464,7 @@ const armScreened = (
     ...(step.submitKey === undefined ? {} : { submitKey: step.submitKey }),
     ...(step.methods === undefined ? {} : { methods: step.methods }),
     ...(step.dismiss === undefined ? {} : { dismiss: step.dismiss }),
+    ...(step.resend === undefined ? {} : { resend: step.resend }),
     page: inspection.page,
   });
   state.securityAnswers?.arm(step, values);

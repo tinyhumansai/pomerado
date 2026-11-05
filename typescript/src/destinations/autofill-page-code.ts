@@ -210,6 +210,14 @@ export type AutofillFillCall =
       readonly code: string;
     }
   | {
+      /**
+       * Empties each of the step's fields that holds something, last first, by its own value
+       * setter and an input event, with no focus and no key, as `emptyBoxes` does: before a code
+       * screen's resend, so nothing typed goes out with it. Lengths only, never a value.
+       */
+      readonly kind: "empty";
+    }
+  | {
       readonly kind: "submit";
       readonly settleMs: number;
       readonly guardKey: string;
@@ -319,7 +327,7 @@ const readsOnly = ${JSON.stringify(call.kind === "submit")} && fields.length > 0
 // emptied every box itself.
 const looking = ${JSON.stringify(call.kind === "submit" && call.look === true)};
 const codeLook = looking && ${JSON.stringify(call.kind === "submit" && call.pressCovered !== true)} && fields.length > 0 && codeSlots.every(Boolean);
-${call.kind === "submit" ? pageSentCode : call.kind === "dismiss" ? "" : "await keep(typedAt, primary.url());"}
+${call.kind === "submit" ? pageSentCode : call.kind === "dismiss" || call.kind === "empty" ? "" : "await keep(typedAt, primary.url());"}
 for (const check of ${JSON.stringify(check)}) {
   // Its length only, never its value.
   const holding = fields[check].locator.evaluate(
@@ -749,6 +757,19 @@ export const CallingCodeAnswer = Schema.Struct({
 
 const fillCallBody = (call: AutofillFillCall) => {
   if (call.kind === "dismiss") return dismissCode(call.selector);
+  if (call.kind === "empty")
+    return `let cleared = 0;
+for (const { locator } of [...fields].reverse()) {
+  const held = await locator.evaluate((element) => {
+    if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) || element.value.length === 0) return false;
+    const prototype = element instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+    Object.getOwnPropertyDescriptor(prototype, "value").set.call(element, "");
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+    return true;
+  }, undefined, { timeout: ${elementReadMs} });
+  if (held) cleared += 1;
+}
+return { cleared, url: primary.url() };`;
   if (call.kind === "calling_code")
     return `try {
   await chooseCallingCode(fields[${call.index}].locator, ${JSON.stringify(call.code)});

@@ -17,6 +17,7 @@ import {
   PopupAutofillRecipe,
   PrivateIdentifierAutofillRecipe,
   publishedAutofillRecipe,
+  ResendAutofillRecipe,
   WildcardAutofillRecipe,
   WorkspaceAutofillRecipe,
   type AutofillRecipeOrigins,
@@ -53,8 +54,8 @@ export const SignInRecipeV3 = Schema.Struct({
   ),
 );
 /**
- * A recipe this host reads: version 1, 2, 4, 5, 6, 7, 8, 9, 10 or 11 as every host writes it, or
- * this host's version 3.
+ * A recipe this host reads: version 1, 2, 4, 5, 6, 7, 8, 9, 10, 11 or 12 as every host writes it,
+ * or this host's version 3.
  */
 export const SignInRecipe = Schema.Union(
   LegacyAutofillRecipe,
@@ -68,6 +69,7 @@ export const SignInRecipe = Schema.Union(
   PrivateIdentifierAutofillRecipe,
   NationalPhoneAutofillRecipe,
   CallingCodeAutofillRecipe,
+  ResendAutofillRecipe,
 );
 export type SignInRecipe = typeof SignInRecipe.Type;
 export type SignInRecipeStep = AutofillRecipeStep;
@@ -78,12 +80,12 @@ export const resolvedPage = (step: SignInRecipeStep, workspace: string | undefin
     ? undefined
     : recordedScreenPage(step, workspace);
 
-const knownVersions: readonly unknown[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+const knownVersions: readonly unknown[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 
 /**
  * A published recipe file read back: the recipe, `unknown_version` for a version this host does
- * not know, else `invalid`. Version 1, 2, 4, 5, 6, 7, 8, 9, 10 and 11 decode as every host reads
- * them; version 3 is read only here.
+ * not know, else `invalid`. Version 1, 2, 4, 5, 6, 7, 8, 9, 10, 11 and 12 decode as every host
+ * reads them; version 3 is read only here.
  */
 export const decodeSignInRecipe = (text: string): SignInRecipe | "invalid" | "unknown_version" => {
   const shared = publishedAutofillRecipe(new Map([[autofillRecipePath, text]]));
@@ -126,6 +128,8 @@ export interface RecordedSignInStep {
   readonly refills?: SignInRecipeStep["refills"];
   /** The covering notice's own control the host clicked on this screen. */
   readonly dismiss?: string | undefined;
+  /** A code screen's own control that asks the site to send a new code. */
+  readonly resend?: string | undefined;
   /** The page the step ran on, origin and path only. */
   readonly page: string;
   /** The segments of `page`'s path written as `*`, which any one segment matches. */
@@ -185,10 +189,11 @@ const inStepOrder = (step: SignInRecipeStep): SignInRecipeStep => ({
   ...(step.submitVia === undefined ? {} : { submitVia: step.submitVia }),
   ...(step.methods === undefined ? {} : { methods: step.methods }),
   ...(step.dismiss === undefined ? {} : { dismiss: step.dismiss }),
+  ...(step.resend === undefined ? {} : { resend: step.resend }),
 });
 
 /**
- * A recipe as `auth-fill.json` holds it: `version`, then version 4's to 11's `workspace`, then each
+ * A recipe as `auth-fill.json` holds it: `version`, then version 4's to 12's `workspace`, then each
  * screen in `recipeStep`'s key order (a workspace screen's `origin` first), indented two spaces,
  * with no final newline. The same recipe is the same bytes from any
  * host that writes it this way.
@@ -236,6 +241,16 @@ export interface SignInBrowser<E> {
   readonly resubmit?: (input: {
     readonly step: AutofillStep;
     readonly inspection: AutofillInspection;
+  }) => Effect.Effect<AutofillStepReport>;
+  /**
+   * Presses a code screen's resend control, typing nothing (`resendAutofillCode`): the step's code
+   * fields, emptied first, and the control as its submit, waited on for up to `waitMs` while the
+   * site keeps it disabled. A browser without it never offers a resend.
+   */
+  readonly resend?: (input: {
+    readonly step: AutofillStep;
+    readonly inspection: AutofillInspection;
+    readonly waitMs: number;
   }) => Effect.Effect<AutofillStepReport>;
   /**
    * Checks the minter's signed-in indicator on the page: `screens` are every screen the build

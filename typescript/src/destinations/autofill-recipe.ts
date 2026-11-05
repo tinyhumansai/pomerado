@@ -11,6 +11,8 @@ import {
   maximumStepFields,
   NationalFormat,
   PhoneFormat,
+  resendFits,
+  resendMessage,
   PrivateIdentifierLabel,
   onePrivateIdentifier,
   onePrivateIdentifierMessage,
@@ -589,6 +591,39 @@ export const CallingCodeAutofillRecipe = workspacePages(
       recipe.steps[0]?.anySegments === undefined || "the first step lists no anySegments",
   ),
 );
+/**
+ * A version 12 step: a version 11 step that may name `resend`, its code screen's own control that
+ * asks the site to send a new code (`resendFits`), which a replay presses only when the owner
+ * answers the code question by asking for a new code.
+ */
+const ResendRecipeStep = keyboardRule(
+  wildcardRule(
+    dismissRule(
+      keyStepRules(
+        Schema.Struct({ ...callingCodeStepFields, resend: Schema.optional(Selector) }),
+      ),
+    ),
+  ),
+).pipe(Schema.filter((step) => resendFits(step) || resendMessage));
+/**
+ * Version 12: version 11 whose steps may name `resend`. A host that does not know version 12
+ * refuses it, so it never drops the control the owner may ask it to press; a recipe whose steps
+ * name none is written as before, in the lowest version it needs.
+ */
+export const ResendAutofillRecipe = workspacePages(
+  Schema.Struct({
+    ...LegacyAutofillRecipe.fields,
+    version: Schema.Literal(12),
+    workspace: Schema.optional(Schema.Struct({ parent: HostName })),
+    steps: Schema.Array(ResendRecipeStep).pipe(Schema.minItems(1), Schema.maxItems(12)),
+    signedIn: WildcardSignedIn,
+  }).annotations({ parseOptions: { onExcessProperty: "error" } }),
+).pipe(
+  Schema.filter(
+    (recipe) =>
+      recipe.steps[0]?.anySegments === undefined || "the first step lists no anySegments",
+  ),
+);
 export const AutofillRecipe = Schema.Union(
   LegacyAutofillRecipe,
   PopupAutofillRecipe,
@@ -600,9 +635,10 @@ export const AutofillRecipe = Schema.Union(
   PrivateIdentifierAutofillRecipe,
   NationalPhoneAutofillRecipe,
   CallingCodeAutofillRecipe,
+  ResendAutofillRecipe,
 );
 export type AutofillRecipe = typeof AutofillRecipe.Type;
-export type AutofillRecipeStep = typeof CallingCodeRecipeStep.Type;
+export type AutofillRecipeStep = typeof ResendRecipeStep.Type;
 
 /**
  * Whether a live path is a recorded screen's: as many segments, each the same, except that each
@@ -683,6 +719,8 @@ interface RecordedRecipeStep {
   readonly refills?: AutofillRecipeStep["refills"] | undefined;
   /** The covering notice's own control the host clicked on this screen. */
   readonly dismiss?: string | undefined;
+  /** A code screen's own control that asks the site to send a new code. */
+  readonly resend?: string | undefined;
   /** The page the step ran on, origin and path only. */
   readonly page: string;
   /** The segments of `page`'s path written as `*`, which any one segment matches. */
@@ -733,6 +771,7 @@ export const recipeStep = (step: RecordedRecipeStep): AutofillRecipeStep => ({
   ...(step.submitVia === undefined ? {} : { submitVia: step.submitVia }),
   ...(step.methods === undefined ? {} : { methods: step.methods }),
   ...(step.dismiss === undefined ? {} : { dismiss: step.dismiss }),
+  ...(step.resend === undefined ? {} : { resend: step.resend }),
 });
 
 /** Whether a recorded screen names a private identifier, in a field or a marker. */
@@ -748,15 +787,16 @@ const namesPhoneFormat = (step: RecordedRecipeStep, format: "national" | "callin
   step.fields.some((field) => isIdentifierKind(field.slot) && field.format === format);
 
 /**
- * A verified sign-in's recipe: version 11 only when an identifier field says
- * `format: "calling_code"`, else version 10 only when one says `format: "national"`, else
+ * A verified sign-in's recipe: version 12 only when a step names `resend`, else version 11 only
+ * when an identifier field says `format: "calling_code"`, else version 10 only when one says
+ * `format: "national"`, else
  * version 9 only when a step names a private identifier, else version
  * 8 only when a step says `submitVia`, else version 7 only when a step lists segments written as
  * `*` (`anySegments`; an empty list is none and is left out), else version 6 only when a step
  * names `dismiss`, else version 5 only when a step submits with a key or refills a secret
  * (`refills`), else version 4 only when its sign-in may move to a workspace host
  * (`origins.workspace`, or a workspace step), else version 2 only with a popup or an approval,
- * else version 1. A security answer's question selector rides in any of them. Versions 4 to 11
+ * else version 1. A security answer's question selector rides in any of them. Versions 4 to 12
  * write `workspace` before `steps`.
  */
 export const autofillRecipe = <SignedIn>(
@@ -766,11 +806,18 @@ export const autofillRecipe = <SignedIn>(
 ) => {
   const lists = steps.some((step) => (step.anySegments ?? []).length > 0);
   const pressed = steps.some((step) => step.submitVia !== undefined);
+  const resend = steps.some((step) => step.resend !== undefined);
   const picker = steps.some((step) => namesPhoneFormat(step, "calling_code"));
   const national = steps.some((step) => namesPhoneFormat(step, "national"));
-  if (picker || national || steps.some(namesPrivateIdentifier))
+  if (resend || picker || national || steps.some(namesPrivateIdentifier))
     return {
-      version: picker ? (11 as const) : national ? (10 as const) : (9 as const),
+      version: resend
+        ? (12 as const)
+        : picker
+          ? (11 as const)
+          : national
+            ? (10 as const)
+            : (9 as const),
       ...(origins.workspace === undefined
         ? {}
         : { workspace: { parent: origins.workspace.parent } }),

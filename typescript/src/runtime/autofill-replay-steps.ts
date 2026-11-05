@@ -110,6 +110,11 @@ export interface AutofillReplayTiming {
    * between its marker checks (1 s when absent).
    */
   readonly codeLookMs?: number;
+  /**
+   * How long a press of a code screen's resend control waits for the site to show and enable it
+   * (`resendWaitMs`, 2 minutes, when absent).
+   */
+  readonly resendWaitMs?: number;
 }
 /** How long a replay waits for a recorded screen's fields before it gives up: sign-in pages are often slow. */
 const recordedScreenWaitMs = 30_000;
@@ -366,7 +371,7 @@ export const valuesFor = <E extends YieldableError, V extends string, L extends 
   codeAgain: "rejected" | undefined,
   fresh: Pick<
     AutofillLogin,
-    "rejectedCodes" | "codeRequests" | "rejectedValues" | "correctionRequests"
+    "rejectedCodes" | "codeRequests" | "rejectedValues" | "correctionRequests" | "resend"
   >,
   /** The step's fields as the host inspected them: a security answer's question among them. */
   screen: readonly ShownAnswerField[],

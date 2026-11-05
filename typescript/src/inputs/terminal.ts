@@ -191,8 +191,15 @@ const answerQuestion = (question: Question): Effect.Effect<unknown, InputRequest
     switch (question.type) {
       case "text":
         return yield* line("> ");
-      case "secret":
-        return yield* line("> ", true);
+      case "secret": {
+        // A code question that offers a resend takes the word resend as the request for one.
+        if (question.allowResend === true)
+          process.stderr.write("Type resend to have the site send a new code.\n");
+        const typed = yield* line("> ", true);
+        return question.allowResend === true && typed.trim().toLowerCase() === "resend"
+          ? { resend: true }
+          : typed;
+      }
       case "credential": {
         // A login that offers identifier kinds is asked for by them, and its answer says its kind.
         const kinds = question.currentStep?.identifierKinds ?? [];

@@ -149,7 +149,7 @@ its text. The host rereads the question before privately filling the answer. No 
 you, Guardian, generated code or the recipe. One-time and recovery codes keep their own slots.
 
 Every selector a `signInStep` sends, in `fields`, `submit`, `methods`, `questionSelector`,
-`dismiss`, `rejectedMarkers`, `matchSelector` and `signedIn`, is a Playwright selector string, not a locator call as probes and
+`dismiss`, `resend`, `rejectedMarkers`, `matchSelector` and `signedIn`, is a Playwright selector string, not a locator call as probes and
 the examples write. Prefer a stable `#id`, `[name=...]` or `data-testid=` selector. A role selector
 writes its options as attributes:
 
@@ -201,7 +201,11 @@ attribute.
     `code_boxes_incomplete`, typing nothing: its `codeBoxes` says how many boxes the screen shows
     and which ones the step named; send the step again with all of them. When a code screen asks
     the person to do something, such as call a number or approve in an app, prefer naming the
-    element with that instruction as the code field's `questionSelector`.
+    element with that instruction as the code field's `questionSelector`. When a code screen has
+    its own control that asks the site to send a new code, such as "Resend code" or "Send again",
+    name it as the step's `resend`, even while the page keeps it disabled, and never press it
+    yourself: the host presses it only when the owner answers the code question by asking for a
+    new code, once the site enables it.
   - `slot: "date_of_birth"` for a date of birth, with `format`, how the field takes it, read from
     its placeholder, label, input mask or hint: `MM/DD/YYYY`, `DD/MM/YYYY`, `M/D/YYYY`,
     `D/M/YYYY`, `MM-DD-YYYY`, `DD-MM-YYYY`, `DD.MM.YYYY`, `YYYY-MM-DD`, `YYYY/MM/DD`, `MMDDYYYY`,
