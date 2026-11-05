@@ -31,11 +31,13 @@ const tokenPattern = (form: string) => {
 };
 
 /**
- * What a page may write between a phone number's digits, three at most: whitespace, a dash, a dot,
- * a slash, a bracket, a plus, an invisible mark, or a URL's percent escape of one. Digits in
- * another script, digits a page's markup or entities split, and a URL encoded twice aren't matched.
+ * What a page may write between a phone number's digits, three at most: whitespace, a dash, a
+ * minus, a dot, a middle dot, a slash, a round or square bracket, a plus, a comma, a colon, an
+ * underscore, an invisible mark, or a URL's percent escape of one. Only the number's own digits in
+ * order match, so a date or a list stays as it is unless it holds them. Digits in another script,
+ * digits a page's markup or entities split, and a URL encoded twice aren't matched.
  */
-const phoneGap = "(?:[\\s\\p{Pd}\\p{Cf}().+/]|%[0-9A-Fa-f]{2}){0,3}";
+const phoneGap = "(?:[\\s\\p{Pd}\\p{Cf}().+/\\[\\],:_\\u2212\\u00B7]|%[0-9A-Fa-f]{2}){0,3}";
 /**
  * Fewer digits than this after the calling code say too little to mask on their own: such a number
  * counts only behind its calling code, written in international form.
