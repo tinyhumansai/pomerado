@@ -456,7 +456,8 @@ describe("the forms of a revealed value the run masks", () => {
 
   it("masks a revealed phone number in each form a page writes it", async () => {
     const secrets = makeRunSecrets();
-    const run = signIn({ fake: shop(), recipe: shopRecipe(), ask: owner().ask, reveal: host().reveal, secrets });
+    const fake = shop();
+    const run = signIn({ fake, recipe: shopRecipe(), ask: owner().ask, reveal: host().reveal, secrets });
     expect(await Effect.runPromise(run)).toEqual({ alreadySignedIn: false });
     expect(secrets.redact("+91 98123 45678, 98123-45678")).toBe("[private], [private]");
   });

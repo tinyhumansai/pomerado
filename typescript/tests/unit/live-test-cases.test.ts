@@ -510,7 +510,11 @@ describe("liveTestsReport", () => {
   });
 
   it("gives each version only its own retired cases", () => {
-    const http = { ...version, version: "http" as const, records: new Map([[kept.id, records.get(kept.id)!]]) };
+    const http = {
+      ...version,
+      version: "http" as const,
+      records: new Map([[kept.id, result(kept, "pass")]]),
+    };
     const report = liveTestsReport(
       liveTestsEvidence({ file: { cases: [kept] }, versions: [version, http] }).record,
     );
@@ -523,7 +527,7 @@ describe("liveTestsReport", () => {
   it("says nothing of retired cases a build has none of, and holds no case", () => {
     const clean = liveTestsEvidence({
       file: { cases: [kept] },
-      versions: [{ ...version, records: new Map([[kept.id, records.get(kept.id)!]]) }],
+      versions: [{ ...version, records: new Map([[kept.id, result(kept, "pass")]]) }],
     });
     expect(liveTestsReport(clean.record).versions[0]).not.toHaveProperty("retired");
     expect(liveTestsReport(clean.record)).not.toHaveProperty("casesFileProblem");
@@ -543,11 +547,9 @@ describe("liveTestsReport", () => {
   });
 
   it("keeps both through the checkpoint's schema, and reads a checkpoint with neither", () => {
-    const report = {
-      ...liveTestsReport(
-        liveTestsEvidence({ file: { cases: [] }, fileProblem: "unread", versions: [version] }).record,
-      ),
-    };
+    const report = liveTestsReport(
+      liveTestsEvidence({ file: { cases: [] }, fileProblem: "unread", versions: [version] }).record,
+    );
     const decode = Schema.decodeUnknownSync(LiveTestsReport);
     expect(decode(report)).toEqual(report);
     const [{ retired: _retired, ...older }] = report.versions as [(typeof report.versions)[number]];

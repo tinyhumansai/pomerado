@@ -367,8 +367,8 @@ const replayHooks = <E>(
 
 /** The local masking as the shared sign-in code's broker, for runs and builds. */
 export const localSecretBroker = (secrets: RunSignInSecrets): SecretBroker => ({
-  register: (entry) =>
-    Effect.sync(() => secrets.register(entry.value, entry.entity === "PHONE" ? "phone" : undefined)),
+  register: ({ entity, value }) =>
+    Effect.sync(() => secrets.register(value, entity === "PHONE" ? "phone" : undefined)),
   registeredSecretMatches: (text) =>
     Effect.either(secrets.assertAbsent(text)).pipe(
       Effect.map((found) => (found._tag === "Left" ? [found.left] : [])),
