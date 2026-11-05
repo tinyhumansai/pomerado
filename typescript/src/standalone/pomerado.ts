@@ -9,11 +9,13 @@ import { requestSite } from "./request-context.js";
 import { issueFileHandles } from "../mint/file-handles.js";
 import { isLocalFileReference, openLocalFile } from "../execution/local-files.js";
 import { SavedSession, saveSessionCode } from "../runtime/start-state.js";
+import { PasswordlessLoginStep } from "../destinations/sign-in-recipe.js";
 export { Artifact } from "./contracts.js";
 export type {
   Pomerado,
   PomeradoOptions,
   PomeradoRequest,
+  PomeradoMintRequest,
   MintArtifact,
   MintOutcome,
   LocalMintOutcome,
@@ -28,6 +30,15 @@ export const sessionCalls = (session: StandaloneSession): Pomerado => {
     session.mutex.withPermits(1)(
       Effect.scoped(
         Effect.gen(function* () {
+          if (request.passwordless !== undefined)
+            yield* Schema.decodeUnknown(PasswordlessLoginStep)(request.passwordless).pipe(
+              Effect.mapError(
+                () =>
+                  new Error(
+                    "passwordless must name at least one identifier kind a login offers, and no password",
+                  ),
+              ),
+            );
           // The build sees each of the caller's files as a handle, never its reference.
           const issued = yield* issueFileHandles(
             request.input ?? {},

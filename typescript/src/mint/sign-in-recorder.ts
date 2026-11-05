@@ -98,6 +98,10 @@ import { rejection, rememberRejectedPassword, heldPasswordRejected } from "./hel
 import { markerRefusalFor, refuseMarker, unsubmitted } from "./signed-in-marker.js";
 import { autofillRefusalFailure } from "./sign-in-failure.js";
 
+/** What the minter hears of a screen that takes a password when the login holds none. */
+const noPasswordNotice =
+  "This login has no password: it signs in by a code the site sends. The host typed nothing. Explore read-only for the site's own way to sign in with a code, then send that screen's signInStep. When a password is the only way in, end with report_blocked reason site_lacks_capability.";
+
 /** What one sign-in step gave the minter, and what it means for the build. */
 export interface SignInStepResult {
   /** What the minter reads besides the screen's report. */
@@ -564,6 +568,9 @@ export const makeSignInRecorder = (input: {
         held = yield* login.values;
         step = values.resolve(request, held);
       }
+      const password = step.fields.findIndex((field) => field.slot === "password");
+      if (held !== undefined && held.password === undefined && password !== -1)
+        return shown(yield* refusedStep(h, "credential_unavailable", password, noPasswordNotice));
       const valued =
         held === undefined
           ? { values: [] as string[], step }

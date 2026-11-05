@@ -3,6 +3,7 @@ export type {
   Pomerado,
   PomeradoOptions,
   PomeradoRequest,
+  PomeradoMintRequest,
   MintArtifact,
   MintOutcome,
   LocalMintOutcome,

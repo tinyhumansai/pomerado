@@ -24,6 +24,7 @@ import {
   execution,
   executionIdOf,
   html,
+  message as said,
   patch,
   recordingGuardian,
   startSite,
@@ -580,7 +581,9 @@ export default defineOperation(
  * which tunnels every connection to it, as a resolver that maps its name would, so a context
  * that sets the proxy and takes its own certificate (`ignoreHTTPSErrors`) opens it on any browser.
  */
-const phoneShop = async (options: { readonly codeBoxes?: boolean } = {}) => {
+const phoneShop = async (
+  options: { readonly codeBoxes?: boolean; readonly passwordField?: boolean } = {},
+) => {
   const directory = await mkdtemp(join(tmpdir(), "pomerado-phone-shop-"));
   await promisify(execFile)("openssl", [
     "req",
@@ -634,7 +637,7 @@ const phoneShop = async (options: { readonly codeBoxes?: boolean } = {}) => {
         if (path === "/login") {
           html(
             response,
-            `<form method="post" action="/send-code"><label>Phone number <input name="phone" type="tel" autocomplete="tel"></label><button>Send code</button></form>`,
+            `<form method="post" action="/send-code"><label>Phone number <input name="phone" type="tel" autocomplete="tel"></label>${options.passwordField === true ? `<label>Password <input name="password" type="password"></label>` : ""}<button>Send code</button></form>`,
           );
           return;
         }
@@ -1010,3 +1013,211 @@ test("a published mint reports its live test counts and Guardian's notes in its 
     await site.close();
   }
 });
+
+/** The phone shop's sign-in as a minter walks it: the number, the code, then the signed-in check. */
+const phoneSignInTurns = [
+  () => [
+    call(
+      "execute",
+      execution("authenticate", "src/tool.mjs", {
+        signInStep: {
+          fields: [{ selector: "input[name=phone]", accepts: ["phone"] }],
+          submit: "button",
+        },
+      }),
+      "phone",
+    ),
+  ],
+  () => [
+    call(
+      "execute",
+      execution("authenticate", "src/tool.mjs", {
+        signInStep: {
+          fields: [{ selector: "input[name=code]", slot: "code" }],
+          submit: "button",
+        },
+      }),
+      "code",
+    ),
+  ],
+  () => [
+    call(
+      "execute",
+      execution("authenticate", "src/tool.mjs", {
+        signInStep: { signedIn: { selector: "#account" } },
+      }),
+      "signed_in",
+    ),
+  ],
+];
+
+/** The account's phone number with no password, as a host that signs in by a code declares it. */
+const byPhone = { identifierKinds: ["phone" as const], password: false as const };
+
+test("a mint on an account with no password asks for the number alone, then the code, and publishes a sign-in a run replays", async () => {
+  test.setTimeout(180_000);
+  const shop = await phoneShop();
+  const phone = "+15555550123";
+  const asked: InputRequest[] = [];
+  const answer = (request: InputRequest) => {
+    asked.push(request);
+    return Object.fromEntries(
+      request.questions.map((question) => [
+        question.id,
+        question.type === "credential" ? { username: phone, saveLogin: false } : "424242",
+      ]),
+    );
+  };
+  try {
+    const { built, requests } = await mint({
+      effect: "read",
+      url: `${shop.origin}/login`,
+      guardian: recordingGuardian(),
+      intent: "Read the account's heading",
+      timeoutMs: 600_000,
+      browser: { context: shop.context },
+      passwordless: byPhone,
+      answer,
+      turns: [
+        () =>
+          patch({
+            "src/tool.mjs": searchHeading,
+            "test/cases.json": headingCases("lamp"),
+          }),
+        ...phoneSignInTurns,
+        ...testAndPublish,
+      ],
+    });
+
+    expect(built.build, JSON.stringify(built)).toBe("published");
+    // The login question offers the phone number and no password, then the code is asked for.
+    const [login] = asked[0]?.questions ?? [];
+    expect(login).toMatchObject({
+      type: "credential",
+      allowDecline: true,
+      currentStep: { identifierKinds: ["phone"], password: false },
+    });
+    const [code] = asked[1]?.questions ?? [];
+    expect(code).toMatchObject({ type: "secret", secretKind: "one_time_code" });
+    expect(asked).toHaveLength(2);
+    expect(shop.received).toEqual({ phones: [phone], codes: ["424242"] });
+    // Every step ran signed in, and the record says so.
+    expect(built.liveTests).toMatchObject({
+      signedIn: true,
+      versions: [{ counts: { pass: 1, fail: 0, inconclusive: 0 } }],
+    });
+    // The build publishes the sign-in value-free, and no model read the number or the code.
+    if (built.artifact === undefined) throw new Error(JSON.stringify(built));
+    expect(built.artifact.signIn?.recipe.steps.map((step) => step.fields)).toEqual([
+      [{ selector: "input[name=phone]", accepts: ["phone"] }],
+      [{ selector: "input[name=code]", slot: "code" }],
+    ]);
+    expect(JSON.stringify(built.artifact)).not.toContain(phone);
+    expect(JSON.stringify(requests)).not.toContain(phone);
+    expect(JSON.stringify(requests)).not.toContain("424242");
+
+    // A new session runs the published tool: it asks the same two questions and signs in.
+    const runAsked: InputRequest[] = [];
+    const calls: string[] = [];
+    const output = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const pomerado = yield* session(calls, {
+            browser: { ...projectBrowser(), context: shop.context },
+            ask: phoneAnswers(runAsked, phone, "424242"),
+          });
+          return yield* pomerado.run(built.artifact as NonNullable<typeof built.artifact>, {
+            url: shop.url,
+            intent: "Read the account's heading",
+            input: { query: "lamp" },
+            effect: "read",
+          });
+        }),
+      ),
+    );
+    expect(output).toEqual({ heading: "Signed in" });
+    expect(runAsked).toHaveLength(2);
+    expect(shop.received).toEqual({ phones: [phone, phone], codes: ["424242", "424242"] });
+    expect(calls).toEqual([]);
+  } finally {
+    await shop.close();
+  }
+});
+
+test("a mint on an account with no password refuses a screen that takes one, types nothing and tells the minter", async () => {
+  test.setTimeout(120_000);
+  const shop = await phoneShop({ passwordField: true });
+  const asked: InputRequest[] = [];
+  try {
+    const { built, requests } = await mint({
+      effect: "read",
+      url: `${shop.origin}/login`,
+      guardian: recordingGuardian(),
+      intent: "Read the account's heading",
+      browser: { context: shop.context },
+      passwordless: byPhone,
+      answer: (request) => {
+        asked.push(request);
+        return { login: { username: "+15555550123", saveLogin: false } };
+      },
+      turns: [
+        () => patch({ "src/tool.mjs": searchHeading }),
+        () => [
+          call(
+            "execute",
+            execution("authenticate", "src/tool.mjs", {
+              signInStep: {
+                fields: [
+                  { selector: "input[name=phone]", accepts: ["phone"] },
+                  { selector: "input[name=password]", slot: "password" },
+                ],
+                submit: "button",
+              },
+            }),
+            "password",
+          ),
+        ],
+        () => [said("This shop needs a password.")],
+      ],
+    });
+
+    expect(built.build).toBe("incomplete");
+    const refused = JSON.stringify(requests[2]);
+    expect(refused).toContain("credential_unavailable");
+    expect(refused).toContain("This login has no password");
+    expect(asked).toHaveLength(1);
+    expect(shop.received).toEqual({ phones: [], codes: [] });
+  } finally {
+    await shop.close();
+  }
+});
+
+for (const [what, passwordless] of [
+  ["no identifier kind", { identifierKinds: [], password: false }],
+  ["a kind a login doesn't offer", { identifierKinds: ["fax"], password: false }],
+  [
+    "more kinds than a question offers",
+    { identifierKinds: ["username", "email", "phone", "account_number", "phone"], password: false },
+  ],
+  ["a password", { identifierKinds: ["phone"], password: true }],
+] as const)
+  test(`a mint refuses a login with no password that names ${what} before it starts`, async () => {
+    const calls: string[] = [];
+    const refused = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const pomerado = yield* session(calls);
+          return yield* Effect.flip(
+            pomerado.mint({
+              url: "https://shop.test/",
+              intent: "Read the account's heading",
+              effect: "read",
+              passwordless: passwordless as never,
+            }),
+          );
+        }),
+      ),
+    );
+    expect(refused.message).toContain("passwordless must name");
+    expect(calls).toEqual([]);
+  });
