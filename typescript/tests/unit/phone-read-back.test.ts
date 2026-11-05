@@ -188,7 +188,17 @@ it.each([
   expect(changedPhoneNotice(number)).toContain(`The number's country calling code is +${code}.`);
 });
 
-it.each(["912 345 6789", "8 912 345-67-89", "+0 123 4567", "+12"])(
+it.each([
+  "912 345 6789",
+  "8 912 345-67-89",
+  "+0 123 4567",
+  "+12",
+  // A letter: a handle, or an extension whose digits are no part of the number.
+  "00 91 98765 00000 ext 12",
+  "+(91) 98765 00000 ext 12",
+  "+91 98765 00000 ext 12",
+  "001a2b345678",
+])(
   "names no calling code for %s, which does not say it",
   (number) => {
     expect(callingCode(number)).toBeUndefined();

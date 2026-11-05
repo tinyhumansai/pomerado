@@ -37,16 +37,22 @@ const shortCallingCodes = new Set([
   ...["90", "91", "92", "93", "94", "95", "98"],
 ]);
 
-/** A phone number written in international form: its digits after the `+` or `00`. */
+/**
+ * A phone number written in international form: its digits after the `+` or `00`. Undefined for a
+ * value with a letter, which may be a host's handle, and whose digits, such as an extension's, may
+ * not all be the number's.
+ */
 const internationalDigits = (number: string) => {
   const written = number.trim();
+  if (/\p{L}/u.test(written)) return undefined;
   const lead = /^(?:\+|00)/u.exec(written)?.[0];
   return lead === undefined ? undefined : written.slice(lead.length).replaceAll(/[^0-9]/gu, "");
 };
 
 /**
  * A phone number's country calling code, digits only, when the number is written in international
- * form, after `+` or `00`; undefined for a number written another way, which does not say it.
+ * form, after `+` or `00`; undefined for a number written another way, or with a letter, which does
+ * not say it (`internationalDigits`).
  */
 export const callingCode = (number: string) => {
   const digits = internationalDigits(number);

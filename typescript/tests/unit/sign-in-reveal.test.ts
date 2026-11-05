@@ -490,6 +490,12 @@ describe("the forms of a revealed value the run masks", () => {
     ["a phone field, with no calling code", undefined, "0170/5550100"],
     ["a national field", [national], "+49 170/5550100"],
     ["a national field, with no calling code", [national], "0170/5550100"],
+    // A revealed value is no handle, so a letter says it can't be a phone number.
+    ["a phone field, with a letter after 00", undefined, "00 91 98123 45678 ext 12"],
+    ["a phone field, with a letter after +(", undefined, "+(91) 98123 45678 ext 12"],
+    ["a phone field, with a letter and no lead", undefined, "0170 5550100 ext 12"],
+    ["a national field, with a letter after 00", [national], "00 91 98123 45678 ext 12"],
+    ["a phone field, by what is no number at all", undefined, "sec_other"],
   ])("types nothing of a number outside the phone shape revealed for %s", async (_name, loginFields, revealed) => {
     const options = loginFields === undefined ? {} : { loginFields };
     const fake = shop(options);
@@ -500,6 +506,28 @@ describe("the forms of a revealed value the run masks", () => {
     );
     expect(failed).toEqual(new SignInRunFailed({ code: "NeedsInput", reason: "reveal_refused" }));
     expect(fake.fills).toEqual([]);
+  });
+
+  it("gives a picker's screen no calling code for an answer with a letter after 00", async () => {
+    const number = "00 91 98123 45678 ext 12";
+    const picker = { selector: "#country", accepts: ["phone"], format: "calling_code" };
+    const options = { loginFields: [picker, national] };
+    const fake = shop(options);
+    const browser = { ...fake.browser, picksCallingCodes: true as const };
+    const recipe = { ...shopRecipe(options), version: 11 } as unknown as SignInRecipe;
+    const ask = makeInputAsker((request) =>
+      Effect.succeed(
+        Object.fromEntries(
+          request.questions.map((question) => [
+            question.id,
+            question.type === "credential" ? { username: number, saveLogin: false } : code,
+          ]),
+        ) as InputAnswers,
+      ),
+    );
+    await Effect.runPromise(Effect.either(signIn({ fake: { ...fake, browser }, recipe, ask })));
+    // The fill refuses a picker with no code before it touches anything (`calling_code_missing`).
+    expect(fake.fills[0]?.values).toEqual(["", number]);
   });
 
   it("masks each field's own form when one handle fills fields of two kinds", async () => {

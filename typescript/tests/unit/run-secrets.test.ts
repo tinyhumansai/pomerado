@@ -203,6 +203,19 @@ describe("a phone number", () => {
     }
   });
 
+  // A saved login or a login of another kind may hold an extension, whose digits aren't the number's.
+  it.each(["+91 98765 00000 ext 12", "+91 98765 00000 x12", "+(91) 98765 00000 ext. 12"])(
+    "masks and refuses the number before an extension, %s",
+    (number) => {
+      const secrets = phone(number);
+      expect(secrets.redact(`Sent to ${number}.`)).toBe("Sent to [private].");
+      for (const form of ["+91 98765 00000", "98765-00000", "9876500000", "098765 00000"]) {
+        expect(secrets.redact(`Sent to ${form}.`)).toBe("Sent to [private].");
+        expect(refused(secrets, `const shown = "${form}";`)).toBe(true);
+      }
+    },
+  );
+
   it("leaves another number and a longer run of digits as they are", () => {
     const secrets = phone("+15555550123");
     for (const text of ["+1 (555) 555-0124", "1-555-555-01234", "555-0123", "order 555 01"]) {
@@ -218,6 +231,7 @@ describe("a phone number", () => {
 
   it.each([
     ["a handle that starts as a number written in international form does", "00ab12345678", "12345678"],
+    ["a value that holds a letter and has no plus, as a handle may", "00 91 98765 00000 ext 12", "9876500000"],
     ["an email address", "ada.5550100123@example.test", "5550100123"],
   ])("registers %s only as given", (_name, value, digits) => {
     const secrets = phone(value);

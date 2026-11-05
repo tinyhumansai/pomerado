@@ -383,6 +383,8 @@ for (const option of list.querySelectorAll("[role=option]"))
 
 for (const [name, phone, reason] of [
   ["a number that says no calling code", "98765 43210", "calling_code_missing"],
+  ["a number with a letter after 00", "00 91 98765 43210 ext 12", "calling_code_missing"],
+  ["a number with a letter after +(", "+(91) 98765 43210 ext 12", "calling_code_missing"],
   ["a code the picker offers for two countries", "+1 415 555 0134", "calling_code_ambiguous"],
   ["a code the picker does not offer", "+81 90 1234 5678", "calling_code_unoffered"],
 ] as const)

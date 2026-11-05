@@ -39,7 +39,7 @@ import {
 } from "./autofill-state.js";
 import { nationalValues, typedValues } from "./autofill-values.js";
 import { logicalRejectedField } from "./autofill-rejection.js";
-import { type InputAsker, unshapedPhone } from "./input-request.js";
+import { type InputAsker, phoneShaped } from "./input-request.js";
 import { bareCode, codeDoesNotFit, fitsCodeBoxes } from "./login-field-asks.js";
 import { makeRunLogin } from "./run-login.js";
 import { trustedUrl } from "./sign-in-origins.js";
@@ -193,10 +193,10 @@ export const maskedTypedValues = (
  * back, in the forms it is typed in. Only a run's sign-in reveals: a build's types its answers as
  * given.
  * - Any failure, defect or empty answer refuses, and that screen types nothing, as does a value
- *   for a phone field written as a number but not as a phone (`unshapedPhone`); an interrupted
- *   reveal interrupts the sign-in. A value is typed only in a document of the origin it was
- *   revealed for, so a field the page moves to another origin before it is typed is refused, and
- *   the run fails `NeedsInput` (`revealed_origin_changed`), as a run to try again.
+ *   for a phone field without a phone's shape (`phoneShaped`), as what comes back is no handle;
+ *   an interrupted reveal interrupts the sign-in. A value is typed only in a document of the
+ *   origin it was revealed for, so a field the page moves to another origin before it is typed
+ *   is refused, and the run fails `NeedsInput` (`revealed_origin_changed`), as a run to try again.
  * - It may be called more than once for one value, for each screen and origin that types it and
  *   again when a screen is filled again, so it gives the same answer each time.
  * - The engine's checks of an answer as it is asked see the handle. A code's fit to a screen's
@@ -211,8 +211,8 @@ export type RevealSignInValue = (value: string, origin: string) => Effect.Effect
 /**
  * Why a screen's fill stopped short on what the host revealed: the host refused to reveal a value
  * there, its reveal failed, died or gave no text, the inspection found no document for the field,
- * or a phone field's value is written as a number but not as a phone (`unshapedPhone`), whose
- * digits a picker or a `national` field would take apart (`reveal_refused`); the code it revealed
+ * or a phone field's value has no phone's shape (`phoneShaped`), whose digits a picker or a
+ * `national` field would take apart (`reveal_refused`); the code it revealed
  * does not fill the screen's one-character code boxes (`codeDoesNotFit`), and the screen typed
  * nothing; or the page moved a field to another origin after its value was revealed, and it was
  * not typed (`revealed_origin_changed`). The run then fails `NeedsInput` with it.
@@ -281,7 +281,7 @@ const revealedValues = (
         secrets.register(revealed);
       }
       const field = input.step.fields[index];
-      if (field?.slot === "phone" && unshapedPhone(revealed))
+      if (field?.slot === "phone" && !phoneShaped(revealed))
         return { refused: "reveal_refused", target: index };
       // Each field's own form, as one handle may fill fields that take it differently.
       for (const form of revealedForms(field, revealed)) secrets.register(form);

@@ -45,8 +45,8 @@ export interface PomeradoOptions {
    *   moves to another origin before it is typed isn't typed, and the run fails `NeedsInput`
    *   (`revealed_origin_changed`), as one to run again. Any failure, defect or empty answer
    *   refuses, that screen types nothing, and the run fails `NeedsInput` (`reveal_refused`), as
-   *   does a value for a phone field written as a number but not as a phone, such as digits
-   *   grouped by slashes (`unshapedPhone`); an interrupted reveal interrupts the run.
+   *   does a value for a phone field without a phone's shape, such as digits grouped by slashes
+   *   or a number with an extension (`phoneShaped`); an interrupted reveal interrupts the run.
    * - It may be called more than once for one value, for each screen and origin that types it and
    *   again when a screen is filled again, so it gives the same answer each time.
    * - A code's fit to a screen's one-character boxes is checked once it is revealed, and one that

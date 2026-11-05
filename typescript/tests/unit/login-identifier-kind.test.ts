@@ -144,6 +144,8 @@ describe("a login answer of the phone kind", () => {
     "+44 7700,900123",
     "0170/5550100",
     "+49 170 5550100 ext 12",
+    "+(49) 170 5550100 ext 12",
+    "+-49 170 5550100 ext 12",
     "\u0967\u0968\u0969\u096a\u096b\u096c\u096d\u096e",
     "12345",
   ];
@@ -171,7 +173,14 @@ describe("a login answer of the phone kind", () => {
     },
   );
 
-  it.each(["sec_phone", "sec_1234567890", "ada@shop.example", "ada-owner"])(
+  it.each([
+    "sec_phone",
+    "sec_1234567890",
+    "ada@shop.example",
+    "ada-owner",
+    "001a2b345678",
+    "00 91 98765 00000 ext 12",
+  ])(
     "takes a host's handle or another value that isn't written as a number, %s",
     (username) => {
       const checked = validateAnswer(loginQuestion(["phone"]), {

@@ -17,14 +17,15 @@ import { writtenAsNumber } from "../runtime/input-request.js";
  * Redaction, which feeds what a model sees, still masks every form wherever it appears.
  */
 const wordClass = "[\\p{L}\\p{M}\\p{N}]";
+/** `form` as a pattern that matches it literally. */
+const literal = (form: string) => form.replace(/[\\^$.*+?()[\]{}|/]/gu, "\\$&");
 /** Every place `form` stands as a whole token. */
 const tokenPattern = (form: string) => {
   const adjoining = /^[0-9]+$/u.test(form) ? "[0-9]" : wordClass;
   const starts = new RegExp(`^${adjoining}`, "u").test(form);
   const ends = new RegExp(`${adjoining}$`, "u").test(form);
-  const escaped = form.replace(/[\\^$.*+?()[\]{}|/]/gu, "\\$&");
   return new RegExp(
-    `${starts ? `(?<!${adjoining})` : ""}${escaped}${ends ? `(?!${adjoining})` : ""}`,
+    `${starts ? `(?<!${adjoining})` : ""}${literal(form)}${ends ? `(?!${adjoining})` : ""}`,
     "u",
   );
 };
@@ -58,10 +59,12 @@ const cutGapped = (digits: string) =>
  * `digits`, and its patterns match only with that code, after a `+` or `00`. Undefined for a value
  * not written as a number, such as a host's handle, or too short to say its calling code. Any marks
  * may group its digits, as a saved login or a login of another kind never met the shape a phone
- * answer must have.
+ * answer must have, and what a letter starts, such as an extension, is no part of the number: the
+ * value as given then counts whole in `run`, so its end doesn't stay beside what's masked.
  */
-const phoneForms = (number: string) => {
-  if (!writtenAsNumber(number)) return undefined;
+const phoneForms = (given: string) => {
+  if (!writtenAsNumber(given)) return undefined;
+  const number = given.replace(/\p{L}.*$/su, "");
   const code = callingCode(number) ?? "";
   const local = (nationalDigits(number) ?? number.replaceAll(/[^0-9]/gu, "")).replace(/^0+/u, "");
   const short = local.length < phoneLocalLeast;
@@ -73,7 +76,10 @@ const phoneForms = (number: string) => {
   const whole = cutGapped(`${code}${local}`);
   return {
     digits: short ? [] : [local, `${code}${local}`],
-    run: new RegExp(`${lead}${calling}${trunk}${gapped(local)}(?![0-9])`, "gu"),
+    run: new RegExp(
+      `${number === given ? "" : `${literal(given)}|`}${lead}${calling}${trunk}${gapped(local)}(?![0-9])`,
+      "gu",
+    ),
     cut: new RegExp(
       `${lead}(?:${short ? whole : `${whole}|${trunk}${cutGapped(local)}`})${phoneGap}$`,
       "u",
@@ -117,10 +123,8 @@ export const makeRunSecrets = () => {
   };
   /** Registers a short card part, of a few characters, as whole digit tokens. */
   const registerCardToken = (value: string) => {
-    for (const [shownForm] of shownForms(value)) {
-      const escaped = shownForm.replace(/[\\^$.*+?()[\]{}|/]/gu, "\\$&");
-      registerCardPattern(new RegExp(`(?<![0-9])${escaped}(?![0-9])`, "gu"));
-    }
+    for (const [shownForm] of shownForms(value))
+      registerCardPattern(new RegExp(`(?<![0-9])${literal(shownForm)}(?![0-9])`, "gu"));
   };
   const ordered = () => [...values].sort(([left], [right]) => right.length - left.length);
   const redact = (text: string) =>
