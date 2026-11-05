@@ -1,22 +1,23 @@
-/** `setQuantity`'s answer once the line holds the quantity asked for. */
-export interface QuantitySet {
-  readonly set: true;
-  readonly quantity: number;
-  readonly presses: number;
-}
+import { Schema } from "effect";
 
 /**
- * `setQuantity`'s answer when the site takes no more, or no fewer: its next control greyed out,
- * its limit sign shown, or a step it showed and then took back.
+ * `setQuantity`'s answer: the line holds the quantity asked for (`set`), or the site takes no
+ * more or no fewer (`limit`): its next control greyed out, its limit sign shown, or a step it
+ * showed and then took back, with the quantity the line holds; and how many presses it made.
+ * Decode a call's result with it.
  */
-export interface QuantityLimited {
-  readonly set: false;
-  readonly reason: "limit";
-  readonly quantity: number;
-  readonly presses: number;
-}
-
-export type QuantityOutcome = QuantitySet | QuantityLimited;
+export const QuantityOutcome = Schema.Union(
+  Schema.Struct({ set: Schema.Literal(true), quantity: Schema.Int, presses: Schema.Int }),
+  Schema.Struct({
+    set: Schema.Literal(false),
+    reason: Schema.Literal("limit"),
+    quantity: Schema.Int,
+    presses: Schema.Int,
+  }),
+);
+export type QuantityOutcome = typeof QuantityOutcome.Type;
+export type QuantitySet = Extract<QuantityOutcome, { readonly set: true }>;
+export type QuantityLimited = Extract<QuantityOutcome, { readonly set: false }>;
 
 /**
  * Page code for a Kernel call body, pasted after `waitCode` (./wait.ts), whose `waitForReady`,

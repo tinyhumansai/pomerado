@@ -977,6 +977,21 @@ describe("the publication policy", () => {
     expect(publicationOutputPolicy).not.toMatch(/Shortlist place|a place the caller gives/u);
   });
 
+  // A choice the page shows side by side, a line's quantity and an amount of money each have an
+  // SDK helper that reads the page's own state. Source that handles one by hand goes back, as a
+  // picker of its own does, and no caller decision excuses it.
+  it("finds a choice, a stepper or an amount the tool handles by hand instead of the SDK's helpers", () => {
+    const rules = [
+      "Own choice: Playwright source that chooses one option among several the page shows side by side, such as a radio list, tiles, chips, a segmented control or an accordion row such as a way to pay, with clicks of its own, instead of the SDK's chooseOne. A click of its own presses an option without reading whether it is already chosen, so it can close an open accordion row or press an option the page greys out, and it counts the option as chosen without reading the state the page shows. The fix is chooseOne, with chosen or unavailable naming the site's own signs where it needs them, and readChoices to read which option is chosen. Clicks of the tool's own are fine for an option the evidence shows chooseOne failing on, when the code says what the page showed, and so are chooseOption and selectOption on a native select, check() and setChecked() on a native radio or checkbox, which read its state before and after, and a date clicked in a calendar. Nor is opening a collapsed section, such as an accordion or a tab, only to read what it holds, or pressing a result's own control, such as the button that picks one result from a list of results.",
+      "Own stepper: Playwright source that changes a line's quantity by pressing its + or − control more than once without reading the count back after each press, or by clicking it several times in one go, instead of the SDK's setQuantity. A site often drops a press made while its loader shows, or posts each press as its own cart write, so such code adds too few or too many. The fix is setQuantity. A quantity typed into the site's own quantity box and read back is fine.",
+      "Own amount parsing: source that reads an amount the tool returns, such as a price, fee, tip, discount, wallet deduction or total, from page text with a pattern or arithmetic of its own, such as a regex that strips currency symbols and commas, or parseFloat, instead of the SDK's readAmount, readAmounts or parseAmount. Parsing of its own misreads groupings such as 1,23,456 or 1.234,50, drops a deduction's sign, takes a struck-out old price for the price, or rounds through a float. The fix is readAmounts for a bill's or a cart's lines and readAmount or parseAmount for one amount. An amount the site's own data gives as a number, such as embedded JSON or an API response, is fine.",
+    ];
+    for (const rule of rules) expect(publicationOutputPolicy.split(rule)).toHaveLength(2);
+    expect(publicationOutputPolicy).toContain(
+      "Nor does one excuse Applied without readback, Own picker, Own choice, Own stepper, Own amount parsing, a filter,",
+    );
+  });
+
   // Of several equal matches, taking the first or letting the caller choose is the tool's own
   // choice. Only taking the first without returning the match it used is a finding, and one the
   // publication review can return.

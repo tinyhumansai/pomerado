@@ -373,7 +373,14 @@ exception: it is optional unless the task can't run without it (below).
   caller may want it, in a separate `*_label` field (`status_label` `"Partially Paid"`);
   booleans named as statements (`refundable`, not `is_refundable_flag`); lists named in the
   plural; and the unit in the field name or its description (`duration_minutes`). Convert
-  between these and the site's own formats in code. The output check flags a date or timestamp
+  between these and the site's own formats in code. Read an amount the page displays with the
+  SDK's `readAmount` or `readAmounts` (paste `amountCode` after `visibleTextCode`), or text the
+  tool already holds with `parseAmount`, never a pattern or `parseFloat` of your own (cart
+  skill, "Own amount parsing"); they read negative only an amount the page shows with a minus,
+  or in brackets around an amount showing its currency, such as (₹20): a bare bracketed number
+  reads positive, so tell it by its label. A bill's or a cart's lines are the exception to the
+  direction field above: return each line signed as the page shows it, a deduction such as a
+  wallet or a discount negative (cart skill). The output check flags a date or timestamp
   not in the form its field declares, a value in another notation than its description names
   and a currency that is not an ISO 4217 code (`format_mismatch`), a field whose description
   promises such a notation that no `pattern` holds (`unheld_format`), and one value in two

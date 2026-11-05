@@ -1,15 +1,17 @@
-/** An amount of money as a page shows it, in the currency's minor units, such as paise or cents. */
-export interface Amount {
-  /**
-   * Whole minor units; negative where the text shows a deduction, by a minus or by brackets, as
-   * `parseAmount` reads them.
-   */
-  readonly minor: number;
-  /** The ISO 4217 code the text names, or the caller's when it names none it can tell. */
-  readonly currency: string | null;
-  /** The text said free instead of giving a number. */
-  readonly free: boolean;
-}
+import { Schema } from "effect";
+
+/**
+ * An amount of money as a page shows it: whole minor units, such as paise or cents, negative where
+ * the text shows a minus, or brackets around an amount with its currency, as for a deduction; the
+ * ISO 4217 code the text names, or the caller's when it names none it can tell; and whether the
+ * text said free instead of giving a number.
+ */
+export const Amount = Schema.Struct({
+  minor: Schema.Int,
+  currency: Schema.NullOr(Schema.String),
+  free: Schema.Boolean,
+});
+export type Amount = typeof Amount.Type;
 
 /**
  * The one amount `text` shows, such as "₹1,23,456.50", "- ₹20", "(₹20)", "1 234,50 €" or "FREE",
