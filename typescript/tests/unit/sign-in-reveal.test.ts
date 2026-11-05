@@ -603,12 +603,12 @@ describe("the forms of a revealed value the run masks", () => {
     const fake = shop(options);
     const browser = { ...fake.browser, picksCallingCodes: true as const };
     const recipe = { ...shopRecipe(options), version: 11 } as unknown as SignInRecipe;
-    const { reveal } = host({ sec_phone: "+683 4002" });
+    const { reveal } = host({ sec_phone: "+298 5550" });
     const run = signIn({ fake: { ...fake, browser }, recipe, ask: owner().ask, reveal, secrets });
     expect(await Effect.runPromise(run)).toEqual({ alreadySignedIn: false });
-    expect(fake.fills[0]?.values).toEqual(["683", "4002"]);
-    expect(secrets.redact("+683 40 02, 4002")).toBe("[private], [private]");
-    expect(secrets.redact("order 940025")).toBe("order 940025");
+    expect(fake.fills[0]?.values).toEqual(["298", "5550"]);
+    expect(secrets.redact("+298 55 50, 5550")).toBe("[private], [private]");
+    expect(secrets.redact("order 955505")).toBe("order 955505");
   });
 
   it("masks a revealed date of birth in each whole-date layout a page may show it in", async () => {

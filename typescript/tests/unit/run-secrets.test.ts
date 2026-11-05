@@ -329,9 +329,9 @@ describe("a phone number", () => {
   });
 
   it("masks a number of the fewest digits any country's has, behind its calling code", () => {
-    const secrets = phone("+683 4002");
-    expect(secrets.redact("Sent to +683 40 02.")).toBe("Sent to [private].");
-    expect(refused(secrets, "+683 40 02")).toBe(true);
+    const secrets = phone("+298 5550");
+    expect(secrets.redact("Sent to +298 55 50.")).toBe("Sent to [private].");
+    expect(refused(secrets, "+298 55 50")).toBe(true);
   });
 
   it("registers no digits a number has too few of to tell it from any other", () => {
