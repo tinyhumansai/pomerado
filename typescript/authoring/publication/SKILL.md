@@ -147,6 +147,17 @@ first:
     `pickValue` or `pickValues`, or `chooseOption` where the control takes no typing (forms skill);
     review sends back a picker of the tool's own unless `pickValue` failed on that control and the
     code says what the page showed ("Own picker");
+  - one option among several the page shows side by side, such as a radio list, tiles or an
+    accordion row such as a way to pay, goes through `chooseOne`, never clicks of the tool's own
+    (forms skill), unless `chooseOne` failed on it and the code says what the page showed ("Own
+    choice"); `chooseOption` or `selectOption` on a native select, `check()` or `setChecked()`
+    on a native radio or checkbox, a date clicked in a calendar, opening a collapsed section only
+    to read it and a result's own control, such as the button that picks one result, are fine;
+  - a line's quantity goes through `setQuantity`, one press at a time, never several presses of
+    the tool's own (cart skill, "Own stepper");
+  - an amount the tool returns is read with `readAmounts`, `readAmount` or `parseAmount`, never a
+    pattern or `parseFloat` of the tool's own, unless the site's own data gives it as a number
+    (cart skill, "Own amount parsing");
   - a requested value the site does not offer throws `InvalidInput` with the site's choices, and
     one the page ignored throws `InputNotApplied` unless it tailors the answer (core skill) or is
     a search query the site corrected, returned with `applied_query` and `query_corrected` (search

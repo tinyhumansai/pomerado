@@ -18,7 +18,7 @@ import {
   writeSessionBoundary,
 } from "../mint/step-checks.js";
 import { sessionEnteredMarks, writePathRefusal } from "../mint/write-session.js";
-import type { PomeradoRequest } from "./contracts.js";
+import type { PomeradoMintRequest } from "./contracts.js";
 import type { StandaloneSession } from "./session.js";
 import type { RequestContext } from "./request-context.js";
 import { mintState, type MintState } from "./mint-state.js";
@@ -60,6 +60,7 @@ const mintDependencies = (state: MintState, publicationDecisions: PublicationDec
   const { projection, options } = state.session;
   const dependencies: MintDependencies = {
     workspace: workspace.session,
+    workspaceFiles: workspace.list,
     // Read-only, like the host's other captures, and never staged as source.
     saveResult: (path, text) => workspace.install(path, text).pipe(Effect.mapError(mintError)),
     instructions: authoring.instructions,
@@ -207,7 +208,7 @@ const mintDependencies = (state: MintState, publicationDecisions: PublicationDec
 export const mintRequest = (
   session: StandaloneSession,
   context: RequestContext,
-  request: PomeradoRequest,
+  request: PomeradoMintRequest,
   fileHandles: FileHandles,
 ) =>
   Effect.gen(function* () {

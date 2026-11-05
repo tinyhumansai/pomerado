@@ -6,7 +6,9 @@ import { makeLocalKernel } from "../../src/testing/local-kernel.js";
 
 // `readQrCode`, run as a Kernel call body runs it (`page` in scope) on synthetic checkouts that show
 // a payment QR code the ways pages draw one: an image, a canvas at a fraction of a pixel per
-// module, a scaled SVG, light on dark, and inside a payment frame from another origin.
+// module, a scaled SVG, light on dark, inside a payment frame from another origin, beside a
+// countdown the read must leave running, and under one CSS pixel a module on a screen with two
+// device pixels per CSS pixel.
 const call = async (page: Page, body: string) => {
   const answer = await makeLocalKernel(page).browsers.playwright.execute("session-1", {
     timeout_sec: 20,
@@ -118,11 +120,55 @@ test("fails for a missing, hidden or ambiguous element before taking any picture
   expect(await read(page, `page.locator(".qr")`)).toEqual({ name: "QrCodeFailure", reason: "ambiguous" });
 });
 
+test("leaves the page's animations running, such as a countdown beside the code", async ({ page }) => {
+  await page.setContent(`<style>
+@keyframes countdown { from { width: 300px; } to { width: 0; } }
+#left { height: 4px; background: #111; animation: countdown 300s linear forwards; }
+</style>
+<main>
+<h1>Scan to pay ₹74</h1>
+<p id="timer">Approve payment within 05m:00s</p>
+<div id="left"></div>
+<div class="qr-box"><img id="qr" alt="Payment QR" src="${code.createDataURL(4, 4)}"></div>
+</main>
+<script>
+document.getElementById("left").addEventListener("animationend", () => {
+  document.getElementById("timer").textContent = "Payment expired";
+});
+</script>`);
+  const answer = await call(
+    page,
+    `const text = await readQrCode(page.locator("#qr"));
+    await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done))));
+    return {
+      text,
+      animations: await page.evaluate(() => document.getAnimations().map((animation) => animation.playState)),
+      timer: await page.locator("#timer").innerText(),
+    };`,
+  );
+  expect(answer).toEqual({
+    result: { text: payment, animations: ["running"], timer: "Approve payment within 05m:00s" },
+  });
+});
+
 test.describe("on a screen with two device pixels per CSS pixel", () => {
   test.use({ deviceScaleFactor: 2 });
 
   test("reads the code at the screen's own resolution", async ({ page }) => {
     await page.setContent(checkout(canvas(2)));
+    expect(await read(page, `page.locator("#qr")`)).toEqual({ text: payment });
+  });
+});
+
+// An SVG the page draws at 0.8 CSS pixels a module: 2.4 device pixels a module in a picture at the
+// screen's own resolution, and 0.8, which no decoder resolves, in one at CSS pixels. Under two
+// device pixels per CSS pixel it would be under the two pixels a module `decodeQr` needs either way.
+test.describe("on a screen with three device pixels per CSS pixel", () => {
+  test.use({ deviceScaleFactor: 3 });
+
+  test("reads a code drawn under one CSS pixel a module", async ({ page }) => {
+    const svg = code.createSvgTag({ cellSize: 2, margin: 4, scalable: true });
+    await page.setContent(checkout(`<div id="qr" style="width: ${(count + 4) * 0.8}px">${svg}</div>`));
     expect(await read(page, `page.locator("#qr")`)).toEqual({ text: payment });
   });
 });

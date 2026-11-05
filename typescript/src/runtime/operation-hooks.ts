@@ -10,6 +10,14 @@ export interface EnteredCommit {
    * button's text and the total. Absent when it passed nothing.
    */
   readonly report?: unknown;
+  /**
+   * A call that can reach the site was already out as the script entered the step: the host still
+   * held or ran it, or the script still awaited its answer. No refusal takes back one that went
+   * through, such as a click the script didn't wait for, so a host that refuses the step can stop
+   * the run at once and still know that the site may see it. False when every earlier call was
+   * answered, so the site sees nothing past the step until the host accepts it.
+   */
+  readonly callOut: boolean;
 }
 
 /**
@@ -30,7 +38,8 @@ export interface OperationHooks {
    */
   readonly progress?: (fingerprint: string) => Effect.Effect<void>;
   /**
-   * The operation entered a commit step. Its next call that can reach the site, and every later
+   * The operation entered a commit step, with whether a call that can reach the site was already
+   * out then (`EnteredCommit.callOut`). Its next call that can reach the site, and every later
    * one, waits until this succeeds, and the wait counts against the run's time. A failure, a
    * defect, a throw or an interruption refuses the step: no held call goes through from then on,
    * even one waiting on an earlier step's answer, and the run fails `CommitRefused` without

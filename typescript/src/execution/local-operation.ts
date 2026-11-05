@@ -603,16 +603,16 @@ const receiveOperation = (
       if (entered === undefined || refusal !== undefined) return;
       // The child sends this update as it enters the step, so a call is out then when the host
       // still has it or the child still awaits its answer.
-      const step = enter(
-        entered.name,
-        before,
-        current,
-        siteCalls === 0 && entered.outstanding !== true,
-      );
+      const callOut = siteCalls !== 0 || entered.outstanding === true;
+      const step = enter(entered.name, before, current, !callOut);
       const report = entered.report === undefined ? undefined : commitReportValue(entered.report);
       if (report !== undefined && "refused" in report) return refuseUnasked(step);
       const { name } = entered;
-      askCommit(hook, report === undefined ? { name } : { name, report: report.value }, step);
+      askCommit(
+        hook,
+        report === undefined ? { name, callOut } : { name, report: report.value, callOut },
+        step,
+      );
     };
     const listener = (raw: unknown) => {
       if (finished) return;

@@ -440,7 +440,7 @@ export const mintPublication =
       // A read's digest is named before what its review judges, as every host names it.
       const digestNote =
         "digest" in judged && judged.digest !== undefined ? `${outputDigestNote} ` : "";
-      yield* reviewPublication(context.reviewPublication, {
+      const allowed = yield* reviewPublication(context.reviewPublication, {
         entrypoint: publication.entrypoint,
         files,
         definition: publicDefinition(publication.metadata, result.schemas),
@@ -475,6 +475,7 @@ export const mintPublication =
         write,
       });
       return {
+        review: { ...allowed, outcome: "allow" as const },
         artifact: {
           files: sources.map(([path, content]) => ({ path, content })),
           entrypoint: publication.entrypoint,

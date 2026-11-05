@@ -13,6 +13,7 @@ import type { SignedInMarkerCheck } from "../destinations/signed-in-marker.js";
 import type { DestinationReason } from "./destination-reason.js";
 import {
   LiveTestRecord,
+  LiveTestsReport,
   type LiveTestBatchCase,
   type LiveTestCaseRun,
 } from "./live-tests.js";
@@ -1761,6 +1762,21 @@ export type MintOutcome = {
   /** Site defaults the build took instead of asking, as screened entries without private data. */
   readonly assumptions?: readonly BuildAssumption[];
   /**
+   * Set by the harness on a published read: its live tests on the source it published, as counts
+   * (`LiveTestsReport`). Absent on a write, which runs none, on a host with no live tests, on a
+   * signed-in read no case ran signed in for, and on a publication a takeover rejoined. Unlike
+   * `summary`, whose line of these counts comes after the minter's own words, the minter never
+   * writes it, but it writes the cases: `pass` says only that the tool answered what the minter's
+   * own case expected, so read it with each version's `retired` and `casesFileProblem`.
+   */
+  readonly liveTests?: LiveTestsReport;
+  /**
+   * Set by the harness when the host reports the review that allowed the publication: its ID and
+   * Guardian's rationale, screened. Unlike `publicationDenial`, this rationale is for the host, not
+   * its caller: it may quote what a page returned, so keep it out of what the caller reads.
+   */
+  readonly publicationReview?: { readonly reviewId: string; readonly rationale: string };
+  /**
    * Set by the harness on an unpublished build whose ending it can name; see `mintStopReasons`.
    * Absent on a published build, and on an ending none of them names.
    */
@@ -2119,6 +2135,8 @@ export interface MintHarnessSnapshot {
    * keeps no HTTP results, drops them rather than restoring them as the Playwright version's.
    */
   readonly liveTestsHttp?: readonly LiveTestRecord[];
+  /** Retired failures each version dropped past the ones it keeps, when any did. */
+  readonly liveTestsDropped?: { readonly playwright: number; readonly http: number };
   /**
    * Whether the attempt ran out of time for live tests: a batch refused for time, or a case
    * stopped by a batch deadline the attempt's end set.
@@ -2153,6 +2171,8 @@ export interface MintHarnessSnapshot {
     | "publicationRef"
     | "artifact"
     | "assumptions"
+    | "liveTests"
+    | "publicationReview"
     | "summary"
     | "recoveryReason"
     | "hostFailure"
@@ -2358,6 +2378,12 @@ const HarnessTerminal = Schema.Struct({
     ),
     { exact: true },
   ),
+  // Optional, and dropped by an older worker's decode.
+  liveTests: Schema.optionalWith(LiveTestsReport, { exact: true }),
+  publicationReview: Schema.optionalWith(
+    Schema.Struct({ reviewId: Schema.String, rationale: Schema.String }),
+    { exact: true },
+  ),
   recoveryReason: Schema.optionalWith(
     Schema.Literal(
       "reauthentication_required",
@@ -2383,6 +2409,10 @@ export const MintHarnessSnapshot: Schema.Schema<MintHarnessSnapshot> = Schema.St
   executions: Schema.Array(ExecutionEvidence),
   liveTests: Schema.optionalWith(Schema.Array(LiveTestRecord), { exact: true }),
   liveTestsHttp: Schema.optionalWith(Schema.Array(LiveTestRecord), { exact: true }),
+  liveTestsDropped: Schema.optionalWith(
+    Schema.Struct({ playwright: Schema.NonNegativeInt, http: Schema.NonNegativeInt }),
+    { exact: true },
+  ),
   liveTestsOutOfTime: Schema.optionalWith(Schema.Boolean, { exact: true }),
   signedInTestInputs: Schema.optionalWith(Schema.Array(Schema.String), { exact: true }),
   outcomeWrites: Schema.optionalWith(Schema.Array(OutcomeWrite), { exact: true }),
@@ -2919,6 +2949,14 @@ export interface MintDependencies {
   readonly canPublishRepair?: (executionId: string) => boolean;
   /** Host-created SDK workspace, no credentials, no external grants. Host owns cleanup. */
   readonly workspace: SandboxSession;
+  /**
+   * The paths of the workspace's files as they are now, for a host that can list them. A live
+   * test's source digest then counts all of `src/` for a module whose imports cannot be resolved
+   * statically, as a computed import's, so such a test goes stale when a file it may load changes.
+   * Absent, the digest reads the entrypoint's static imports alone. The digest that tells one
+   * write's step from another reads those in any case.
+   */
+  readonly workspaceFiles?: Effect.Effect<readonly string[], unknown>;
   /** Same-attempt artifacts already screened and published by the host collector.
    * Generated source cannot populate this read-only view. */
   readonly readPublishedCapture?: (path: string) => Effect.Effect<string | undefined, MintFailure>;

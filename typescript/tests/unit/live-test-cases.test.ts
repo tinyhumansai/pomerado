@@ -1,4 +1,4 @@
-import { Either } from "effect";
+import { Either, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import {
   caseDigest,
@@ -9,6 +9,8 @@ import {
   judgeCase,
   liveTestsEvidence,
   liveTestsEvidenceProblem,
+  liveTestsReport,
+  LiveTestsReport,
   primaryListOf,
   signedInTestInputRefusal,
   testInputKey,
@@ -461,5 +463,130 @@ describe("failingLiveTestCases", () => {
     expect(failingCasesRefusal({ version: "playwright", ids: ["a", "b", "c"] })).toContain(
       "live test cases a, b and c fail on this source,",
     );
+  });
+});
+
+// A host keeps a build by the report alone: a minter that deletes its failing cases must not
+// leave it a clean count, and neither must a cases file the host could not read.
+describe("liveTestsReport", () => {
+  const made = (id: string) => ({
+    id,
+    purpose: `Case ${id}`,
+    input: { query: id },
+    expect: "result" as const,
+  });
+  const result = (testCase: ReturnType<typeof made>, verdict: "pass" | "fail") => ({
+    id: testCase.id,
+    caseDigest: caseDigest(testCase),
+    sourceDigest: "published",
+    entrypoint: "src/tool.ts",
+    verdict,
+    input: testCase.input,
+    expect: testCase.expect,
+    got: verdict === "pass" ? "1 row" : "0 rows",
+    start: "warm" as const,
+    ranAt: 1,
+    durationMs: 1,
+  });
+  const [kept, deleted, excused] = [made("kept"), made("deleted"), made("excused")];
+  const records = new Map([
+    [kept.id, result(kept, "pass")],
+    [deleted.id, result(deleted, "fail")],
+    [excused.id, { ...result(excused, "fail"), sourceDigest: "earlier", input: kept.input }],
+  ]);
+  const version = { version: "playwright" as const, sourceDigest: "published", records };
+  const emptied = liveTestsEvidence({ file: { cases: [kept] }, versions: [version] });
+
+  it("counts the failures a minter deleted from the cases file, by version", () => {
+    expect(liveTestsReport(emptied.record).versions).toEqual([
+      {
+        version: "playwright",
+        sourceDigest: "published",
+        counts: { pass: 1, fail: 0, inconclusive: 0 },
+        coldPasses: 0,
+        retired: { total: 2, lastFailed: 2, stillCounting: 1 },
+      },
+    ]);
+  });
+
+  it("gives each version only its own retired cases", () => {
+    const http = {
+      ...version,
+      version: "http" as const,
+      records: new Map([[kept.id, result(kept, "pass")]]),
+    };
+    const report = liveTestsReport(
+      liveTestsEvidence({ file: { cases: [kept] }, versions: [version, http] }).record,
+    );
+    expect(report.versions.map((entry) => entry.retired)).toEqual([
+      { total: 2, lastFailed: 2, stillCounting: 1 },
+      undefined,
+    ]);
+  });
+
+  it("says nothing of retired cases a build has none of, and holds no case", () => {
+    const clean = liveTestsEvidence({
+      file: { cases: [kept] },
+      versions: [{ ...version, records: new Map([[kept.id, result(kept, "pass")]]) }],
+    });
+    expect(liveTestsReport(clean.record).versions[0]).not.toHaveProperty("retired");
+    expect(liveTestsReport(clean.record)).not.toHaveProperty("casesFileProblem");
+    expect(JSON.stringify(liveTestsReport(emptied.record))).not.toContain("deleted");
+  });
+
+  it("flags a cases file the host could not read, without its text", () => {
+    const report = liveTestsReport(
+      liveTestsEvidence({
+        file: { cases: [] },
+        fileProblem: "test/cases.json holds lamp, which is no cases file",
+        versions: [version],
+      }).record,
+    );
+    expect(report.casesFileProblem).toBe(true);
+    expect(JSON.stringify(report)).not.toContain("lamp");
+  });
+
+  it("flags a record the host could not build, which holds no version to read", () => {
+    const report = liveTestsReport(liveTestsEvidenceProblem("an error stopped it").record);
+    expect(report).toEqual({ versions: [], recordProblem: true });
+  });
+
+  it("counts a failing case the minter changed and never ran again as retired", () => {
+    const changed = { ...deleted, expect: "empty" as const };
+    const { record, coverage } = liveTestsEvidence({
+      file: { cases: [changed] },
+      versions: [{ ...version, records: new Map([[deleted.id, result(deleted, "fail")]]) }],
+    });
+    expect(record.retired).toEqual([
+      expect.objectContaining({
+        id: deleted.id,
+        retiredBecause: "changed after it failed, and not run since",
+        lastVerdict: "fail",
+      }),
+    ]);
+    expect(liveTestsReport(record).versions[0]).toMatchObject({
+      counts: { stale: 1 },
+      retired: { total: 1, lastFailed: 1, stillCounting: 1 },
+    });
+    expect(coverage).toContain("1 retired case (1 last failed)");
+  });
+
+  it("says how many retired failures the host dropped past what it keeps", () => {
+    const { record } = liveTestsEvidence({
+      file: { cases: [kept] },
+      versions: [{ ...version, retiredDropped: 3 }],
+    });
+    expect(liveTestsReport(record).versions[0]?.retiredDropped).toBe(3);
+    expect(record.versions[0]?.retiredDropped).toBe(3);
+  });
+
+  it("keeps both through the checkpoint's schema, and reads a checkpoint with neither", () => {
+    const report = liveTestsReport(
+      liveTestsEvidence({ file: { cases: [] }, fileProblem: "unread", versions: [version] }).record,
+    );
+    const decode = Schema.decodeUnknownSync(LiveTestsReport);
+    expect(decode(report)).toEqual(report);
+    const [{ retired: _retired, ...older }] = report.versions as [(typeof report.versions)[number]];
+    expect(decode({ versions: [older] })).toEqual({ versions: [older] });
   });
 });

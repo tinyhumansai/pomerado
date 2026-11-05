@@ -19,8 +19,18 @@ import { SignInRunFailed } from "../../src/runtime/sign-in-replay.js";
 import { makeInputAsker } from "../../src/inputs/callback.js";
 import type { InputRequest } from "../../src/runtime/input-request.js";
 import type { EnteredCommit, OperationHooks } from "../../src/runtime/operation-hooks.js";
-import { html, startSite } from "./guardian-context-fixture.js";
+import {
+  call,
+  execution,
+  executionIdOf,
+  html,
+  message as said,
+  patch,
+  recordingGuardian,
+  startSite,
+} from "./guardian-context-fixture.js";
 import { projectBrowser } from "./project-browser.js";
+import { mint } from "./standalone-mint-fixture.js";
 
 // A host drives Pomerado through its hooks: it watches each run start and move, holds a write's
 // click until it accepts the checkout the script read, hands the session's site data in and out,
@@ -135,8 +145,8 @@ test("a write's click waits for the host's commit hook, which hears the checkout
     expect(started).toEqual([0]);
     const report = { button: "Pay ₹204 on delivery", total: "Total ₹204" };
     expect(entered).toEqual([
-      { mark: { name: "place-order", report }, posts: 0 },
-      { mark: { name: "place-order", report }, posts: 0 },
+      { mark: { name: "place-order", report, callOut: false }, posts: 0 },
+      { mark: { name: "place-order", report, callOut: false }, posts: 0 },
     ]);
     expect(posts()).toBe(1);
     // One fingerprint after each of the script's two calls, and the click changed the page.
@@ -571,7 +581,16 @@ export default defineOperation(
  * which tunnels every connection to it, as a resolver that maps its name would, so a context
  * that sets the proxy and takes its own certificate (`ignoreHTTPSErrors`) opens it on any browser.
  */
-const phoneShop = async (options: { readonly codeBoxes?: boolean } = {}) => {
+const phoneShop = async (
+  options: {
+    readonly codeBoxes?: boolean;
+    readonly passwordField?: boolean;
+    /** The code screen's field is a password input, as some sites draw a one-time code. */
+    readonly codeInPassword?: boolean;
+    /** What the code screen says of the number it received, in its text and in its field's label. */
+    readonly echo?: (phone: string) => readonly [text: string, label: string];
+  } = {},
+) => {
   const directory = await mkdtemp(join(tmpdir(), "pomerado-phone-shop-"));
   await promisify(execFile)("openssl", [
     "req",
@@ -625,11 +644,12 @@ const phoneShop = async (options: { readonly codeBoxes?: boolean } = {}) => {
         if (path === "/login") {
           html(
             response,
-            `<form method="post" action="/send-code"><label>Phone number <input name="phone" type="tel" autocomplete="tel"></label><button>Send code</button></form>`,
+            `<form method="post" action="/send-code"><label>Phone number <input name="phone" type="tel" autocomplete="tel"></label>${options.passwordField === true ? `<label>Password <input name="password" type="password"></label>` : ""}<button>Send code</button></form>`,
           );
           return;
         }
         if (path === "/verify") {
+          const echoed = options.echo?.(received.phones.at(-1) ?? "");
           // The code in one field, or in six one-character boxes.
           const fields = options.codeBoxes
             ? [1, 2, 3, 4, 5, 6]
@@ -638,8 +658,11 @@ const phoneShop = async (options: { readonly codeBoxes?: boolean } = {}) => {
                     `<input id="otp-${box}" name="d${box}" maxlength="1" inputmode="numeric" aria-label="Digit ${box}">`,
                 )
                 .join("")
-            : `<label>Code <input name="code" inputmode="numeric" autocomplete="one-time-code"></label>`;
-          html(response, `<form method="post" action="/verify">${fields}<button>Verify</button></form>`);
+            : `<label>Code ${echoed?.[1] ?? ""} <input name="code" ${options.codeInPassword === true ? 'type="password"' : ""} inputmode="numeric" autocomplete="one-time-code"></label>`;
+          html(
+            response,
+            `${echoed === undefined ? "" : `<p>We sent a code to ${echoed[0]}</p>`}<form method="post" action="/verify">${fields}<button>Verify</button></form>`,
+          );
           return;
         }
         const signedIn = /(?:^|;\s*)session=s-1(?:;|$)/u.test(request.headers.cookie ?? "");
@@ -907,3 +930,464 @@ test("a handle for a code on six one-character boxes is revealed once and typed 
     await shop.close();
   }
 });
+
+/** Reads the page's heading. Its query only tells one live test case from another. */
+const searchHeading = `import { Schema } from "effect";
+import { defineOperation } from "../runtime/index.js";
+export default defineOperation({name:"read_heading",input:Schema.Struct({query:Schema.String}),output:Schema.Struct({heading:Schema.String})},
+async ({kernel,sessionId}) => {
+  const read = await kernel.browsers.playwright.execute(sessionId,{code:"return await page.locator('h1').innerText();",timeout_sec:10});
+  if(!read.success) throw new Error(String(read.error));
+  return {heading:String(read.result)};
+});`;
+
+/** One case for each query, each expecting a result. */
+const headingCases = (...queries: readonly string[]) =>
+  JSON.stringify({
+    cases: queries.map((query) => ({
+      id: query,
+      purpose: `The heading for ${query}.`,
+      input: { query },
+      expect: "result",
+    })),
+  });
+
+/** Runs every live test case, then the example, and publishes the example's step. */
+const testAndPublish = [
+  () => [
+    call("live_tests", {
+      intent: "Run every planned case",
+      action: "run",
+      entrypoint: "src/tool.mjs",
+      cases: null,
+      maxWorkers: 1,
+    }),
+  ],
+  () => [
+    call(
+      "execute",
+      execution("example", "src/tool.mjs", { exampleInput: '{"query":"lamp"}' }),
+      "example",
+    ),
+  ],
+  (request: Parameters<typeof executionIdOf>[0]) => [
+    call("finish_build", {
+      intent: "Publish the reader",
+      entrypoint: "src/tool.mjs",
+      executionId: executionIdOf(request, "example"),
+      metadata: { name: "read_heading", description: "Read the page's heading" },
+      coverage: "Every case passes on this source. Host live tests: 99 pass, 0 fail.",
+    }),
+  ],
+];
+
+test("a published mint reports its live test counts and Guardian's notes in its outcome", async () => {
+  test.setTimeout(120_000);
+  const site = await startSite((_request, response) =>
+    html(response, "<title>Shop</title><h1>Shop</h1>"),
+  );
+  try {
+    const { built } = await mint({
+      effect: "read",
+      url: site.url,
+      guardian: recordingGuardian(),
+      intent: "Read the page's heading",
+      timeoutMs: 600_000,
+      turns: [
+        () =>
+          patch({
+            "src/tool.mjs": searchHeading,
+            "test/cases.json": headingCases("lamp", "chair"),
+          }),
+        ...testAndPublish,
+      ],
+    });
+
+    expect(built.build, JSON.stringify(built)).toBe("published");
+    // The host's own counts, whatever the minter's coverage says.
+    expect(built.liveTests).toEqual({
+      versions: [
+        {
+          version: "playwright",
+          entrypoint: "src/tool.mjs",
+          sourceDigest: expect.any(String),
+          counts: { pass: 2, fail: 0, inconclusive: 0 },
+          coldPasses: 0,
+        },
+      ],
+    });
+    expect(built.publicationReview).toEqual({
+      reviewId: expect.any(String),
+      rationale: "Recorded fixture review",
+    });
+  } finally {
+    await site.close();
+  }
+});
+
+/** A probe that reads the whole page, as a minter's exploration reads a code screen. */
+const readBody = `import { Schema } from "effect";
+import { defineOperation } from "../runtime/index.js";
+export default defineOperation(
+  { name: "read_body", input: Schema.Struct({}), output: Schema.Struct({ text: Schema.String }) },
+  async ({ kernel, sessionId }) => {
+    const read = await kernel.browsers.playwright.execute(sessionId, {
+      code: "return await page.locator('body').innerText();",
+      timeout_sec: 10,
+    });
+    if (!read.success) throw new Error("The page did not read");
+    return { text: String(read.result) };
+  },
+);`;
+
+/** The phone shop's first screen as a minter sends it, with the phone field's own format. */
+const phoneStep = (format?: "national") => () => [
+  call(
+    "execute",
+    execution("authenticate", "src/tool.mjs", {
+      signInStep: {
+        fields: [
+          {
+            selector: "input[name=phone]",
+            accepts: ["phone"],
+            ...(format === undefined ? {} : { format }),
+          },
+        ],
+        submit: "button",
+      },
+    }),
+    "phone",
+  ),
+];
+
+/** The phone shop's sign-in as a minter walks it: the number, the code, then the signed-in check. */
+const phoneSignInTurns = [
+  phoneStep(),
+  () => [call("execute", execution("explore", "explore/body.mjs"), "explore")],
+  () => [
+    call(
+      "execute",
+      execution("authenticate", "src/tool.mjs", {
+        signInStep: {
+          fields: [{ selector: "input[name=code]", slot: "code" }],
+          submit: "button",
+        },
+      }),
+      "code",
+    ),
+  ],
+  () => [
+    call(
+      "execute",
+      execution("authenticate", "src/tool.mjs", {
+        signInStep: { signedIn: { selector: "#account" } },
+      }),
+      "signed_in",
+    ),
+  ],
+];
+
+/** The account's phone number with no password, as a host that signs in by a code declares it. */
+const byPhone = { identifierKinds: ["phone" as const], password: false as const };
+
+test("a mint on an account with no password asks for the number alone, then the code, and publishes a sign-in a run replays", async () => {
+  test.setTimeout(180_000);
+  const phone = "+15555550123";
+  const reformatted = "+1 (555) 555-0123";
+  // The code screen writes the number back both ways, as sites do, and Guardian quotes it.
+  const shop = await phoneShop({ echo: () => [phone, reformatted] });
+  const guardian = recordingGuardian({
+    decide: (review) =>
+      review.kind === "publication"
+        ? { outcome: "allow", rationale: `Allowed. The code screen names ${reformatted}.` }
+        : "allow",
+  });
+  const asked: InputRequest[] = [];
+  const answer = (request: InputRequest) => {
+    asked.push(request);
+    return Object.fromEntries(
+      request.questions.map((question) => [
+        question.id,
+        question.type === "credential" ? { username: phone, saveLogin: false } : "424242",
+      ]),
+    );
+  };
+  try {
+    const { built, requests } = await mint({
+      effect: "read",
+      url: `${shop.origin}/login`,
+      guardian,
+      intent: "Read the account's heading",
+      timeoutMs: 600_000,
+      browser: { context: shop.context },
+      passwordless: byPhone,
+      answer,
+      turns: [
+        () =>
+          patch({
+            "src/tool.mjs": searchHeading,
+            "explore/body.mjs": readBody,
+            "test/cases.json": headingCases("lamp"),
+          }),
+        ...phoneSignInTurns,
+        ...testAndPublish,
+      ],
+    });
+
+    expect(built.build, JSON.stringify(built)).toBe("published");
+    // The login question offers the phone number and no password, then the code is asked for.
+    const [login] = asked[0]?.questions ?? [];
+    expect(login).toMatchObject({
+      type: "credential",
+      allowDecline: true,
+      currentStep: { identifierKinds: ["phone"], password: false },
+    });
+    const [code] = asked[1]?.questions ?? [];
+    expect(code).toMatchObject({ type: "secret", secretKind: "one_time_code" });
+    expect(asked).toHaveLength(2);
+    expect(shop.received).toEqual({ phones: [phone], codes: ["424242"] });
+    // Every step ran signed in, and the record says so.
+    expect(built.liveTests).toMatchObject({
+      signedIn: true,
+      versions: [{ counts: { pass: 1, fail: 0, inconclusive: 0 } }],
+    });
+    // The build publishes the sign-in value-free, and no model read the number or the code.
+    if (built.artifact === undefined) throw new Error(JSON.stringify(built));
+    expect(built.artifact.signIn?.recipe.steps.map((step) => step.fields)).toEqual([
+      [{ selector: "input[name=phone]", accepts: ["phone"] }],
+      [{ selector: "input[name=code]", slot: "code" }],
+    ]);
+    expect(JSON.stringify(requests)).not.toContain("424242");
+    // The exploration read the screen, and the number reached it masked in every form.
+    expect(JSON.stringify(requests)).toContain("We sent a code to [private]");
+    expect(JSON.stringify(guardian.reviews)).toContain("Code [private]");
+    expect(built.publicationReview?.rationale).toBe("Allowed. The code screen names [private].");
+    for (const form of [phone, reformatted, "555-0123", "5555550123"]) {
+      expect(JSON.stringify(built)).not.toContain(form);
+      expect(JSON.stringify(requests)).not.toContain(form);
+      expect(JSON.stringify(guardian.reviews)).not.toContain(form);
+    }
+
+    // A new session runs the published tool: it asks the same two questions and signs in.
+    const runAsked: InputRequest[] = [];
+    const calls: string[] = [];
+    const output = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const pomerado = yield* session(calls, {
+            browser: { ...projectBrowser(), context: shop.context },
+            ask: phoneAnswers(runAsked, phone, "424242"),
+          });
+          return yield* pomerado.run(built.artifact as NonNullable<typeof built.artifact>, {
+            url: shop.url,
+            intent: "Read the account's heading",
+            input: { query: "lamp" },
+            effect: "read",
+          });
+        }),
+      ),
+    );
+    expect(output).toEqual({ heading: "Signed in" });
+    expect(runAsked).toHaveLength(2);
+    expect(shop.received).toEqual({ phones: [phone, phone], codes: ["424242", "424242"] });
+    expect(calls).toEqual([]);
+  } finally {
+    await shop.close();
+  }
+});
+
+test("a mint masks a number a national field takes without its calling code, in each form the site writes it", async () => {
+  test.setTimeout(180_000);
+  const shop = await phoneShop({ echo: (typed) => [typed, "98765 43210"] });
+  const guardian = recordingGuardian();
+  try {
+    const { built, requests } = await mint({
+      effect: "read",
+      url: `${shop.origin}/login`,
+      guardian,
+      intent: "Read the account's heading",
+      timeoutMs: 600_000,
+      browser: { context: shop.context },
+      passwordless: byPhone,
+      answer: (request) =>
+        Object.fromEntries(
+          request.questions.map((question) => [
+            question.id,
+            question.type === "credential"
+              ? { username: "+919876543210", saveLogin: false }
+              : "424242",
+          ]),
+        ),
+      turns: [
+        () => patch({ "src/tool.mjs": searchHeading, "explore/body.mjs": readBody }),
+        phoneStep("national"),
+        ...phoneSignInTurns.slice(1, 3),
+        () => [said("Stop here.")],
+      ],
+    });
+
+    expect(shop.received).toEqual({ phones: ["9876543210"], codes: ["424242"] });
+    expect(JSON.stringify(requests)).toContain("We sent a code to [private]");
+    for (const form of ["9876543210", "98765 43210"]) {
+      expect(JSON.stringify(built)).not.toContain(form);
+      expect(JSON.stringify(requests)).not.toContain(form);
+      expect(JSON.stringify(guardian.reviews)).not.toContain(form);
+    }
+  } finally {
+    await shop.close();
+  }
+});
+
+test("a mint on an account with no password refuses a screen that takes one, types nothing and tells the minter", async () => {
+  test.setTimeout(120_000);
+  const shop = await phoneShop({ passwordField: true });
+  const asked: InputRequest[] = [];
+  try {
+    const { built, requests } = await mint({
+      effect: "read",
+      url: `${shop.origin}/login`,
+      guardian: recordingGuardian(),
+      intent: "Read the account's heading",
+      browser: { context: shop.context },
+      passwordless: byPhone,
+      answer: (request) => {
+        asked.push(request);
+        return { login: { username: "+15555550123", saveLogin: false } };
+      },
+      turns: [
+        () => patch({ "src/tool.mjs": searchHeading }),
+        () => [
+          call(
+            "execute",
+            execution("authenticate", "src/tool.mjs", {
+              signInStep: {
+                fields: [
+                  { selector: "input[name=phone]", accepts: ["phone"] },
+                  { selector: "input[name=password]", slot: "password" },
+                ],
+                submit: "button",
+              },
+            }),
+            "password",
+          ),
+        ],
+        () => [said("This shop needs a password.")],
+      ],
+    });
+
+    expect(built.build).toBe("incomplete");
+    const refused = JSON.stringify(requests[2]);
+    expect(refused).toContain("credential_unavailable");
+    expect(refused).toContain("This login has no password");
+    expect(asked).toHaveLength(1);
+    expect(shop.received).toEqual({ phones: [], codes: [] });
+  } finally {
+    await shop.close();
+  }
+});
+
+test("a mint on an account with no password types no identifier into a password input, whatever the step calls it", async () => {
+  test.setTimeout(120_000);
+  const shop = await phoneShop({ passwordField: true });
+  try {
+    const { built, requests } = await mint({
+      effect: "read",
+      url: `${shop.origin}/login`,
+      guardian: recordingGuardian(),
+      intent: "Read the account's heading",
+      browser: { context: shop.context },
+      passwordless: byPhone,
+      answer: () => ({ login: { username: "+15555550123", saveLogin: false } }),
+      turns: [
+        () => patch({ "src/tool.mjs": searchHeading }),
+        () => [
+          call(
+            "execute",
+            execution("authenticate", "src/tool.mjs", {
+              signInStep: {
+                fields: [{ selector: "input[name=password]", accepts: ["phone"] }],
+                submit: "button",
+              },
+            }),
+            "password",
+          ),
+        ],
+        () => [said("This shop needs a password.")],
+      ],
+    });
+
+    expect(built.build).toBe("incomplete");
+    const refused = JSON.stringify(requests[2]);
+    expect(refused).toContain("credential_unavailable");
+    expect(refused).toContain("This login has no password");
+    expect(shop.received).toEqual({ phones: [], codes: [] });
+  } finally {
+    await shop.close();
+  }
+});
+
+test("a mint on an account with no password types a code into a password input, as some sites draw one", async () => {
+  test.setTimeout(120_000);
+  const shop = await phoneShop({ codeInPassword: true });
+  try {
+    await mint({
+      effect: "read",
+      url: `${shop.origin}/login`,
+      guardian: recordingGuardian(),
+      intent: "Read the account's heading",
+      timeoutMs: 120_000,
+      browser: { context: shop.context },
+      passwordless: byPhone,
+      answer: (request) =>
+        Object.fromEntries(
+          request.questions.map((question) => [
+            question.id,
+            question.type === "credential"
+              ? { username: "+15555550123", saveLogin: false }
+              : "424242",
+          ]),
+        ),
+      turns: [
+        () => patch({ "src/tool.mjs": searchHeading, "explore/body.mjs": readBody }),
+        ...phoneSignInTurns.filter((_turn, index) => index !== 1).slice(0, 2),
+        () => [said("Stop here.")],
+      ],
+    });
+
+    expect(shop.received).toEqual({ phones: ["+15555550123"], codes: ["424242"] });
+  } finally {
+    await shop.close();
+  }
+});
+
+for (const [what, passwordless] of [
+  ["no identifier kind", { identifierKinds: [], password: false }],
+  ["a kind a login doesn't offer", { identifierKinds: ["fax"], password: false }],
+  [
+    "more kinds than a question offers",
+    { identifierKinds: ["username", "email", "phone", "account_number", "phone"], password: false },
+  ],
+  ["a password", { identifierKinds: ["phone"], password: true }],
+  ["the same kind twice", { identifierKinds: ["phone", "phone"], password: false }],
+  ["a key of its own", { identifierKinds: ["phone"], password: false, code: "424242" }],
+] as const)
+  test(`a mint refuses a login with no password that names ${what} before it starts`, async () => {
+    const calls: string[] = [];
+    const refused = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const pomerado = yield* session(calls);
+          return yield* Effect.flip(
+            pomerado.mint({
+              url: "https://shop.test/",
+              intent: "Read the account's heading",
+              effect: "read",
+              passwordless: passwordless as never,
+            }),
+          );
+        }),
+      ),
+    );
+    expect(refused.message).toContain("passwordless must name");
+    expect(calls).toEqual([]);
+  });

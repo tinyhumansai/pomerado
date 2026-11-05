@@ -41,7 +41,7 @@ import {
 import type { KeptScriptAnswer } from "../mint/script-answer-reuse.js";
 import type { StandaloneSession } from "./session.js";
 import type { RequestContext } from "./request-context.js";
-import type { PomeradoRequest } from "./contracts.js";
+import type { PomeradoMintRequest } from "./contracts.js";
 const identifiers: ReadonlySet<FillSlot> = new Set(identifierPreference);
 /** What the host does with a sign-in step Guardian allows, for its review. */
 const signInStepNote =
@@ -157,7 +157,7 @@ export const makeBuildStart = (
 export const mintState = (
   session: StandaloneSession,
   context: RequestContext,
-  request: PomeradoRequest,
+  request: PomeradoMintRequest,
   /** The handles the request's input holds where the caller's files stood. */
   fileHandles: FileHandles,
 ) =>
@@ -256,6 +256,7 @@ export const mintState = (
             ask: signInAsks.ask,
             register: secrets.register,
             siteOrigin: siteOrigin,
+            ...(request.passwordless === undefined ? {} : { passwordless: request.passwordless }),
           }),
           repeatedLoginFailure,
         );

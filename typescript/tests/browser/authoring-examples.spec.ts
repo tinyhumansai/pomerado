@@ -48,6 +48,11 @@ import {
 
 import { makeEffectJournal } from "../../src/runtime/context.js";
 import { commitEvidenceOf, commitRetryRefusal, unenteredWrite } from "../../src/runtime/run-outcome.js";
+import qrcode from "qrcode-generator";
+import readBill from "../../authoring/examples/bill-lines.js";
+import setCartQuantity from "../../authoring/examples/cart-stepper.js";
+import readPaymentCode from "../../authoring/examples/payment-qr.js";
+import chooseWayToPay from "../../authoring/examples/way-to-pay.js";
 import { runExample, failure, localFiles } from "./authoring-fixture.js";
 import { pageGlobal } from "./page-world.js";
 
@@ -3137,4 +3142,188 @@ test("dialog example keeps the confirm open for the host and applies accept in t
   ]);
   expect(calls).toHaveLength(2);
   await expect(page.getByRole("row")).toHaveCount(0);
+});
+
+/** A document for an `iframe`'s `srcdoc` attribute, written inside double quotes. */
+const frameDocument = (html: string) => html.replaceAll("&", "&amp;").replaceAll('"', "&quot;");
+
+/**
+ * Ways to pay as an accordion in a payment frame, drawn a moment after the frame loads: the open
+ * row is the way chosen, pressing it again closes it, the cash row's accessible name is longer than
+ * its text, and two ways are greyed out, one with the site's note after its name. The frame counts
+ * presses of the rows in the DOM.
+ */
+const waysToPay = `<div class="ways" hidden>
+<h3><button type="button" class="way" aria-expanded="false" aria-controls="cod" aria-label="Cash on delivery, pay when the order arrives">Cash on delivery</button></h3>
+<div id="cod" hidden>Pay in cash or by UPI when the order arrives</div>
+<h3><button type="button" class="way" aria-expanded="true" aria-controls="upi">UPI</button></h3>
+<div id="upi">Pay with any UPI app</div>
+<h3><button type="button" class="way" aria-expanded="false" disabled>Pay later <small>Not available at the moment</small></button></h3>
+<h3><button type="button" class="way" aria-expanded="false" disabled>Wallet</button></h3>
+</div>
+<output id="presses">0</output>
+<script>
+setTimeout(() => { document.querySelector(".ways").hidden = false; }, 300);
+document.addEventListener("pointerdown", (event) => {
+  if (!event.target.closest(".way")) return;
+  const presses = document.getElementById("presses");
+  presses.textContent = String(Number(presses.textContent) + 1);
+});
+for (const button of document.querySelectorAll(".way[aria-controls]"))
+  button.addEventListener("click", () => {
+    const opening = button.getAttribute("aria-expanded") !== "true";
+    for (const other of document.querySelectorAll(".way[aria-controls]")) {
+      other.setAttribute("aria-expanded", "false");
+      document.getElementById(other.getAttribute("aria-controls")).hidden = true;
+    }
+    button.setAttribute("aria-expanded", String(opening));
+    document.getElementById(button.getAttribute("aria-controls")).hidden = !opening;
+  });
+</script>`;
+
+test("way-to-pay example opens the cash row in the payment frame once, and refuses a near name, a greyed-out or an unknown way before its commit mark", async ({
+  page,
+}) => {
+  await page.setContent(
+    `<h1>Checkout</h1><iframe title="Payment options" style="width: 480px; height: 320px" srcdoc="${frameDocument(waysToPay)}"></iframe>`,
+  );
+  const frame = page.frameLocator('iframe[title="Payment options"]');
+  // The run starts before the frame has drawn its rows, and finds the cash row by its text.
+  const chosen = await runExample(page, chooseWayToPay, { way: "Cash on delivery" });
+  expect(chosen.result).toEqual(Either.right({ way: "Cash on delivery" }));
+  expect({ effect: chosen.effect, commits: chosen.commits }).toEqual({
+    effect: "verified",
+    commits: [{ name: "choose-way-to-pay", state: "confirmed" }],
+  });
+  await expect(frame.locator("#cod")).toBeVisible();
+  // Asked again, the open row stays open: it is never pressed a second time.
+  expect((await runExample(page, chooseWayToPay, { way: "cash on delivery" })).result).toEqual(
+    Either.right({ way: "Cash on delivery" }),
+  );
+  await expect(frame.locator("#presses")).toHaveText("1");
+  await expect(frame.locator("#cod")).toBeVisible();
+  const noted = await runExample(page, chooseWayToPay, { way: "Pay later" });
+  expect(failure(noted.result)).toMatchObject({
+    _tag: "InvalidInput",
+    field: "way",
+    kind: "unavailable",
+    available: ["Cash on delivery", "UPI"],
+  });
+  expect(noted.commits).toEqual([{ name: "choose-way-to-pay", state: "not_sent" }]);
+  // A way greyed out with no note is read again once the frame is quiet, and refused when it stays so.
+  const greyed = await runExample(page, chooseWayToPay, { way: "Wallet" });
+  expect(failure(greyed.result)).toMatchObject({ _tag: "InvalidInput", field: "way", kind: "unavailable" });
+  expect(greyed.commits).toEqual([{ name: "choose-way-to-pay", state: "not_sent" }]);
+  const unknown = await runExample(page, chooseWayToPay, { way: "Card" });
+  expect(failure(unknown.result)).toMatchObject({
+    _tag: "InvalidInput",
+    field: "way",
+    kind: "option_missing",
+    available: ["Cash on delivery", "UPI"],
+  });
+  expect(unknown.commits).toEqual([{ name: "choose-way-to-pay", state: "not_sent" }]);
+  // A name that only starts a way's name is no match: "Cash" never chooses "Cash on delivery".
+  const near = await runExample(page, chooseWayToPay, { way: "Cash" });
+  expect(failure(near.result)).toMatchObject({ _tag: "InvalidInput", field: "way", kind: "option_missing" });
+  expect(near.commits).toEqual([{ name: "choose-way-to-pay", state: "not_sent" }]);
+  await expect(frame.locator("#presses")).toHaveText("1");
+  // The frame greys UPI out for a moment while it recalculates: the way is read again, not refused.
+  await frame.getByRole("button", { name: "UPI", exact: true }).evaluate((button: HTMLButtonElement) => {
+    button.disabled = true;
+    setTimeout(() => {
+      button.disabled = false;
+    }, 1000);
+  });
+  // Named in another case, the way's exact name still picks that one row, and presses it once.
+  expect((await runExample(page, chooseWayToPay, { way: "upi" })).result).toEqual(Either.right({ way: "UPI" }));
+  await expect(frame.locator("#presses")).toHaveText("2");
+  await expect(frame.locator("#upi")).toBeVisible();
+});
+
+/** A product card whose cart control is ADD, then a stepper a loader covers while it saves. */
+const stepper = `<div class="product"><h2>Instant noodles</h2><div class="cart-control"></div></div>
+<div id="cart-updating" hidden style="position: fixed; inset: 0; background: rgba(255, 255, 255, 0.7)">Updating cart</div>
+<script>
+let quantity = 0;
+let busy = false;
+const most = 4;
+const control = document.querySelector(".cart-control");
+const loader = document.getElementById("cart-updating");
+const render = () => {
+  control.innerHTML = quantity === 0
+    ? '<button type="button">ADD</button>'
+    : '<button type="button" aria-label="Remove one">−</button><span class="count">' + quantity +
+      '</span><button type="button" aria-label="Add one"' + (quantity >= most ? " disabled" : "") + '>+</button>';
+};
+control.addEventListener("click", (event) => {
+  const button = event.target.closest("button");
+  if (!button || busy) return;
+  busy = true;
+  loader.hidden = false;
+  const next = button.getAttribute("aria-label") === "Remove one" ? quantity - 1 : quantity + 1;
+  setTimeout(() => {
+    quantity = next;
+    render();
+    loader.hidden = true;
+    busy = false;
+  }, 250);
+});
+render();
+</script>`;
+
+test("cart stepper example sets a line from ADD to three through the loader, then stops at the site's limit", async ({
+  page,
+}) => {
+  await page.setContent(stepper);
+  const three = await runExample(page, setCartQuantity, { quantity: 3 }, { deadlineMs: 30_000 });
+  expect(three.result).toEqual(Either.right({ quantity: 3 }));
+  expect({ effect: three.effect, commits: three.commits }).toEqual({
+    effect: "verified",
+    commits: [{ name: "set-quantity", state: "confirmed" }],
+  });
+  await expect(page.locator(".count")).toHaveText("3");
+  expect((await runExample(page, setCartQuantity, { quantity: 6 }, { deadlineMs: 30_000 })).result).toEqual(
+    Either.right({ quantity: 4, saved_differences: [{ field: "quantity", wanted: "6", shown: "4" }] }),
+  );
+});
+
+test("bill example reads every line in paise, its old price apart, and the total", async ({ page }) => {
+  await page.setContent(`<section id="bill">
+<div class="line"><span class="name">Item total</span><span class="value"><del>₹120</del> ₹100</span></div>
+<div class="line"><span class="name">Delivery fee</span><span class="value"><s>₹25</s> FREE</span></div>
+<div class="line"><span class="name">Donation</span><span class="value">₹1</span></div>
+<div class="line"><span class="name">Wallet used</span><span class="value">−₹20</span></div>
+<div class="line"><span class="name">Free gift</span><span class="value">₹0</span></div>
+</section>
+<p>To pay <strong id="to-pay">₹81</strong></p>`);
+  expect((await runExample(page, readBill, {})).result).toEqual(
+    Either.right({
+      lines: [
+        { label: "Item total", amount_minor: 10000, was_minor: 12000, free: false },
+        { label: "Delivery fee", amount_minor: 0, was_minor: 2500, free: true },
+        { label: "Donation", amount_minor: 100, was_minor: null, free: false },
+        { label: "Wallet used", amount_minor: -2000, was_minor: null, free: false },
+        { label: "Free gift", amount_minor: 0, was_minor: null, free: false },
+      ],
+      total_minor: 8100,
+      currency: "INR",
+    }),
+  );
+});
+
+test("payment code example returns the link the code holds once its amount is the order's", async ({ page }) => {
+  const link = "upi://pay?pa=grocer@examplebank&pn=Corner%20Grocer&am=74.00&cu=INR&tn=Order%207";
+  const code = qrcode(0, "M");
+  code.addData(link);
+  code.make();
+  await page.setContent(
+    `<h1>Scan to pay ₹74</h1><iframe title="Payment" style="width: 320px; height: 320px; border: 0" srcdoc="${frameDocument(`<div id="code"></div><script>setTimeout(() => { document.getElementById("code").innerHTML = '<img alt="Scan to pay" src="${code.createDataURL(4, 4)}">'; }, 300);</script>`)}"></iframe>`,
+  );
+  // The run starts before the frame has drawn the code: the example waits for it.
+  expect((await runExample(page, readPaymentCode, { amount_minor: 7400 })).result).toEqual(
+    Either.right({ payment_link: link, amount_minor: 7400, currency: "INR" }),
+  );
+  expect(failure((await runExample(page, readPaymentCode, { amount_minor: 9900 })).result)).toMatchObject({
+    _tag: "OperationFailure",
+  });
 });

@@ -857,14 +857,17 @@ describe("reviewPublication", () => {
     const review: PublicationReview = (request) =>
       Effect.sync(() => {
         requests.push(request);
-        return `review_${requests.length}`;
+        return { reviewId: `review_${requests.length}`, rationale: "Fixture allow." };
       });
     return { requests, review };
   };
 
   it("reviews the bundle against the definition first, then the host's evidence", async () => {
     const { requests, review } = recordingReview();
-    expect(await Effect.runPromise(reviewPublication(review, candidate))).toBe("review_1");
+    expect(await Effect.runPromise(reviewPublication(review, candidate))).toEqual({
+      reviewId: "review_1",
+      rationale: "Fixture allow.",
+    });
     expect(requests).toHaveLength(1);
     const [request] = requests;
     expect(request).toMatchObject({
@@ -1112,7 +1115,7 @@ describe("reviewPublication", () => {
           requested: { input: { date: "2026-03-14", partySize: 2 }, outputs: ["status"] },
         }),
       ),
-    ).toBe("review_1");
+    ).toEqual({ reviewId: "review_1", rationale: "Fixture allow." });
   });
 
   it("finds each requested name across references, unions and nested lists", () => {
@@ -1214,6 +1217,6 @@ describe("reviewPublication", () => {
           inputSchema: { type: "object", properties: {} },
         }),
       ),
-    ).toBe("review_1");
+    ).toEqual({ reviewId: "review_1", rationale: "Fixture allow." });
   });
 });

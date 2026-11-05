@@ -2,6 +2,7 @@ import { posix } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   executedSourceClosure,
+  readImportClosure,
   runnableOperationFiles,
   savedOperationFiles,
 } from "../../src/mint/operation-source.js";
@@ -439,5 +440,43 @@ describe("the operation files Guardian is told an execution loads", () => {
       "src/tool.mjs",
     );
     expect([...closure.keys()].sort()).toEqual(expected);
+  });
+});
+
+describe("readImportClosure", () => {
+  const closure = async (tool: string, computed?: readonly string[]) => {
+    const files = new Map(
+      Object.entries({
+        "src/tool.mjs": tool,
+        "src/query.mjs": 'import "../explore/shared.mjs";',
+        "explore/shared.mjs": "export default 1;",
+        "explore/look.mjs": "export default 2;",
+        "test/cases.json": "{}",
+      }),
+    );
+    const read = (path: string) => Promise.resolve(files.get(path));
+    return [...(await readImportClosure(read, "src/tool.mjs", computed)).keys()].sort();
+  };
+  const computedImport = 'await import("./" + "query" + ".mjs");';
+
+  it("reads a module's static imports, whatever a host could list", async () => {
+    expect(await closure('import "./query.mjs";', ["src/query.mjs"])).toEqual([
+      "explore/shared.mjs",
+      "src/query.mjs",
+      "src/tool.mjs",
+    ]);
+    expect(await closure("export default 1;", ["src/query.mjs"])).toEqual(["src/tool.mjs"]);
+  });
+
+  it("reads what a host lists, and what that imports, for a module that computes its import", async () => {
+    expect(await closure(computedImport, ["src/query.mjs"])).toEqual([
+      "explore/shared.mjs",
+      "src/query.mjs",
+      "src/tool.mjs",
+    ]);
+  });
+
+  it("reads only the module that computes its import on a host that lists nothing", async () => {
+    expect(await closure(computedImport)).toEqual(["src/tool.mjs"]);
   });
 });

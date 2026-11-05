@@ -140,6 +140,7 @@ import {
   liveTestsEvidence,
   liveTestsEvidencePath,
   liveTestsEvidenceProblem,
+  liveTestsReport,
   liveTestsShortfall,
   liveTestVersion,
   LiveTestOutputChecks,
@@ -1852,8 +1853,17 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
         published: MintCompletion,
         coverage: string,
         assumptions: readonly BuildAssumption[] = [],
+        /** The publication record of the source this build published, for a read that has one. */
+        liveTests?: Parameters<typeof liveTestsReport>[0],
       ) =>
         Effect.gen(function* () {
+          const review =
+            published.review === undefined
+              ? undefined
+              : {
+                  ...published.review,
+                  rationale: yield* screenRationale(published.review.rationale),
+                };
           terminal = {
             build: "published",
             ...(published.publicationRef === undefined
@@ -1862,17 +1872,14 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
             ...("artifact" in published ? { artifact: published.artifact } : {}),
             summary: coverage,
             ...(assumptions.length === 0 ? {} : { assumptions }),
+            ...(liveTests === undefined ? {} : { liveTests: liveTestsReport(liveTests) }),
+            ...(review === undefined
+              ? {}
+              : { publicationReview: { reviewId: review.reviewId, rationale: review.rationale } }),
           };
           return JSON.stringify({
             status: "published",
-            ...(published.review === undefined
-              ? {}
-              : {
-                  review: {
-                    ...published.review,
-                    rationale: yield* screenRationale(published.review.rationale),
-                  },
-                }),
+            ...(review === undefined ? {} : { review }),
             ...(published.shareability === undefined
               ? {}
               : {
@@ -3407,20 +3414,28 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
       const acceptedAnswers: unknown[] = [];
       /**
        * The digest of what `entrypoint`'s import closure holds in the workspace now, without
-       * paths; undefined when it cannot be read, and a failed read is reported to the host.
+       * paths, with `computed` for a module whose imports cannot be resolved statically; undefined
+       * when it cannot be read, and a failed read is reported to the host.
        */
-      const stepDigest = (entrypoint: string) =>
-        Effect.tryPromise({
-          try: async () => {
-            const files = await readImportClosure(async (path) => {
-              if ((await session.pathExists?.(path)) === false) return undefined;
-              const text: unknown = await session.readFile?.({ path });
-              return typeof text === "string" ? text : undefined;
-            }, entrypoint);
-            return files.size === 0 ? undefined : contentDigest(files);
-          },
-          catch: (error) => error,
-        }).pipe(
+      const closureDigest = (
+        entrypoint: string,
+        computed: Effect.Effect<readonly string[], unknown>,
+      ) =>
+        computed.pipe(
+          Effect.flatMap((paths) =>
+            Effect.tryPromise({
+              try: async () => {
+                const read = async (path: string) => {
+                  if ((await session.pathExists?.(path)) === false) return undefined;
+                  const text: unknown = await session.readFile?.({ path });
+                  return typeof text === "string" ? text : undefined;
+                };
+                const files = await readImportClosure(read, entrypoint, paths);
+                return files.size === 0 ? undefined : contentDigest(files);
+              },
+              catch: (error) => error,
+            }),
+          ),
           Effect.catchAll((error) =>
             reportFailure(error, {
               component: "mint",
@@ -3431,6 +3446,21 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
             }).pipe(Effect.as(undefined)),
           ),
         );
+      /** A step's own source: its static imports, which tell one write's step from another. */
+      const stepDigest = (entrypoint: string) => closureDigest(entrypoint, Effect.succeed([]));
+      /**
+       * The source a live test speaks for: `entrypoint`'s import closure and, on a host that lists
+       * its files, all of src/ for a module whose imports cannot be resolved statically, since
+       * src/ ships whole. Never the rest of the workspace: a note or a probe there runs nothing.
+       */
+      const liveTestDigest = (entrypoint: string) => {
+        const listed: Effect.Effect<readonly string[], unknown> =
+          dependencies.workspaceFiles ?? Effect.succeed([]);
+        return closureDigest(
+          entrypoint,
+          Effect.map(listed, (paths) => paths.filter((path) => path.startsWith("src/"))),
+        );
+      };
       /** A write Guardian labelled, as the outcome reviewer tracks it. */
       const trackedWrite = (
         executionId: string,
@@ -4431,6 +4461,13 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
       const liveTestReplaced: LiveTestRecord[] = recoveredLiveTests.filter(
         (record) => record.retired === true,
       );
+      /** How many of those each version dropped, oldest first, past the ones it keeps. */
+      const liveTestsDropped: Record<LiveTestVersion, number> = {
+        playwright: recovered?.liveTestsDropped?.playwright ?? 0,
+        http: recovered?.liveTestsDropped?.http ?? 0,
+      };
+      const droppedOf = (version: LiveTestVersion) =>
+        liveTestsDropped[version] === 0 ? {} : { retiredDropped: liveTestsDropped[version] };
       /**
        * This attempt's judged live test batches that an execution review may still read, oldest
        * first, each with the digest of the source it ran and the failing cases a later pass on the
@@ -4499,7 +4536,8 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
         Effect.suspend(() =>
           Effect.forEach(
             [...new Set(batchHistory.map(({ batch }) => batch.entrypoint))],
-            (entrypoint) => stepDigest(entrypoint).pipe(Effect.map((digest) => [entrypoint, digest] as const)),
+            (entrypoint) =>
+              liveTestDigest(entrypoint).pipe(Effect.map((digest) => [entrypoint, digest] as const)),
           ),
         ).pipe(
           Effect.map((digests) => {
@@ -4685,7 +4723,7 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
         Effect.gen(function* () {
           const host = dependencies.liveTests;
           if (host === undefined) return { problem: "This host runs no live test batches." };
-          const key = `${entrypoint}\n${(yield* stepDigest(entrypoint)) ?? ""}`;
+          const key = `${entrypoint}\n${(yield* liveTestDigest(entrypoint)) ?? ""}`;
           const known = liveTestSchemas.get(key);
           const schemas =
             known === undefined ? yield* Effect.either(host.schemas(entrypoint)) : Either.right(known);
@@ -4713,7 +4751,7 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
         Effect.gen(function* () {
           const read = yield* readCasesFile;
           const file = Either.isRight(read) ? read.right : emptyCases;
-          const digest = yield* stepDigest(entrypoint);
+          const digest = yield* liveTestDigest(entrypoint);
           const cases = file.cases.map((testCase) => ({
             ...caseView(testCase, countedRecord(entrypoint, testCase.id), digest),
             ...(options.show?.includes(testCase.id) &&
@@ -4879,7 +4917,7 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
               instruction:
                 "A next_page case needs the list fields in the tool's schemas: the string input cursor and output next_cursor, which listInputFields and listOutputFields from pomerado/runtime give. Add them, or drop next_page. Nothing was executed.",
             });
-          const digest = yield* stepDigest(request.entrypoint);
+          const digest = yield* liveTestDigest(request.entrypoint);
           if (digest === undefined)
             return JSON.stringify({
               kind: "host_live_tests",
@@ -4975,7 +5013,7 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
               ),
             );
           // The source the batch ran: a change while it ran leaves its results stale.
-          const after = yield* stepDigest(request.entrypoint);
+          const after = yield* liveTestDigest(request.entrypoint);
           const sourceDigest = after === digest ? digest : "changed_while_running";
           const verdicts: Record<string, number> = {};
           const judgedRuns = result.cases.flatMap((run) => {
@@ -5070,8 +5108,10 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
               const ofVersion = liveTestReplaced.filter(
                 (entry) => liveTestVersion(entry.entrypoint) === version,
               );
-              for (const dropped of ofVersion.slice(0, Math.max(0, ofVersion.length - maximumBatchCases)))
+              for (const dropped of ofVersion.slice(0, Math.max(0, ofVersion.length - maximumBatchCases))) {
                 liveTestReplaced.splice(liveTestReplaced.indexOf(dropped), 1);
+                liveTestsDropped[version] += 1;
+              }
             }
             records.set(run.id, {
               id: run.id,
@@ -5177,9 +5217,10 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
             {
               version: published,
               entrypoint,
-              sourceDigest: yield* stepDigest(entrypoint),
+              sourceDigest: yield* liveTestDigest(entrypoint),
               records: recordsOf(published),
               replaced: replacedOf(published),
+              ...droppedOf(published),
               ...(yield* inputSchemaOf(entrypoint)),
             },
           ];
@@ -5204,9 +5245,10 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
               versions.push({
                 version: "http",
                 entrypoint: httpEntrypoint,
-                sourceDigest: yield* stepDigest(httpEntrypoint),
+                sourceDigest: yield* liveTestDigest(httpEntrypoint),
                 records: recordsOf("http"),
                 replaced: replacedOf("http"),
+                ...droppedOf("http"),
                 ...(yield* inputSchemaOf(httpEntrypoint)),
               });
           }
@@ -5291,7 +5333,7 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
           const named = Either.isLeft(read)
             ? []
             : yield* Effect.forEach(entrypoints, (entrypoint) =>
-                stepDigest(entrypoint).pipe(
+                liveTestDigest(entrypoint).pipe(
                   Effect.flatMap((digest) =>
                     digest === undefined
                       ? Effect.succeed({ now: [], afterEdit: [] })
@@ -6103,7 +6145,7 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
                           liveTests: liveTests.record,
                           testedFields: fillsOnSource(
                             proposed.entrypoint,
-                            yield* stepDigest(proposed.entrypoint),
+                            yield* liveTestDigest(proposed.entrypoint),
                           ),
                         },
                       ]),
@@ -6752,7 +6794,12 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
                     " A fresh reviewed example read requires an available live host and host repeatableRead:true within the same input/account after confirmed executor cleanup. Otherwise never repeat the example or a write step that may have committed.",
                 );
               }
-              return yield* publicationResult(publication.right, coverage, assumptions);
+              return yield* publicationResult(
+                publication.right,
+                coverage,
+                assumptions,
+                liveTests?.record,
+              );
             }).pipe(recordPublicationDecision),
           ),
         // One open request at a time: the execution permit is held while the caller decides.
@@ -7781,6 +7828,9 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
         // latest. The HTTP version's results go in their own field, which an older worker drops.
         ...liveTestsCheckpoint("playwright", "liveTests"),
         ...liveTestsCheckpoint("http", "liveTestsHttp"),
+        ...(liveTestsDropped.playwright + liveTestsDropped.http === 0
+          ? {}
+          : { liveTestsDropped: { ...liveTestsDropped } }),
         ...(liveTestsOutOfTime ? { liveTestsOutOfTime: true } : {}),
         ...(signedInTestInputs.length === 0 ? {} : { signedInTestInputs: [...signedInTestInputs] }),
         ...(reviewer.tracked().length === 0 ? {} : { outcomeWrites: reviewer.tracked() }),

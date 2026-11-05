@@ -21,7 +21,7 @@ import { Deadline } from "../../src/runtime/deadline.js";
 import type { FieldFill } from "../../src/runtime/output-lint.js";
 import { validateAnswer } from "../../src/runtime/input-request.js";
 import { makeMintContinuationFixture, readAllow } from "../support/mint-fixtures.js";
-import { portableJobSession } from "../support/portable-mint.js";
+import { portableJobSession, portableMintProjection } from "../support/portable-mint.js";
 
 // A read signed out designs its own live test cases, runs them as batches and reads every result;
 // publication review gets the host's own record of them. These drive the minter's live_tests tool
@@ -348,6 +348,172 @@ it("runs the cases a read designed as one batch and hands publication the host's
   expect(published.seen[0]?.coverage).toContain(
     "4 cases. Playwright version (src/tool.ts): 3 pass, 1 fail, 0 inconclusive; 1 passed cold.",
   );
+});
+
+/** A build Guardian allowed, as a host's publish returns it. */
+const allowedBuild = (rationale: string) => ({
+  review: { reviewId: "review_publication", outcome: "allow" as const, rationale },
+  publicationRef: "published_revision",
+  diagnostics: [],
+});
+const allowed = (rationale: string): MintDependencies["publish"] => () =>
+  Effect.succeed(allowedBuild(rationale));
+
+// A host keeps a build by what its outcome says: the summary's coverage comes after the minter's
+// own words, so only these fields tell it what the live tests showed and what Guardian said.
+it("reports a published read's live test counts and Guardian's review in its outcome", async () => {
+  const { host } = liveTestHost({
+    "sort-price": {
+      status: "failed",
+      errorClass: "TimeoutError",
+      message: "locator.click: Timeout 5000ms exceeded",
+      frame: "src/tool.ts:12",
+    },
+    nothing: { status: "inconclusive", reason: "deadline" },
+  });
+  let root = "";
+  const f = await fixture(
+    async (_request, index) => {
+      if (index === 0) await writeWorkspace(root, { "test/cases.json": JSON.stringify(withPassing(cases, 3)) });
+      return (
+        [
+          call("execute", example, "example"),
+          call("live_tests", runAll, "run"),
+          call("finish_build", finish, "finish"),
+        ][index] ?? prose()
+      );
+    },
+    {
+      liveTests: host,
+      deadline: Deadline.after(30 * 60_000),
+      reviewAndExecute: completedExample,
+      publish: allowed("Reads the catalog only, for the account secret-canary."),
+      projection: portableMintProjection(["secret-canary"]),
+    },
+    read,
+  );
+  root = (f.workspace as unknown as { root: string }).root;
+  await writeWorkspace(root, { "src/tool.ts": toolSource });
+  const outcome = await f.run();
+
+  expect(outcome.build).toBe("published");
+  expect(outcome.liveTests).toEqual({
+    versions: [
+      {
+        version: "playwright",
+        entrypoint: "src/tool.ts",
+        sourceDigest: expect.any(String),
+        counts: { pass: 5, fail: 1, inconclusive: 1 },
+        coldPasses: expect.any(Number),
+      },
+    ],
+  });
+  // Guardian's words reach the host screened, as they reach the minter.
+  expect(outcome.publicationReview).toEqual({
+    reviewId: "review_publication",
+    rationale: expect.stringContaining("Reads the catalog only"),
+  });
+  expect(outcome.publicationReview?.rationale).not.toContain("secret-canary");
+  // Counts only: a case's input, purpose and output may hold what a page returned.
+  const reported = JSON.stringify(outcome.liveTests);
+  for (const held of ["lamp", "Timeout", "Sorting by price", "sort-price"])
+    expect(reported).not.toContain(held);
+});
+
+it("reports the live tests and the review of the publication that published", async () => {
+  const nothing = {
+    status: "completed",
+    output: { results: [], has_next_page: false, next_cursor: null },
+  } as const;
+  const { host } = liveTestHost((batch) => ({
+    nothing,
+    ...(batch === 0
+      ? { "sort-price": { status: "failed", errorClass: "Error", message: "No sort" } }
+      : {}),
+  }));
+  let published = 0;
+  let root = "";
+  const f = await fixture(
+    async (_request, index) => {
+      // The fix Guardian's denial asked for, whose results replace the first batch's.
+      if (index === 3) await writeWorkspace(root, { "src/tool.ts": `${toolSource}// fixed\n` });
+      return (
+        [
+          call("live_tests", runAll, "run"),
+          call("execute", example, "example"),
+          call("finish_build", finish, "denied"),
+          call("live_tests", runAll, "again"),
+          call("execute", example, "fixed_example"),
+          call("finish_build", finish, "published"),
+        ][index] ?? prose()
+      );
+    },
+    {
+      liveTests: host,
+      deadline: Deadline.after(30 * 60_000),
+      reviewAndExecute: completedExample,
+      publish: () =>
+        published++ === 0
+          ? Effect.fail(
+              new MintFailure({
+                code: "ReviewDenied",
+                review: { outcome: "deny", reviewId: "review_denied", rationale: "Sorting fails." },
+              }),
+            )
+          : Effect.succeed(allowedBuild("Sorting works now.")),
+    },
+    read,
+  );
+  root = (f.workspace as unknown as { root: string }).root;
+  await writeWorkspace(root, {
+    "src/tool.ts": toolSource,
+    "test/cases.json": JSON.stringify(withPassing(cases, 3)),
+  });
+  const outcome = await f.run();
+
+  expect(outcome.build).toBe("published");
+  expect(outcome.liveTests?.versions[0]?.counts).toEqual({ pass: 7, fail: 0, inconclusive: 0 });
+  expect(outcome.publicationReview).toEqual({
+    reviewId: "review_publication",
+    rationale: "Sorting works now.",
+  });
+});
+
+it("reports no live tests or review on a build that published nothing", async () => {
+  const { host } = liveTestHost({});
+  let root = "";
+  const f = await fixture(
+    async (_request, index) => {
+      if (index === 0) await writeWorkspace(root, { "test/cases.json": JSON.stringify(cases) });
+      return (
+        [
+          call("live_tests", runAll, "run"),
+          call("execute", example, "example"),
+          call("finish_build", finish, "denied"),
+        ][index] ?? prose()
+      );
+    },
+    {
+      liveTests: host,
+      deadline: Deadline.after(30 * 60_000),
+      reviewAndExecute: completedExample,
+      publish: () =>
+        Effect.fail(
+          new MintFailure({
+            code: "ReviewDenied",
+            review: { outcome: "deny", reviewId: "review_denied", rationale: "Never." },
+          }),
+        ),
+    },
+    read,
+  );
+  root = (f.workspace as unknown as { root: string }).root;
+  await writeWorkspace(root, { "src/tool.ts": toolSource });
+  const outcome = await f.run();
+
+  expect(outcome.build).toBe("incomplete");
+  expect(outcome.liveTests).toBeUndefined();
+  expect(outcome.publicationReview).toBeUndefined();
 });
 
 it("marks results stale in the publication record when the source changed after they ran", async () => {
@@ -852,12 +1018,18 @@ it("keeps a failing case in the publication record after the minter deletes or c
   );
   root = (f.workspace as unknown as { root: string }).root;
   await writeWorkspace(root, { "src/tool.ts": toolSource, "test/cases.json": JSON.stringify(cases) });
-  await f.run();
+  const outcome = await f.run();
   expect(batches).toHaveLength(2);
   const record = published.seen[0]?.liveTests as {
     cases: { id: string }[];
     retired: Record<string, unknown>[];
   };
+  // The host reads the failures the minter dropped, not only the clean count they left.
+  expect(outcome.liveTests?.versions[0]?.retired).toEqual({
+    total: 2,
+    lastFailed: 2,
+    stillCounting: 2,
+  });
   expect(record.cases.map((testCase) => testCase.id)).not.toContain("sort-price");
   expect(record.retired).toEqual(
     expect.arrayContaining([
@@ -923,6 +1095,35 @@ const batchesThenPublish = async (
     coverage: published.seen[0]?.coverage ?? "",
   };
 };
+// The host keeps the latest retired failures of each version, so the rest leave a count behind.
+it("counts the retired failures the host dropped past the ones it keeps", async () => {
+  const failing = (input: string) =>
+    Array.from({ length: 26 }, (_unused, index) => ({
+      id: `case-${index}`,
+      purpose: "A query that fails.",
+      input: { query: `${input}-${index}` },
+      expect: "result",
+    }));
+  const file = (input: string) => ({
+    "src/tool.ts": toolSource,
+    "test/cases.json": JSON.stringify({ cases: failing(input) }),
+  });
+  const failed = { status: "failed", errorClass: "TimeoutError" } as const;
+  const failures = Object.fromEntries(failing("any").map(({ id }) => [id, failed]));
+  // The third batch passes, so the build publishes with the failures it replaced.
+  const outcomes = (batch: number) => (batch < 2 ? failures : {});
+  const record = (await batchesThenPublish(outcomes, [
+    file("first"),
+    file("second"),
+    file("third"),
+  ])) as unknown as {
+    versions: { retiredDropped?: number }[];
+    retired: unknown[];
+  };
+  expect(record.retired).toHaveLength(50);
+  expect(record.versions[0]?.retiredDropped).toBe(2);
+});
+
 const otherStore = (expectation: string) =>
   JSON.stringify({
     cases: [
@@ -1753,6 +1954,54 @@ it("restores an older checkpoint's results as the Playwright version's", async (
   expect(record.cases.every((testCase) => testCase.results["http"]?.status === "not_run")).toBe(true);
 });
 
+it("keeps the count of dropped retired failures across a takeover", async () => {
+  const { host } = liveTestHost({
+    nothing: { status: "completed", output: { results: [], has_next_page: false, next_cursor: null } },
+  });
+  const checkpoints: { agent: MintAgentSnapshot; harness: MintHarnessSnapshot }[] = [];
+  const files = { "src/tool.ts": toolSource, "test/cases.json": JSON.stringify(cases) };
+  const before = checkpointingMinter(
+    (index) =>
+      [call("execute", example, "example"), call("live_tests", runAll, "run")][index] ?? prose(),
+  );
+  const first = await fixture(() => prose(), {
+    model: before.model,
+    liveTests: host,
+    deadline: Deadline.after(30 * 60_000),
+    reviewAndExecute: completedExample,
+    agentRecovery: {
+      save: (agent, harness) =>
+        Effect.sync(() => {
+          checkpoints.push({ agent, harness });
+        }),
+    },
+  }, read);
+  await writeWorkspace((first.workspace as unknown as { root: string }).root, files);
+  await first.run().catch(() => undefined);
+  const saved = checkpoints.find((checkpoint) => (checkpoint.harness.liveTests ?? []).length > 0);
+  if (saved === undefined) throw new Error("No checkpoint with live test results");
+  const restored = Schema.decodeUnknownSync(MintHarnessSnapshot)(
+    JSON.parse(JSON.stringify({ ...saved.harness, liveTestsDropped: { playwright: 3, http: 0 } })),
+  );
+
+  const published = publications();
+  const after = checkpointingMinter(
+    (index) => [call("finish_build", finish, "finish")][index] ?? prose(),
+  );
+  const second = await fixture(() => prose(), {
+    model: after.model,
+    liveTests: host,
+    deadline: Deadline.after(30 * 60_000),
+    reviewAndExecute: completedExample,
+    publish: published.publish,
+    agentRecovery: { initial: { agent: saved.agent, harness: restored }, save: () => Effect.void },
+  }, read);
+  await writeWorkspace((second.workspace as unknown as { root: string }).root, files);
+  await second.run();
+  const record = published.seen[0]?.liveTests as { versions: { retiredDropped?: number }[] };
+  expect(record.versions[0]?.retiredDropped).toBe(3);
+});
+
 // A count's honest answer to an input that matches nothing is zero, a filled value the judge reads
 // as a result, never as empty. The minter marks that case `noMatch`, and the record says so.
 const countSchemas = {
@@ -2216,6 +2465,76 @@ it("runs no live tests for a write, signed in or not", async () => {
   await f.run();
   expect(resultOf(f.requests[2], "run")).toMatchObject({ status: "unavailable" });
   expect(batches).toHaveLength(0);
+});
+
+it("marks a signed-in read's reported live tests as run signed in", async () => {
+  const { host } = liveTestHost({});
+  const f = await fixture(
+    (_request, index) =>
+      [
+        call("execute", signInStep, "sign_in"),
+        call("execute", example, "example"),
+        call("live_tests", runAll, "run"),
+        call("finish_build", finish, "finish"),
+      ][index] ?? prose(),
+    {
+      liveTests: host,
+      deadline: Deadline.after(30 * 60_000),
+      reviewAndExecute: signingIn,
+      publish: allowed("Reads the signed-in account's orders."),
+    },
+    read,
+  );
+  const root = (f.workspace as unknown as { root: string }).root;
+  await writeWorkspace(root, {
+    "src/tool.ts": toolSource,
+    "src/sign-in.ts": toolSource,
+    "test/cases.json": JSON.stringify(combined),
+  });
+  const outcome = await f.run();
+
+  expect(outcome.build).toBe("published");
+  expect(outcome.liveTests).toMatchObject({
+    signedIn: true,
+    versions: [{ version: "playwright", counts: { pass: 2, fail: 0, inconclusive: 0 } }],
+  });
+});
+
+// A write's act session is the one run that proves it, so it has no live tests to report.
+it("reports Guardian's review and no live tests on a published write", async () => {
+  const { host } = liveTestHost({});
+  const f = await fixture(
+    (_request, index) =>
+      [
+        call("execute", { ...example, purpose: "act" }, "act"),
+        call("finish_build", finish, "finish"),
+      ][index] ?? prose(),
+    {
+      liveTests: host,
+      deadline: Deadline.after(30 * 60_000),
+      reviewAndExecute: () =>
+        Effect.succeed({
+          executionId: "execution_one",
+          status: "completed" as const,
+          effect: "verified" as const,
+          confirmation: "message",
+          resultRef: "protected_result",
+          observations: "Saved",
+        }),
+      publish: allowed("Saves the note and reads it back."),
+    },
+    { ...read, effect: "write" },
+  );
+  const root = (f.workspace as unknown as { root: string }).root;
+  await writeWorkspace(root, { "src/tool.ts": toolSource });
+  const outcome = await f.run();
+
+  expect(outcome.build).toBe("published");
+  expect(outcome.liveTests).toBeUndefined();
+  expect(outcome.publicationReview).toEqual({
+    reviewId: "review_publication",
+    rationale: "Saves the note and reads it back.",
+  });
 });
 
 // Testing scope follows what the tool is now. A repair of a read that starts signed out runs its

@@ -17,7 +17,7 @@
     "node": ">=24.21.0 <25"
   },
   "pomerado": {
-    "hostProtocol": 1
+    "hostProtocol": 2
   },
   "bin": {
     "pomerado": "dist/typescript/src/standalone/cli.js",

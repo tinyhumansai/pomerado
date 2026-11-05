@@ -45,28 +45,50 @@ count, its `+` and `−` controls, the control that adds the first one, such as 
 the site draws over the stepper as `overlays`. It presses one step at a time and reads the count
 back after each, since many sites drop a press made under their loader or post each press as its
 own cart write, so presses sent together get lost or add too many. Each press is a cart write:
-enter the commit mark before the call, as the writes skill says. It returns `{ set: true,
-quantity, presses }`, or `{ set: false, reason: "limit", quantity, presses }` when the site takes
-no more, its next control greyed out or its own `limit` sign showing: return the site's limit as
-the tool's answer, the line as it stands. A press that leaves the count as it was, or moves it by
-more than one, fails as a `QuantityFailure` with the count read: read the cart again before
-anything else, since a press may have landed. Never press a stepper with clicks of your own.
+enter the commit mark before the call, as the writes skill says. For a quantity that adds, pass the
+count read before the write plus the input. It returns `{ set: true, quantity, presses }`, or `{
+set: false, reason: "limit", quantity, presses }` when the site takes no more, or no fewer, its
+next control greyed out, its own `limit` sign showing or a step it showed and then took back:
+return the site's limit as the tool's answer, the line as it stands, with the quantity asked and
+the one kept in `saved_differences`. After its last press it waits for the page to show no progress
+for 2 s, so a site that saves the count a while after the last press, and then caps or reverts it,
+has answered first: a count the site takes back, as far as the count the line started from, comes
+back as the site's limit at that count. A page not yet quiet at the deadline, or a save still in
+flight then, fails as `unanswered`, since the write's outcome isn't known; on a page that never
+goes quiet it stops waiting after 15 s, once the requests then in flight end. Leave the call's
+deadline room for that wait. Decode its result with `QuantityOutcome`. A press that leaves the
+count as it was, moves it by more than one or gets no settled answer by the deadline (`unanswered`)
+fails as a `QuantityFailure` with the count read: read the cart again before anything else, since a
+press may have landed. It throws `too_many_steps` when the count is, or the page moves it, more
+than `maxSteps` (20) away, which can follow a press. A quantity typed into the site's own quantity
+box and read back needs no stepper. Never press a stepper with clicks of your own: publication
+review sends one back ("Own stepper"). `references/cart-stepper.ts` sets a line's quantity and
+lists the site's limit in `saved_differences`; it shows the stepper alone, so a cart tool built on
+it still reads the cart's lines before and after its write ("Read the cart before and after").
 
 ## Read amounts
 
 Read money from the page with the SDK's `readAmount` and `readAmounts`: import `amountCode` from
-the runtime and paste it after `visibleTextCode`. `readAmounts(rows, { label, amount }, {
-currency })` reads a bill's or a cart's lines in one call, each as `{ label, amount, struck, text
-}`, and `readAmount(locator, { currency })` one element, such as a total or the amount an order
-button names. `amount` is `{ minor, currency, free }`, in the money form the core skill gives: a
-deduction, such as a wallet balance or a discount, is negative; a line the site shows as FREE is
+the runtime and paste it after `visibleTextCode`. `readAmounts(rows, { label, amount }, { currency
+})` reads a bill's or a cart's lines in one call, each as `{ label, amount, struck, text }`, with
+`label` and `amount` as CSS selectors inside each row, and `readAmount(locator, { currency })` one
+element, such as a total or the amount an order button names. `amount` is `{ minor, currency, free
+}`, in minor units as the core skill gives money, and signed: an amount the page shows with a
+minus, or in brackets around an amount showing its currency, such as (₹20), is negative, as a
+wallet deduction often is, and an unsigned one, a bare bracketed number included, is positive, so
+tell a deduction the page shows unsigned by its line's own label; a line the site shows as FREE is
 zero with `free`; a free gift's zero line is zero; and an amount struck out beside the live one,
 such as an old price or a waived fee, comes back in `struck`, never as the amount. Pass as
-`currency` the currency the page prices in, for a bare number or a symbol several currencies
-share. Name the element that holds one amount: text with two numbers, such as a count beside a
-price, is no amount (null). `parseAmount(text, { currency })` reads text the tool already holds
-the same way. Return every line the page shows, fees, tips, donations, wallets and zero-priced
-gifts included, as data, and leave none out or fold it into another.
+`currency` the currency the page prices in, for a bare number, a symbol several currencies share,
+or a currency code that is also an English word, such as ALL or TOP, which names a currency only
+when it is that `currency`. A deduction may show as a minus, a dash and a space ("- 20,00 €"), or
+brackets, and comes back negative. Name the element that holds one amount: text with two numbers,
+such as a count beside a price, is no amount (null). `parseAmount(text, { currency })` reads text
+the tool already holds the same way. Decode `readAmount`'s result with `AmountRead` and
+`readAmounts`' with `AmountLines`. Return every line the page shows, fees, tips, donations, wallets
+and zero-priced gifts included, as data, and leave none out or fold it into another. Publication
+review sends back an amount read with a pattern or `parseFloat` of the tool's own ("Own amount
+parsing"). `references/bill-lines.ts` reads a bill's lines and its total.
 
 ## Read the cart before and after
 
@@ -111,7 +133,8 @@ runtime and pasting it, on the element that holds the code alone, an image, a ca
 inside a frame through `frameLocator` too. It returns the code's text, such as a `upi://pay` link,
 and fails as `no_code` when the element shows no code it can read. When the page holds that link
 itself, such as in a link's `href`, prefer reading it there. Wait for the code to show first, and
-press a control that reveals it with a real click.
+press a control that reveals it with a real click. `references/payment-qr.ts` reads the link a
+payment QR code holds and checks its amount against the order's.
 
 ## Minimums and refusals
 
