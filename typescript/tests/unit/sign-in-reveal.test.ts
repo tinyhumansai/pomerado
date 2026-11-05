@@ -452,6 +452,7 @@ describe("the forms of a revealed value the run masks", () => {
     expect(await Effect.runPromise(run)).toEqual({ alreadySignedIn: false });
     expect(fake.fills[0]?.values).toEqual(["9812345678"]);
     expect(secrets.redact("9812345678")).toBe("[private]");
+    expect(secrets.redact("98123 45678")).toBe("[private]");
   });
 
   it("masks a number revealed for a username field in each form a page writes it", async () => {
@@ -470,6 +471,35 @@ describe("the forms of a revealed value the run masks", () => {
     const run = signIn({ fake, recipe: shopRecipe(), ask: owner().ask, reveal: host().reveal, secrets });
     expect(await Effect.runPromise(run)).toEqual({ alreadySignedIn: false });
     expect(secrets.redact("+91 98123 45678, 98123-45678")).toBe("[private], [private]");
+  });
+
+  it("masks a number outside the phone shape revealed for a username field, in each form a page writes it", async () => {
+    const secrets = makeRunSecrets();
+    const options = { loginFields: [{ selector: "#member", accepts: ["username"] }] };
+    const fake = shop(options);
+    const recipe = shopRecipe(options);
+    const { reveal } = host({ sec_phone: "0170/5550100" });
+    const run = signIn({ fake, recipe, ask: owner().ask, reveal, secrets });
+    expect(await Effect.runPromise(run)).toEqual({ alreadySignedIn: false });
+    expect(fake.fills[0]?.values).toEqual(["0170/5550100"]);
+    expect(secrets.redact("0170 5550100, 170-5550100")).toBe("[private], [private]");
+  });
+
+  it.each([
+    ["a phone field", undefined, "+49 170/5550100"],
+    ["a phone field, with no calling code", undefined, "0170/5550100"],
+    ["a national field", [national], "+49 170/5550100"],
+    ["a national field, with no calling code", [national], "0170/5550100"],
+  ])("types nothing of a number outside the phone shape revealed for %s", async (_name, loginFields, revealed) => {
+    const options = loginFields === undefined ? {} : { loginFields };
+    const fake = shop(options);
+    const recipe = shopRecipe(options);
+    const { reveal } = host({ sec_phone: revealed });
+    const failed = await Effect.runPromise(
+      Effect.flip(signIn({ fake, recipe, ask: owner().ask, reveal })),
+    );
+    expect(failed).toEqual(new SignInRunFailed({ code: "NeedsInput", reason: "reveal_refused" }));
+    expect(fake.fills).toEqual([]);
   });
 
   it("masks each field's own form when one handle fills fields of two kinds", async () => {

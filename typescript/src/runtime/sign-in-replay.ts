@@ -41,6 +41,7 @@ import { typedValues } from "./autofill-values.js";
 import { logicalRejectedField } from "./autofill-rejection.js";
 import type { InputAsker } from "./input-request.js";
 import { bareCode, codeDoesNotFit, fitsCodeBoxes } from "./login-field-asks.js";
+import { unshapedPhone } from "./login-values.js";
 import { makeRunLogin } from "./run-login.js";
 import { trustedUrl } from "./sign-in-origins.js";
 import { entryNamesAddress, pinnedWorkspaceOrigin, workspaceRelation } from "./workspace-origin.js";
@@ -165,7 +166,7 @@ export type WorkspaceOriginEvent =
 /**
  * What the local host masks: each value a sign-in types, and a text checked for one. A value that
  * may be a `phone` number, as any identifier may, also counts in the forms a site writes a number
- * back in, when it has a phone's shape.
+ * back in, when it is written as a number.
  */
 export interface RunSignInSecrets {
   readonly register: (value: string, kind?: "phone") => void;
@@ -179,7 +180,8 @@ export interface RunSignInSecrets {
  * A value that is no handle of the host's comes back as it is. Pomerado masks each value it gets
  * back, in the forms it is typed in. Only a run's sign-in reveals: a build's types its answers as
  * given.
- * - Any failure, defect or empty answer refuses, and that screen types nothing; an interrupted
+ * - Any failure, defect or empty answer refuses, and that screen types nothing, as does a value
+ *   for a phone field written as a number but not as a phone (`unshapedPhone`); an interrupted
  *   reveal interrupts the sign-in. A value is typed only in a document of the origin it was
  *   revealed for, so a field the page moves to another origin before it is typed is refused, and
  *   the run fails `NeedsInput` (`revealed_origin_changed`), as a run to try again.
@@ -196,11 +198,12 @@ export type RevealSignInValue = (value: string, origin: string) => Effect.Effect
 
 /**
  * Why a screen's fill stopped short on what the host revealed: the host refused to reveal a value
- * there, its reveal failed, died or gave no text, or the inspection found no document for the
- * field (`reveal_refused`); the code it revealed does not fill the screen's one-character code
- * boxes (`codeDoesNotFit`), and the screen typed nothing; or the page moved a field to another
- * origin after its value was revealed, and it was not typed (`revealed_origin_changed`). The run
- * then fails `NeedsInput` with it.
+ * there, its reveal failed, died or gave no text, the inspection found no document for the field,
+ * or a phone field's value is written as a number but not as a phone (`unshapedPhone`), whose
+ * digits a picker or a `national` field would take apart (`reveal_refused`); the code it revealed
+ * does not fill the screen's one-character code boxes (`codeDoesNotFit`), and the screen typed
+ * nothing; or the page moved a field to another origin after its value was revealed, and it was
+ * not typed (`revealed_origin_changed`). The run then fails `NeedsInput` with it.
  */
 type RevealRefusal = "reveal_refused" | typeof codeDoesNotFit | "revealed_origin_changed";
 
@@ -265,9 +268,11 @@ const revealedValues = (
         shown.set(key, revealed);
         secrets.register(revealed);
       }
-      // Each field's own form, as one handle may fill fields that take it differently.
-      for (const form of revealedForms(input.step.fields[index], revealed)) secrets.register(form);
       const field = input.step.fields[index];
+      if (field?.slot === "phone" && unshapedPhone(revealed))
+        return { refused: "reveal_refused", target: index };
+      // Each field's own form, as one handle may fill fields that take it differently.
+      for (const form of revealedForms(field, revealed)) secrets.register(form);
       if (field !== undefined && isIdentifier(field.slot)) secrets.register(revealed, "phone");
       values.push(revealed);
       revealedFor.push(origin);

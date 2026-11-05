@@ -45,6 +45,20 @@ export const privateIdentifierLimit = 128;
 export const emailShaped = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(value.trim());
 export const phoneShaped = (value: string) =>
   /^\+?[\d\s().-]+$/u.test(value.trim()) && value.replace(/\D/gu, "").length >= 7;
+/**
+ * Whether `value` is written as a number, whatever marks stand between its digits, and so is no
+ * host's handle, name or email address: it holds no letter, or starts with a `+` and a digit.
+ */
+export const writtenAsNumber = (value: string) =>
+  !/\p{L}/u.test(value) || /^\s*\+\s*\d/u.test(value);
+/**
+ * Whether a login's answer of the phone kind can't be used: it is written as a number
+ * (`writtenAsNumber`) but not as a phone (`phoneShaped`), such as digits grouped by slashes, a
+ * number with an extension or digits in another script. A field would take other digits than the
+ * number's. A value that isn't written as a number may be a host's handle, which only its reveal
+ * can tell, so it stands.
+ */
+export const unshapedPhone = (value: string) => writtenAsNumber(value) && !phoneShaped(value);
 
 /**
  * The kind of an answer to the kinds a field accepts: an email-shaped answer is an email address,

@@ -187,6 +187,22 @@ describe("a phone number", () => {
     }
   });
 
+  // Answers of a phone kind are refused at this shape, but a saved login's or another kind's value
+  // never met that check, and a site still writes it back in its own format.
+  it.each([
+    ["+91/98765/00000", ["+91 98765 00000", "98765-00000", "9876500000"]],
+    ["+91\u201398765\u201300000", ["+91 98765 00000", "98765 00000", "9876500000"]],
+    ["+44 7700,900123", ["+44 7700 900123", "07700 900123", "7700900123"]],
+    ["0170/5550100", ["0170 5550100", "170/5550100", "1705550100"]],
+  ])("masks and refuses a number outside the phone shape, %s", (number, shown) => {
+    const secrets = phone(number);
+    expect(secrets.redact(number)).toBe("[private]");
+    for (const form of shown) {
+      expect(secrets.redact(`Sent to ${form}.`)).toBe("Sent to [private].");
+      expect(refused(secrets, `const shown = "${form}";`)).toBe(true);
+    }
+  });
+
   it("leaves another number and a longer run of digits as they are", () => {
     const secrets = phone("+15555550123");
     for (const text of ["+1 (555) 555-0124", "1-555-555-01234", "555-0123", "order 555 01"]) {
@@ -198,6 +214,14 @@ describe("a phone number", () => {
   it("registers a value of no phone shape only as given, as a host's handle is", () => {
     const secrets = phone("sec_1234567890");
     expect(secrets.redact("sec_1234567890 1234567890")).toBe("[private] 1234567890");
+  });
+
+  it.each([
+    ["a handle that starts as a number written in international form does", "00ab12345678", "12345678"],
+    ["an email address", "ada.5550100123@example.test", "5550100123"],
+  ])("registers %s only as given", (_name, value, digits) => {
+    const secrets = phone(value);
+    expect(secrets.redact(`${value} ${digits}`)).toBe(`[private] ${digits}`);
   });
 
   it("registers no digits a number has too few of to tell it from any other", () => {

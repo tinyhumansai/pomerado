@@ -1,4 +1,5 @@
 import { Data, Either, Schema, type Effect } from "effect";
+import { unshapedPhone } from "./login-values.js";
 
 /**
  * One way for a running mint, maintenance or run to ask its caller. A
@@ -395,7 +396,9 @@ export class InvalidAnswer extends Data.TaggedError("InvalidAnswer")<{
     | "username_not_allowed"
     | "password_required"
     /** The word resend, on a one-time code question that offers no resend (`allowResend`). */
-    | "resend_not_offered";
+    | "resend_not_offered"
+    /** A login of the phone kind written as a number, but not as a phone (`unshapedPhone`). */
+    | "phone_unshaped";
 }> {}
 
 const decodeAs = <A, I>(schema: Schema.Schema<A, I>, value: unknown) =>
@@ -518,6 +521,8 @@ const validateOne = (
           return invalid("unoffered_option");
         if (identifierKinds.length === 0 && decoded.right.identifierKind !== undefined)
           return invalid("unexpected_answer");
+        if (kind === "phone" && unshapedPhone(decoded.right.username ?? ""))
+          return invalid("phone_unshaped");
         if (password && decoded.right.password === undefined) return invalid("password_required");
         if (!password && decoded.right.password !== undefined) return invalid("unexpected_answer");
         return Either.right({ type: "credential", value: decoded.right });

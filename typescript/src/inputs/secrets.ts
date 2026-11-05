@@ -7,7 +7,7 @@ import {
 } from "../destinations/payment-frames.js";
 import { callingCode, nationalDigits } from "../destinations/login-field-formats.js";
 import { shownForms } from "../privacy/value-forms.js";
-import { phoneShaped } from "../runtime/login-values.js";
+import { writtenAsNumber } from "../runtime/login-values.js";
 
 /**
  * A short form of a secret (`shownForms`) counts in source only as a whole token, as the
@@ -51,11 +51,12 @@ const cutGapped = (digits: string) =>
  * its digits, with and without its calling code (`digits`); a global pattern for those digits
  * with `phoneGap` between each, with a trunk 0 or none and no digit adjoining them, though a percent
  * escape may stand right before them (`run`); and one for the start of the run where a cut ended
- * the text (`cut`). Undefined for a value of no phone shape, such as a host's handle, or with too
- * few digits after its calling code (`phoneLocalLeast`).
+ * the text (`cut`). Undefined for a value not written as a number, such as a host's handle, or with
+ * too few digits after its calling code (`phoneLocalLeast`). Any marks may group its digits, as
+ * a saved login or a login of another kind never met the shape a phone answer must have.
  */
 const phoneForms = (number: string) => {
-  if (!phoneShaped(number)) return undefined;
+  if (!writtenAsNumber(number)) return undefined;
   const code = callingCode(number) ?? "";
   const local = (nationalDigits(number) ?? number.replaceAll(/[^0-9]/gu, "")).replace(/^0+/u, "");
   if (local.length < phoneLocalLeast) return undefined;
@@ -81,7 +82,7 @@ export const makeRunSecrets = () => {
   /**
    * Registers each form a page or URL can show the value in (`shownForms`). For a value that may
    * be a `phone` number, its digits and their usual groupings count too (`phoneForms`), when it
-   * has a phone's shape, since a site writes the number back in its own format and a `national`
+   * is written as a number, since a site writes the number back in its own format and a `national`
    * field takes it without its calling code.
    */
   const register = (value: string, kind?: "phone") => {

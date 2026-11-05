@@ -84,6 +84,7 @@ class McpJobFailure extends Data.TaggedError("McpJobFailure")<{
     | "stale_input"
     | "invalid_answers"
     | "resend_not_offered"
+    | "phone_unshaped"
     | "retry_conflict";
 }> {}
 const requestErrors = {
@@ -92,6 +93,8 @@ const requestErrors = {
   stale_input: "This input request is no longer pending.",
   invalid_answers: "Answers do not match the pending questions.",
   resend_not_offered: "This code question offers no new code: answer with the code the site sent.",
+  phone_unshaped:
+    "This phone number can't be used as written: send it with digits, spaces, dots, dashes or brackets alone.",
   retry_conflict:
     "This idempotency key was already used for a different request. Repeat the original request with that key, or use a new key for a new request.",
 };
@@ -428,13 +431,17 @@ export const makeMcpJobs = (maxJobs = 1, kind: McpJobKind = "mint", store?: Loca
           return yield* Effect.fail(new McpJobFailure({ code: "stale_input" }));
         const validated = validateAnswer(pending.request, answers);
         // The question stays pending: the caller may answer it again.
-        if (Either.isLeft(validated))
+        if (Either.isLeft(validated)) {
+          const { reason } = validated.left;
           return yield* Effect.fail(
             new McpJobFailure({
               code:
-                validated.left.reason === "resend_not_offered" ? "resend_not_offered" : "invalid_answers",
+                reason === "resend_not_offered" || reason === "phone_unshaped"
+                  ? reason
+                  : "invalid_answers",
             }),
           );
+        }
         // Remove the request before waking its fiber, so a second submission cannot answer it again.
         delete job.pending;
         yield* Deferred.succeed(pending.answer, answers);
