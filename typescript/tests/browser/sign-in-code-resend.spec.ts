@@ -389,6 +389,54 @@ test("a press never re-posts a value in a form its control names from outside", 
   expect(posts).toEqual([]);
 });
 
+// A selector may name what a control holds, or a label for it: the click then reaches the control.
+for (const [name, control, resend] of [
+  [
+    "a span its button holds",
+    '<button formaction="/resend"><span id="label">Resend code</span></button>',
+    "#label",
+  ],
+  [
+    "a span its button holds, named by its text",
+    '<button formaction="/resend"><span>Resend code</span></button>',
+    "text=Resend code",
+  ],
+  [
+    "a label for its button",
+    '<button id="again" formaction="/resend">Again</button><label id="label" for="again">Resend code</label>',
+    "#label",
+  ],
+  [
+    "a label that holds its button",
+    '<label id="label">Resend code <input type="submit" formaction="/resend" value="Again"></label>',
+    "#label",
+  ],
+] as const) {
+  const screen = (field: string) => `<form method="post" action="/verify">
+${field}
+<label>Code <input id="code" name="code" autocomplete="one-time-code"></label>
+<button id="verify">Verify</button>
+${control}
+</form>`;
+
+  test(`a press never re-posts a value left in the form, through ${name}`, async ({ page }) => {
+    const { pressed, posts, events } = await pressOn(
+      page,
+      screen('<input id="phone" name="phone" type="tel" value="+15555550123">'),
+      { ...codeOnly, resend },
+    );
+    expect(pressed).toBe(false);
+    expect(posts).toEqual([]);
+    expect(events).toEqual([expect.objectContaining({ outcome: "refused", part: "value_held" })]);
+  });
+
+  test(`a press goes out through ${name}, from a form that holds no value`, async ({ page }) => {
+    const { pressed, posts } = await pressOn(page, screen(""), { ...codeOnly, resend });
+    expect(pressed).toBe(true);
+    expect(posts).toEqual([{ path: "/resend", form: { code: "" } }]);
+  });
+}
+
 for (const [name, field, sent] of [
   [
     "a hidden value the site wrote",
@@ -530,4 +578,29 @@ for (const [name, resend] of [
     );
     expect(pressed).toBe(false);
     expect(posts).toEqual([]);
+  });
+
+for (const [name, screen] of [
+  [
+    "a span the screen's submit holds",
+    '<label>Code <input id="code" name="code" autocomplete="one-time-code"></label><button id="verify"><span id="press">Verify</span></button>',
+  ],
+  [
+    "a label for the screen's submit",
+    '<label>Code <input id="code" name="code" autocomplete="one-time-code"></label><button id="verify">Verify</button><label id="press" for="verify">Resend code</label>',
+  ],
+  [
+    "a label for one of the screen's fields",
+    '<label id="press" for="code">Resend code</label><input id="code" name="code" autocomplete="one-time-code"><button id="verify">Verify</button>',
+  ],
+] as const)
+  test(`a press never clicks a resend that reaches ${name}`, async ({ page }) => {
+    const { pressed, posts, events } = await pressOn(
+      page,
+      `<form method="post" action="/verify">${screen}</form>`,
+      { ...codeOnly, resend: "#press" },
+    );
+    expect(pressed).toBe(false);
+    expect(posts).toEqual([]);
+    expect(events).toEqual([expect.objectContaining({ outcome: "refused", part: "same_control" })]);
   });

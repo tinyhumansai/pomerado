@@ -280,13 +280,13 @@ export type AutofillFillCall =
       readonly pressCovered?: true;
       /**
        * A code screen's resend press (`resendAutofillCode`), whose submit is its resend control:
-       * before the click every field of the step holds nothing (lengths only); the control is
+       * before the click every field of the step holds nothing (lengths only); its click reaches
        * none of them, and none of the elements `apartFrom` names in its frame, the screen's own
        * submit, methods and dismiss; its document holds no password in any form, as one an earlier
-       * screen typed may still be; and the form it submits, if it submits one, holds no value in
-       * a text field a person could have typed (`resendRefused`). So nothing typed goes out with
-       * the press's own post, and it presses no other control of the screen. A control that
-       * submits no form may still send what its own script reads, as any click may.
+       * screen typed may still be; and the form a control its click reaches submits, if any, holds
+       * no value in a text field a person could have typed (`resendRefused`). So nothing typed goes
+       * out with the press's own post, and it presses no other control of the screen. A control
+       * that submits no form may still send what its own script reads, as any click may.
        */
       readonly resend?: { readonly apartFrom: readonly string[] };
     };
@@ -523,6 +523,42 @@ const noticeCoverCode = `(element, own, scroll) => {
 }`;
 
 /**
+ * Page code, as statements for a function to open with: `parentOf`, `ancestry` and `clickReach`,
+ * every element a click of `element` may reach (`dismissCode`, `resendChecksCode`). A selector may
+ * name what a control holds or a label for it, so the element alone says too little: a click at
+ * its centre lands on whatever it holds there and bubbles through what holds it, and a label
+ * among them clicks its control. A label that holds both a box and the element counts the box,
+ * though a browser skips a label's click from a button inside it: refusing is the safe side.
+ */
+const clickReachCode = `// Open shadow roots count as part of their host: a host holds what its root holds.
+  const parentOf = (node) => (node.parentNode instanceof ShadowRoot ? node.parentNode.host : node.parentNode);
+  const ancestry = (node) => {
+    const chain = [];
+    for (let at = node; at instanceof Element; at = parentOf(at)) chain.push(at);
+    return chain;
+  };
+  const within = (root) => {
+    const found = [];
+    const walk = (scope) => {
+      for (const child of scope.children) {
+        found.push(child);
+        if (child.shadowRoot !== null) walk(child.shadowRoot);
+        walk(child);
+      }
+    };
+    if (root.shadowRoot !== null) walk(root.shadowRoot);
+    walk(root);
+    return found;
+  };
+  const clickReach = (element) => {
+    const held = [...ancestry(element), ...within(element)];
+    return [
+      ...held,
+      ...held.flatMap((node) => (node instanceof HTMLLabelElement && node.control !== null ? [node.control] : [])),
+    ];
+  };`;
+
+/**
  * Page code for a `dismiss` call: finds the selector's one visible match across the primary tab's
  * frames (`locate`); none, or several, is `not_shown` or `ambiguous`, and nothing is clicked. A
  * match is refused (`part`) when it is one of the step's controls in its frame, holds one or sits in
@@ -557,29 +593,10 @@ for (const control of submit === null ? fields : [...fields, submit]) {
   if (handle !== null && noticeFrame !== null && (await handle.ownerFrame()) === noticeFrame) own.push(handle);
 }
 const verdict = await notice.locator.evaluate((element, own) => {
-  // Open shadow roots count as part of their host: a host holds what its root holds.
-  const parentOf = (node) => (node.parentNode instanceof ShadowRoot ? node.parentNode.host : node.parentNode);
+  ${clickReachCode}
   const holds = (outer, inner) => {
     for (let node = inner; node !== null; node = parentOf(node)) if (node === outer) return true;
     return false;
-  };
-  const ancestry = (node) => {
-    const chain = [];
-    for (let at = node; at instanceof Element; at = parentOf(at)) chain.push(at);
-    return chain;
-  };
-  const within = (root) => {
-    const found = [];
-    const walk = (scope) => {
-      for (const child of scope.children) {
-        found.push(child);
-        if (child.shadowRoot !== null) walk(child.shadowRoot);
-        walk(child);
-      }
-    };
-    if (root.shadowRoot !== null) walk(root.shadowRoot);
-    walk(root);
-    return found;
   };
   const formOf = (control) =>
     "form" in control && control.form instanceof HTMLFormElement
@@ -594,13 +611,7 @@ const verdict = await notice.locator.evaluate((element, own) => {
   const form = formOf(element);
   const inSignInForm = form !== null && own.some((control) => formOf(control) === form);
   if (inSignInForm && covering() === null) return { part: "sign_in_form", cancel: null };
-  // What a click of it may reach: the element, what holds it and what it holds, since a click at
-  // its centre lands on whatever it holds there, and the control a label among them clicks.
-  const held = [...ancestry(element), ...within(element)];
-  const reached = [
-    ...held,
-    ...held.flatMap((node) => (node instanceof HTMLLabelElement && node.control !== null ? [node.control] : [])),
-  ];
+  const reached = clickReach(element);
   if (own.some((control) => reached.includes(control))) return { part: "sign_in_control", cancel: null };
   const submits = (node) =>
     ((node instanceof HTMLButtonElement && node.type === "submit") ||
@@ -889,11 +900,12 @@ const pickerBesideCode = `(element, code) => {
 
 /**
  * Page code for a resend press's submit call, before its click (`AutofillFillCall`'s `resend`): a
- * field that still holds something fails the check, with its index; a control that is one of the
- * step's fields or of the elements `apartFrom` names in its frame refuses as `same_control`, one
- * whose document holds a password anywhere, by its type or its autocomplete, as `password_held`,
- * and one that submits a form with a value in a text field a person could have typed, as
- * `value_held`. Lengths only, never a value; a read that fails refuses.
+ * field that still holds something fails the check, with its index; a control whose click may
+ * reach (`clickReachCode`) one of the step's fields or of the elements `apartFrom` names in its
+ * frame refuses as `same_control`, one whose document holds a password anywhere, by its type or
+ * its autocomplete, as `password_held`, and one whose click may reach a control that submits a
+ * form with a value in a text field a person could have typed, as `value_held`. Lengths only,
+ * never a value; a read that fails refuses.
  */
 const resendChecksCode = (apartFrom: readonly string[]) => `for (const [index, field] of fields.entries()) {
   const empty = await field.locator
@@ -906,13 +918,22 @@ const resendFrame = await resendControl.ownerFrame();
 for (const { locator } of fields) {
   const handle = await locator.elementHandle({ timeout: 5000 });
   if ((await handle.ownerFrame()) !== resendFrame) continue;
-  if (await resendControl.evaluate((element, other) => element === other, handle).catch(() => true))
-    return { resendRefused: "same_control", url: primary.url() };
+  const reaches = await resendControl
+    .evaluate((element, other) => {
+      ${clickReachCode}
+      return clickReach(element).includes(other);
+    }, handle)
+    .catch(() => true);
+  if (reaches) return { resendRefused: "same_control", url: primary.url() };
 }
 for (const selector of ${JSON.stringify(apartFrom)}) {
   const same = await resendFrame
     .locator(selector)
-    .evaluateAll((elements, control) => elements.includes(control), resendControl)
+    .evaluateAll((elements, control) => {
+      ${clickReachCode}
+      const reached = clickReach(control);
+      return elements.some((element) => reached.includes(element));
+    }, resendControl)
     .catch(() => true);
   if (same) return { resendRefused: "same_control", url: primary.url() };
 }
@@ -940,24 +961,29 @@ const passwordHeld = await resendControl
   })
   .catch(() => true);
 if (passwordHeld) return { resendRefused: "password_held", url: primary.url() };
-// What the control's own post would send: a value in a text field of the form it submits, as an
-// earlier screen may leave one typed there. A hidden, read-only or disabled field holds what the
-// site wrote, and a control that submits no form posts none of it.
+// What the click's own post would send: a value in a text field of each form a control it may
+// reach submits, as an earlier screen may leave one typed there. A hidden, read-only or disabled
+// field holds what the site wrote, and a click that reaches no such control posts none of it.
 const valueHeld = await resendControl
   .evaluate((element) => {
-    const submits =
-      (element instanceof HTMLButtonElement && element.type === "submit") ||
-      (element instanceof HTMLInputElement && (element.type === "submit" || element.type === "image"));
-    if (!submits || element.form === null) return false;
+    ${clickReachCode}
+    const submits = (node) =>
+      ((node instanceof HTMLButtonElement && node.type === "submit") ||
+        (node instanceof HTMLInputElement && (node.type === "submit" || node.type === "image"))) &&
+      node.form !== null;
     const notText = ["hidden", "checkbox", "radio", "file", "range", "color", "submit", "image", "button", "reset"];
-    return [...element.form.elements].some(
-      (field) =>
-        (field instanceof HTMLTextAreaElement ||
-          (field instanceof HTMLInputElement && !notText.includes(field.type))) &&
-        field.value.length > 0 &&
-        !field.readOnly &&
-        !field.matches(":disabled"),
-    );
+    return clickReach(element)
+      .filter(submits)
+      .some((control) =>
+        [...control.form.elements].some(
+          (field) =>
+            (field instanceof HTMLTextAreaElement ||
+              (field instanceof HTMLInputElement && !notText.includes(field.type))) &&
+            field.value.length > 0 &&
+            !field.readOnly &&
+            !field.matches(":disabled"),
+        ),
+      );
   })
   .catch(() => true);
 if (valueHeld) return { resendRefused: "value_held", url: primary.url() };`;

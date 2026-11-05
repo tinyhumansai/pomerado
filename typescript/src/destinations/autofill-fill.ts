@@ -1240,9 +1240,10 @@ export const resubmitAutofillStep = (input: CallInput): Effect.Effect<AutofillSt
  * keyboard when another element covers it, once the site enables it: the host calls again while
  * the site keeps it disabled, as its timer does, for up to `waitMs`, and no longer once `stop` is
  * raised, which refuses the press. Just before the click, each field must still hold nothing, else
- * that field fails and nothing is clicked; and a control that is one of the fields or of the
- * elements `apartFrom` names, whose document holds a password in any form, or that submits a form
- * with a value in a text field, is refused (`resendChecksCode`). The report says what became of
+ * that field fails and nothing is clicked; and a control whose click reaches one of the fields or
+ * of the elements `apartFrom` names, whose document holds a password in any form, or whose click
+ * reaches a control that submits a form with a value in a text field, is refused
+ * (`resendChecksCode`). The report says what became of
  * it, `clicked` when it went out and `stayed_disabled` when the site never enabled it in time,
  * with no field filled; a control the host refuses is refused before any click.
  */
