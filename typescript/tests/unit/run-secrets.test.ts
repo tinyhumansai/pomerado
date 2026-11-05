@@ -117,6 +117,8 @@ describe("makeRunSecrets", () => {
     expect(secrets.redactCut("page text fixture-priv")).toBe("page text ");
     expect(secrets.redactCut("page fixture-private-value tail")).toBe("page [private] tail");
     expect(secrets.redactCut("ends fixture-private-value")).toBe("ends [private]");
+    // A cut through a character of several bytes reads back as one replacement character.
+    expect(secrets.redactCut("page text fixture-priv\uFFFD")).toBe("page text ");
     // A collapsed form split by the cut leaves nothing of itself either.
     expect(
       registered("correct  horse  battery").redactCut('textbox "Code": correct horse ba'),
@@ -148,6 +150,9 @@ describe("a phone number", () => {
     ["+15555550123", "1-555-555-0123"],
     ["+15555550123", "+1\u00a0555\u00a0555\u20110123"],
     ["+15555550123", "%2B1%20(555)%20555-0123"],
+    ["+15555550123", "?phone=%28555%29%20555-0123"],
+    ["+15555550123", "?msg=sent%20to%20555-555-0123"],
+    ["+15555550123", "?msg=sent%20to%201%20555%20555%200123"],
     ["00447700900123", "+44 7700 900123"],
     ["+44 7700 900123", "07700 900123"],
     ["07700 900123", "+44 7700 900123"],
@@ -193,6 +198,11 @@ describe("a phone number", () => {
     expect(secrets.redactCut("Sent to +91 ")).toBe("Sent to ");
     expect(secrets.redactCut("Sent to +91 98765 43210 today")).toBe("Sent to [private] today");
     expect(secrets.redactCut("Sent to 12")).toBe("Sent to 12");
+    expect(secrets.redactCut("?msg=sent%20to%2098765%2043")).toBe("?msg=sent%20to%20");
+  });
+
+  it("drops what a cut left of it before a character the cut broke", () => {
+    expect(phone("+919876543210").redactCut("Sent to 98765\uFFFD")).toBe("Sent to ");
   });
 
   it("forgets its digits with every other value", () => {

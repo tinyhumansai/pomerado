@@ -31,7 +31,8 @@ const tokenPattern = (form: string) => {
 
 /**
  * What a page may write between a phone number's digits, three at most: whitespace, a dash, a dot,
- * a slash, a bracket, a plus, an invisible mark, or a URL's percent escape of one.
+ * a slash, a bracket, a plus, an invisible mark, or a URL's percent escape of one. Digits in
+ * another script, digits a page's markup or entities split, and a URL encoded twice aren't matched.
  */
 const phoneGap = "(?:[\\s\\p{Pd}\\p{Cf}().+/]|%[0-9A-Fa-f]{2}){0,3}";
 /** Fewer digits than this after the calling code say too little to mask on their own. */
@@ -47,17 +48,18 @@ const cutGapped = (digits: string) =>
 
 /**
  * The forms of a phone number beyond the value as given, as a site writes it back in its own way:
- * its digits, with and without its calling code (`digits`); a global pattern for those digits in
- * any grouping, with a trunk 0 or none and no digit adjoining them (`run`); and one for the start
- * of the run where a cut ended the text (`cut`). Undefined for a value of no phone shape, such as
- * a host's handle, or with too few digits after its calling code (`phoneLocalLeast`).
+ * its digits, with and without its calling code (`digits`); a global pattern for those digits
+ * with `phoneGap` between each, with a trunk 0 or none and no digit adjoining them, though a percent
+ * escape may stand right before them (`run`); and one for the start of the run where a cut ended
+ * the text (`cut`). Undefined for a value of no phone shape, such as a host's handle, or with too
+ * few digits after its calling code (`phoneLocalLeast`).
  */
 const phoneForms = (number: string) => {
   if (!phoneShaped(number)) return undefined;
   const code = callingCode(number) ?? "";
   const local = (nationalDigits(number) ?? number.replaceAll(/[^0-9]/gu, "")).replace(/^0+/u, "");
   if (local.length < phoneLocalLeast) return undefined;
-  const lead = "(?<![0-9])[+(]?";
+  const lead = "(?:(?<![0-9])|(?<=%[0-9A-Fa-f]{2}))[+(]?";
   const trunk = `(?:0${phoneGap})?`;
   const calling = code === "" ? "" : `(?:${gapped(code)}${phoneGap})?`;
   return {
@@ -77,9 +79,10 @@ export const makeRunSecrets = () => {
   /** Each phone number's patterns (`phoneForms`), masked and checked in source alike. */
   const phoneRuns = new Map<string, { readonly run: RegExp; readonly cut: RegExp }>();
   /**
-   * Registers each form a page or URL can show the value in (`shownForms`). Named a `phone`
-   * number, its digits and any grouping of them count too (`phoneForms`), since a site writes the
-   * number back in its own format and a `national` field takes it without its calling code.
+   * Registers each form a page or URL can show the value in (`shownForms`). For a value that may
+   * be a `phone` number, its digits and their usual groupings count too (`phoneForms`), when it
+   * has a phone's shape, since a site writes the number back in its own format and a `national`
+   * field takes it without its calling code.
    */
   const register = (value: string, kind?: "phone") => {
     const phone = kind === "phone" ? phoneForms(value) : undefined;
@@ -89,7 +92,7 @@ export const makeRunSecrets = () => {
         if (!short) values.set(shownForm, undefined);
         else if (!values.has(shownForm)) values.set(shownForm, tokenPattern(shownForm));
   };
-  /** Whether `text` holds a registered phone number, in any grouping. */
+  /** Whether `text` holds a registered phone number's digits (`phoneForms`). */
   const holdsPhone = (text: string) =>
     [...phoneRuns.values()].some(({ run }) => text.search(run) !== -1);
   /**
@@ -130,9 +133,12 @@ export const makeRunSecrets = () => {
         if (text.endsWith(secret.slice(0, length))) return length;
       return longest;
     }, 0);
-  /** Redacts text a cut ended, so a secret the cut split leaves no prefix at its end either. */
+  /**
+   * Redacts text a cut ended, so a secret the cut split leaves no prefix at its end either, nor
+   * behind the replacement character a cut through a character of several bytes reads back as.
+   */
   const redactCut = (text: string) => {
-    const redacted = redact(text);
+    const redacted = redact(text.replace(/\uFFFD+$/u, ""));
     return [...phoneRuns.values()].reduce(
       (result, { cut }) => result.replace(cut, ""),
       redacted.slice(0, redacted.length - splitPrefix(redacted)),
