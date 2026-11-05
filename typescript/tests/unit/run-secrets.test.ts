@@ -247,6 +247,16 @@ describe("a phone number", () => {
     expect(Effect.runSync(secrets.json({ login: 5550123 }))).toEqual({ login: "[private]" });
   });
 
+  // A login held without its calling code: a site's JSON may hold it with that code glued on.
+  it.each([
+    ["9876500000", 919876500000],
+    ["91234567", 6591234567],
+  ])("masks and refuses %s behind a calling code in a JSON number", (login, mobile) => {
+    const secrets = phone(login);
+    expect(Effect.runSync(secrets.json({ mobile }))).toEqual({ mobile: "[private]" });
+    expect(refused(secrets, `const mobile = ${mobile};`)).toBe(true);
+  });
+
   it("still counts as given a value that ends in digits, beside what isn't a digit", () => {
     const secrets = phone("(0091) 98765 00000");
     expect(secrets.redact("Sent to (0091) 98765 00000, today.")).toBe("Sent to [private], today.");

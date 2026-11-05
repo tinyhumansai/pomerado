@@ -6,7 +6,7 @@ import {
   shortCardPart,
 } from "../destinations/payment-frames.js";
 import { callingCode, nationalDigits, numberPart } from "../destinations/login-field-formats.js";
-import { shownForms } from "../privacy/value-forms.js";
+import { shortForm, shownForms } from "../privacy/value-forms.js";
 import { unmarkedNumber, writtenAsNumber } from "../runtime/input-request.js";
 
 /**
@@ -88,8 +88,11 @@ const phoneForms = (given: string) => {
     ...(code === "" ? [] : [`${gapped(code)}${phoneGap}0(?:${phoneGap}${cutGapped(local)})?`]),
     ...(short ? [] : [`${trunk}${cutGapped(local)}`]),
   ];
-  const start = /^[0-9]/u.test(given) ? numberEdge : "";
-  const end = /[0-9]$/u.test(given) ? "(?![0-9])" : "";
+  // As a short form counts: a value this short turns up inside a longer run by chance, and a longer
+  // one is the number whatever is glued to it, as a calling code may be.
+  const whole = given.length < shortForm;
+  const start = whole && /^[0-9]/u.test(given) ? numberEdge : "";
+  const end = whole && /[0-9]$/u.test(given) ? "(?![0-9])" : "";
   return {
     digits: short ? [] : [local, `${code}${local}`],
     run: new RegExp(
