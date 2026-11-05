@@ -37,15 +37,18 @@ const shortCallingCodes = new Set([
   ...["90", "91", "92", "93", "94", "95", "98"],
 ]);
 
+/** `number` without the invisible marks a number copied from a contact or a page may carry. */
+export const unmarkedNumber = (number: string) => number.replaceAll(/\p{Cf}/gu, "");
+
 /**
- * A phone number written in international form: its digits after the `+` or `00`. Undefined for a
- * value with a letter, which may be a host's handle, and whose digits, such as an extension's, may
- * not all be the number's.
+ * A phone number written in international form: its digits after the `+` or `00`, which a bracket
+ * may open. Undefined for a value with a letter, which may be a host's handle, and whose digits,
+ * such as an extension's, may not all be the number's.
  */
 const internationalDigits = (number: string) => {
-  const written = number.trim();
+  const written = unmarkedNumber(number).trim();
   if (/\p{L}/u.test(written)) return undefined;
-  const lead = /^(?:\+|00)/u.exec(written)?.[0];
+  const lead = /^\(?\s*(?:\+|00)/u.exec(written)?.[0];
   return lead === undefined ? undefined : written.slice(lead.length).replaceAll(/[^0-9]/gu, "");
 };
 

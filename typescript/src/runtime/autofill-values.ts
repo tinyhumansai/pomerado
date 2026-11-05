@@ -10,6 +10,7 @@ import type {
 import {
   callingCode,
   nationalDigits,
+  unmarkedNumber,
   wholeDateLayouts,
 } from "../destinations/login-field-formats.js";
 import type { WebsiteCredentials } from "./authentication.js";
@@ -206,17 +207,19 @@ const boxedCode = (found: Found, boxes: number): Found => {
 };
 
 /**
- * The values with each `national` phone field's number written without its calling code, and each
- * `calling_code` picker's number as that code alone, or nothing for a number that does not say it,
- * which the fill refuses before it types anything (`calling_code_missing`).
+ * The values with each phone field's number without the invisible marks it may have been pasted
+ * with (`unmarkedNumber`), each `national` field's written without its calling code, and each
+ * `calling_code` picker's as that code alone, or nothing for a number that does not say it, which
+ * the fill refuses before it types anything (`calling_code_missing`).
  */
 const localValues = (step: Pick<AutofillStep<FillSlot>, "fields">, values: readonly string[]) =>
-  step.fields.some((field) => field.slot === "phone" && field.format !== undefined)
+  step.fields.some((field) => field.slot === "phone")
     ? values.map((value, index) => {
         const field = step.fields[index];
         if (field?.slot !== "phone") return value;
-        if (field.format === "national") return nationalDigits(value) ?? value;
-        return field.format === "calling_code" ? (callingCode(value) ?? "") : value;
+        const number = unmarkedNumber(value);
+        if (field.format === "national") return nationalDigits(number) ?? number;
+        return field.format === "calling_code" ? (callingCode(number) ?? "") : number;
       })
     : values;
 

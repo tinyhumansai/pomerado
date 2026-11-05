@@ -326,16 +326,25 @@ const ConfirmAnswer = Schema.Struct({
 export const LoginDecline = Schema.Literal("no_account", "public_only");
 export type LoginDecline = typeof LoginDecline.Type;
 
-/** Whether `value` has a phone number's shape. */
-export const phoneShaped = (value: string) =>
-  /^\+?[\d\s().-]+$/u.test(value.trim()) && value.replace(/\D/gu, "").length >= 7;
+/** `value` without the invisible marks a number copied from a contact or a page may carry. */
+const withoutMarks = (value: string) => value.replaceAll(/\p{Cf}/gu, "");
+/**
+ * Whether `value` has a phone number's shape, its invisible marks aside: at least 7 digits with
+ * spaces, dots, dashes or brackets, after a `+` if it has one, which a bracket may open.
+ */
+export const phoneShaped = (value: string) => {
+  const written = withoutMarks(value).trim();
+  return /^\(?\s*\+?[\d\s().-]+$/u.test(written) && written.replace(/\D/gu, "").length >= 7;
+};
 /**
  * Whether `value` is written as a number, whatever marks stand between its digits, and so is no
  * host's handle, name or email address: it holds no letter, or starts with a `+` and a digit, with
  * only marks between them. A lead of `00` says nothing with a letter: `001a2b` may be a handle.
  */
-export const writtenAsNumber = (value: string) =>
-  !/\p{L}/u.test(value) || /^\s*\+[^\p{L}\p{N}]*\d/u.test(value);
+export const writtenAsNumber = (value: string) => {
+  const written = withoutMarks(value);
+  return !/\p{L}/u.test(written) || /^[\s(]*\+[^\p{L}\p{N}]*\d/u.test(written);
+};
 /**
  * Whether a login's answer of the phone kind can't be used: it is written as a number
  * (`writtenAsNumber`) but not as a phone (`phoneShaped`), such as digits grouped by slashes, a

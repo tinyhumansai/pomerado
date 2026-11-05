@@ -86,6 +86,18 @@ describe("typedValues", () => {
     ]);
   });
 
+  it.each(["(+91) 98765 43210", "(0091) 98765 43210", "\u200e+91 98765 43210"])(
+    "reads the calling code of %s",
+    (number) => {
+      expect(typedValues(step, [number, number])).toEqual(["91", "9876543210"]);
+    },
+  );
+
+  it("types a phone number without the invisible marks it was pasted with", () => {
+    const box: Pick<AutofillStep, "fields"> = { fields: [{ selector: "#phone", slot: "phone" }] };
+    expect(typedValues(box, ["\u202a+91 98765\u200b43210\u202c"])).toEqual(["+91 9876543210"]);
+  });
+
   it("gives the picker nothing for a number that says no calling code, so the fill types nothing", () => {
     expect(typedValues(step, ["98765 43210", "98765 43210"])).toEqual(["", "98765 43210"]);
   });

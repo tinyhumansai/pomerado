@@ -65,8 +65,8 @@ const cutGapped = (digits: string) =>
  * not written as a number, such as a host's handle, one too short to say its calling code, or one
  * with too little after that code (`phoneLocalFewest`). Any marks may group its digits, as a saved
  * login or a login of another kind never met the shape a phone answer must have, and what a letter
- * starts, such as an extension, is no part of the number: the value as given then counts whole in
- * `run`, so its end doesn't stay beside what's masked.
+ * starts, such as an extension, is no part of the number. `run` also counts the value as given,
+ * since it goes first: an extension or a `(00NN)` lead would stay beside what it masks.
  */
 const phoneForms = (given: string) => {
   if (!writtenAsNumber(given)) return undefined;
@@ -83,7 +83,7 @@ const phoneForms = (given: string) => {
   return {
     digits: short ? [] : [local, `${code}${local}`],
     run: new RegExp(
-      `${number === given ? "" : `${literal(given)}|`}${lead}${calling}${trunk}${gapped(local)}(?![0-9])`,
+      `${literal(given)}|${lead}${calling}${trunk}${gapped(local)}(?![0-9])`,
       "gu",
     ),
     cut: new RegExp(

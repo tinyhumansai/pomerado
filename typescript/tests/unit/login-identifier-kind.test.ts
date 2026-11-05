@@ -163,7 +163,18 @@ describe("a login answer of the phone kind", () => {
     }
   });
 
-  it.each(["+91 98765 00000", "(0170) 555-0100", "0170.555.0100", "+298 555012"])(
+  it.each([
+    "+91 98765 00000",
+    "(0170) 555-0100",
+    "0170.555.0100",
+    "+298 555012",
+    "(+91) 98765 00000",
+    "(0091) 98765 00000",
+    // Marks a number copied from a contact or a page may carry.
+    "\u200e+91 98765 00000",
+    "\u202a+91 98765 00000\u202c",
+    "+91\u200b98765\u200b00000",
+  ])(
     "takes a number of the phone shape, %s",
     (username) => {
       const checked = validateAnswer(loginQuestion(["phone"]), {
@@ -259,7 +270,7 @@ describe("a login answer of the phone kind", () => {
       ),
     );
     expect(outcome.message).toBe(
-      "This phone number can't be used as written: send it with digits, spaces, dots, dashes or brackets alone.",
+      "This phone number can't be used as written: send it with an optional leading + and the country code, at least 7 digits, and only spaces, dots, dashes or brackets between them.",
     );
     expect(outcome.still).toBe("input_required");
     expect(outcome.done).toMatchObject({
@@ -291,7 +302,8 @@ describe("a login answer of the phone kind", () => {
       const answered = await Effect.runPromise(makeTerminalAsker()(loginQuestion(kinds)));
       return { login: answered["login"], shown: shown.join("") };
     };
-    const rewrite = "Write the phone number with digits, spaces, dots, dashes or brackets alone.";
+    const rewrite =
+      "Write the phone number with an optional leading + and the country code, at least 7 digits, and only spaces, dots, dashes or brackets between them.";
 
     it("asks again for a number outside the phone shape", async () => {
       const { login, shown } = await answer(["0170/5550100", "0170 5550100"], ["phone"]);

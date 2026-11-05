@@ -183,6 +183,11 @@ it.each([
   ["+380 44 123 4567", "380"],
   ["+86 138 0013 8000", "86"],
   ["+213 555 12 34 56", "213"],
+  ["(+91) 98765 00000", "91"],
+  ["( +91 ) 98765 00000", "91"],
+  ["(0091) 98765 00000", "91"],
+  ["\u200e+91 98765 00000", "91"],
+  ["\u202a0091 98765 00000\u202c", "91"],
 ])("names the calling code of %s", (number, code) => {
   expect(callingCode(number)).toBe(code);
   expect(changedPhoneNotice(number)).toContain(`The number's country calling code is +${code}.`);
@@ -191,6 +196,7 @@ it.each([
 it.each([
   "912 345 6789",
   "8 912 345-67-89",
+  "(0170) 555-0100",
   "+0 123 4567",
   "+12",
   // A letter: a handle, or an extension whose digits are no part of the number.

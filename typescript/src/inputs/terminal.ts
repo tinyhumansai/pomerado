@@ -232,7 +232,7 @@ const answerQuestion = (question: Question): Effect.Effect<unknown, InputRequest
               : (identifierKindOf(username, kinds) ?? (yield* askKind(kinds)));
           if (identifierKind === "phone" && username !== undefined && unshapedPhone(username)) {
             process.stderr.write(
-              "Write the phone number with digits, spaces, dots, dashes or brackets alone.\n",
+              "Write the phone number with an optional leading + and the country code, at least 7 digits, and only spaces, dots, dashes or brackets between them.\n",
             );
             continue;
           }

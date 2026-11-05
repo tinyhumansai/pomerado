@@ -94,7 +94,7 @@ const requestErrors = {
   invalid_answers: "Answers do not match the pending questions.",
   resend_not_offered: "This code question offers no new code: answer with the code the site sent.",
   phone_unshaped:
-    "This phone number can't be used as written: send it with digits, spaces, dots, dashes or brackets alone.",
+    "This phone number can't be used as written: send it with an optional leading + and the country code, at least 7 digits, and only spaces, dots, dashes or brackets between them.",
   retry_conflict:
     "This idempotency key was already used for a different request. Repeat the original request with that key, or use a new key for a new request.",
 };
