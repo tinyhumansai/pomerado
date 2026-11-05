@@ -289,10 +289,11 @@ export type AutofillFillCall =
        * none of them, and none of the elements `apartFrom` names in its frame, the screen's own
        * submit, methods and dismiss; its document holds no password in any form, as one an earlier
        * screen typed may still be; the form a control its click reaches submits, if any, holds no
-       * value in a text field a person could have typed; and its click reaches no link to another
-       * origin (`resendRefused`). So nothing typed goes out with the press's own post, it presses
-       * no other control of the screen, and it leaves no origin. A control that submits no form
-       * may still send what its own script reads, as any click may.
+       * value in a text field a person could have typed; and its click reaches no link or post to
+       * another origin (`resendRefused`). So nothing typed goes out with the press's own post, it
+       * presses no other control of the screen, and neither a link nor a post it reaches leaves
+       * the origin. A page's own script may still send what it reads or go where it likes, as it
+       * may on any click.
        */
       readonly resend?: { readonly apartFrom: readonly string[] };
     };
@@ -905,6 +906,12 @@ const pickerBesideCode = `(element, code) => {
   return matched ? "matches" : "none";
 }`;
 
+/** Page code, a statement for a function that reads a resend's reach: what submits a form. */
+const resendSubmitsCode = `const submits = (node) =>
+      ((node instanceof HTMLButtonElement && node.type === "submit") ||
+        (node instanceof HTMLInputElement && (node.type === "submit" || node.type === "image"))) &&
+      node.form !== null;`;
+
 /**
  * Page code for a resend press's submit call, before its click (`AutofillFillCall`'s `resend`): a
  * field that still holds something fails the check, with its index; a control whose click may
@@ -912,8 +919,8 @@ const pickerBesideCode = `(element, code) => {
  * frame refuses as `same_control`, one whose document holds a password anywhere, by its type or
  * its autocomplete, as `password_held`, one whose click may reach a control that submits a form
  * with a value in a text field a person could have typed, as `value_held`, and one whose click may
- * reach a link to another origin, as `other_origin`. Lengths only, never a value; a read that
- * fails refuses.
+ * reach a link or a post to another origin, as `other_origin`. Lengths only, never a value; a read
+ * that fails refuses.
  */
 const resendChecksCode = (apartFrom: readonly string[]) => `for (const [index, field] of fields.entries()) {
   const empty = await field.locator
@@ -977,10 +984,7 @@ if (passwordHeld) return { resendRefused: "password_held", url: primary.url() };
 const valueHeld = await resendControl
   .evaluate((element) => {
     ${clickReachCode}
-    const submits = (node) =>
-      ((node instanceof HTMLButtonElement && node.type === "submit") ||
-        (node instanceof HTMLInputElement && (node.type === "submit" || node.type === "image"))) &&
-      node.form !== null;
+    ${resendSubmitsCode}
     const notText = ["hidden", "checkbox", "radio", "file", "range", "color", "submit", "image", "button", "reset"];
     return clickReach(element)
       .filter(submits)
@@ -998,15 +1002,24 @@ const valueHeld = await resendControl
   })
   .catch(() => true);
 if (valueHeld) return { resendRefused: "value_held", url: primary.url() };
-// A link the click may reach that leaves the control's origin. What's inspected reads a link only
-// on the element itself, so a link that holds it, or a label's, counts only here. An address that
-// is a script stays: a page's own handler runs it, and what the handler sends is the page's.
+// A link or a post the click may reach that leaves the control's origin: a submit goes by its own
+// formaction, else its form's action. What's inspected reads a link only on the element itself and
+// a form only around it, so one that holds it, a label's or one named by \`form\` counts only here.
+// An address that is a script stays: a page's own handler runs it, and what it sends is the page's.
 const otherOrigin = await resendControl
   .evaluate((element) => {
     ${clickReachCode}
+    ${resendSubmitsCode}
+    // Read through the form's own getter: a control named "action" shadows the property.
+    const formAction = Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, "action").get;
+    const address = (node) => {
+      if (submits(node)) return node.getAttribute("formaction") ?? formAction.call(node.form);
+      return node.matches("a[href], area[href]") ? node.getAttribute("href") : null;
+    };
     return clickReach(element).some((node) => {
-      if (!node.matches("a[href], area[href]")) return false;
-      const to = new URL(node.getAttribute("href"), element.ownerDocument.baseURI);
+      const at = address(node);
+      if (at === null) return false;
+      const to = new URL(at, element.ownerDocument.baseURI);
       return to.protocol !== "javascript:" && to.origin !== self.origin;
     });
   })

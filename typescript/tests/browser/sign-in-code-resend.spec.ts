@@ -493,6 +493,8 @@ const codeForm = `<form method="post" action="/verify">
 <label>Code <input id="code" name="code" autocomplete="one-time-code"></label>
 <button id="verify">Verify</button>
 </form>`;
+const offSiteForm =
+  '<form id="off" action="https://elsewhere.example.org/take" method="post"><input type="hidden" name="phone" value="+15555550123"></form>';
 for (const [name, control] of [
   [
     "a span an off-site link holds",
@@ -510,6 +512,22 @@ for (const [name, control] of [
     "a span a link to another origin of the site holds",
     '<a href="https://accounts.phone.example.test/resend"><span id="press">Resend code</span></a>',
   ],
+  [
+    "a span the button of an off-site form holds",
+    `${offSiteForm}<button form="off"><span id="press">Resend code</span></button>`,
+  ],
+  [
+    "a span in a label for the button of an off-site form",
+    `${offSiteForm}<button id="again" form="off">Again</button><label for="again"><span id="press">Resend code</span></label>`,
+  ],
+  [
+    "a span in a button whose formaction leaves the site",
+    '<form id="own" action="/resend" method="post"></form><button form="own" formaction="https://elsewhere.example.org/take"><span id="press">Resend code</span></button>',
+  ],
+  [
+    "a span the button of an off-site form holds, where a control hides the form's action",
+    '<form id="off" action="https://elsewhere.example.org/take" method="post"><input type="hidden" name="action" value="send"></form><button form="off"><span id="press">Resend code</span></button>',
+  ],
 ] as const)
   test(`a press never leaves the origin through ${name}`, async ({ page }) => {
     const left: string[] = [];
@@ -525,6 +543,32 @@ for (const [name, control] of [
     expect(posts).toEqual([]);
     expect(left).toEqual([]);
     expect(events).toEqual([expect.objectContaining({ outcome: "refused", part: "other_origin" })]);
+  });
+
+for (const [name, control, form] of [
+  [
+    "the button of a form on the same site",
+    '<form id="own" action="/resend" method="post"><input type="hidden" name="token" value="site"></form><button form="own"><span id="press">Resend code</span></button>',
+    { token: "site" },
+  ],
+  [
+    "the button of a form on the same site, where a control hides the form's action",
+    '<form id="own" action="/resend" method="post"><input type="hidden" name="action" value="send"></form><button form="own"><span id="press">Resend code</span></button>',
+    { action: "send" },
+  ],
+  [
+    "a button whose formaction stays on the site, in an off-site form",
+    `${offSiteForm}<button form="off" formaction="/resend"><span id="press">Resend code</span></button>`,
+    { phone: "+15555550123" },
+  ],
+] as const)
+  test(`a press goes out through a span in ${name}`, async ({ page }) => {
+    const { pressed, posts } = await pressOn(page, `${codeForm}${control}`, {
+      ...codeOnly,
+      resend: "#press",
+    });
+    expect(pressed).toBe(true);
+    expect(posts).toEqual([{ path: "/resend", form }]);
   });
 
 test("a press goes out through a span a link on the same site holds", async ({ page }) => {
