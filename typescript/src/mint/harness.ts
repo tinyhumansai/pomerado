@@ -4461,6 +4461,13 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
       const liveTestReplaced: LiveTestRecord[] = recoveredLiveTests.filter(
         (record) => record.retired === true,
       );
+      /** How many of those each version dropped, oldest first, past the ones it keeps. */
+      const liveTestsDropped: Record<LiveTestVersion, number> = {
+        playwright: recovered?.liveTestsDropped?.playwright ?? 0,
+        http: recovered?.liveTestsDropped?.http ?? 0,
+      };
+      const droppedOf = (version: LiveTestVersion) =>
+        liveTestsDropped[version] === 0 ? {} : { retiredDropped: liveTestsDropped[version] };
       /**
        * This attempt's judged live test batches that an execution review may still read, oldest
        * first, each with the digest of the source it ran and the failing cases a later pass on the
@@ -5101,8 +5108,10 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
               const ofVersion = liveTestReplaced.filter(
                 (entry) => liveTestVersion(entry.entrypoint) === version,
               );
-              for (const dropped of ofVersion.slice(0, Math.max(0, ofVersion.length - maximumBatchCases)))
+              for (const dropped of ofVersion.slice(0, Math.max(0, ofVersion.length - maximumBatchCases))) {
                 liveTestReplaced.splice(liveTestReplaced.indexOf(dropped), 1);
+                liveTestsDropped[version] += 1;
+              }
             }
             records.set(run.id, {
               id: run.id,
@@ -5211,6 +5220,7 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
               sourceDigest: yield* liveTestDigest(entrypoint),
               records: recordsOf(published),
               replaced: replacedOf(published),
+              ...droppedOf(published),
               ...(yield* inputSchemaOf(entrypoint)),
             },
           ];
@@ -5238,6 +5248,7 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
                 sourceDigest: yield* liveTestDigest(httpEntrypoint),
                 records: recordsOf("http"),
                 replaced: replacedOf("http"),
+                ...droppedOf("http"),
                 ...(yield* inputSchemaOf(httpEntrypoint)),
               });
           }
@@ -7817,6 +7828,9 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
         // latest. The HTTP version's results go in their own field, which an older worker drops.
         ...liveTestsCheckpoint("playwright", "liveTests"),
         ...liveTestsCheckpoint("http", "liveTestsHttp"),
+        ...(liveTestsDropped.playwright + liveTestsDropped.http === 0
+          ? {}
+          : { liveTestsDropped: { ...liveTestsDropped } }),
         ...(liveTestsOutOfTime ? { liveTestsOutOfTime: true } : {}),
         ...(signedInTestInputs.length === 0 ? {} : { signedInTestInputs: [...signedInTestInputs] }),
         ...(reviewer.tracked().length === 0 ? {} : { outcomeWrites: reviewer.tracked() }),

@@ -1095,6 +1095,35 @@ const batchesThenPublish = async (
     coverage: published.seen[0]?.coverage ?? "",
   };
 };
+// The host keeps the latest retired failures of each version, so the rest leave a count behind.
+it("counts the retired failures the host dropped past the ones it keeps", async () => {
+  const failing = (input: string) =>
+    Array.from({ length: 26 }, (_unused, index) => ({
+      id: `case-${index}`,
+      purpose: "A query that fails.",
+      input: { query: `${input}-${index}` },
+      expect: "result",
+    }));
+  const file = (input: string) => ({
+    "src/tool.ts": toolSource,
+    "test/cases.json": JSON.stringify({ cases: failing(input) }),
+  });
+  const failed = { status: "failed", errorClass: "TimeoutError" } as const;
+  const failures = Object.fromEntries(failing("any").map(({ id }) => [id, failed]));
+  // The third batch passes, so the build publishes with the failures it replaced.
+  const outcomes = (batch: number) => (batch < 2 ? failures : {});
+  const record = (await batchesThenPublish(outcomes, [
+    file("first"),
+    file("second"),
+    file("third"),
+  ])) as unknown as {
+    versions: { retiredDropped?: number }[];
+    retired: unknown[];
+  };
+  expect(record.retired).toHaveLength(50);
+  expect(record.versions[0]?.retiredDropped).toBe(2);
+});
+
 const otherStore = (expectation: string) =>
   JSON.stringify({
     cases: [
@@ -1923,6 +1952,54 @@ it("restores an older checkpoint's results as the Playwright version's", async (
     Object.values(pass),
   );
   expect(record.cases.every((testCase) => testCase.results["http"]?.status === "not_run")).toBe(true);
+});
+
+it("keeps the count of dropped retired failures across a takeover", async () => {
+  const { host } = liveTestHost({
+    nothing: { status: "completed", output: { results: [], has_next_page: false, next_cursor: null } },
+  });
+  const checkpoints: { agent: MintAgentSnapshot; harness: MintHarnessSnapshot }[] = [];
+  const files = { "src/tool.ts": toolSource, "test/cases.json": JSON.stringify(cases) };
+  const before = checkpointingMinter(
+    (index) =>
+      [call("execute", example, "example"), call("live_tests", runAll, "run")][index] ?? prose(),
+  );
+  const first = await fixture(() => prose(), {
+    model: before.model,
+    liveTests: host,
+    deadline: Deadline.after(30 * 60_000),
+    reviewAndExecute: completedExample,
+    agentRecovery: {
+      save: (agent, harness) =>
+        Effect.sync(() => {
+          checkpoints.push({ agent, harness });
+        }),
+    },
+  }, read);
+  await writeWorkspace((first.workspace as unknown as { root: string }).root, files);
+  await first.run().catch(() => undefined);
+  const saved = checkpoints.find((checkpoint) => (checkpoint.harness.liveTests ?? []).length > 0);
+  if (saved === undefined) throw new Error("No checkpoint with live test results");
+  const restored = Schema.decodeUnknownSync(MintHarnessSnapshot)(
+    JSON.parse(JSON.stringify({ ...saved.harness, liveTestsDropped: { playwright: 3, http: 0 } })),
+  );
+
+  const published = publications();
+  const after = checkpointingMinter(
+    (index) => [call("finish_build", finish, "finish")][index] ?? prose(),
+  );
+  const second = await fixture(() => prose(), {
+    model: after.model,
+    liveTests: host,
+    deadline: Deadline.after(30 * 60_000),
+    reviewAndExecute: completedExample,
+    publish: published.publish,
+    agentRecovery: { initial: { agent: saved.agent, harness: restored }, save: () => Effect.void },
+  }, read);
+  await writeWorkspace((second.workspace as unknown as { root: string }).root, files);
+  await second.run();
+  const record = published.seen[0]?.liveTests as { versions: { retiredDropped?: number }[] };
+  expect(record.versions[0]?.retiredDropped).toBe(3);
 });
 
 // A count's honest answer to an input that matches nothing is zero, a filled value the judge reads

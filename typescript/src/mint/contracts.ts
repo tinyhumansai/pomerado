@@ -2121,6 +2121,8 @@ export interface MintHarnessSnapshot {
    * keeps no HTTP results, drops them rather than restoring them as the Playwright version's.
    */
   readonly liveTestsHttp?: readonly LiveTestRecord[];
+  /** Retired failures each version dropped past the ones it keeps, when any did. */
+  readonly liveTestsDropped?: { readonly playwright: number; readonly http: number };
   /**
    * Whether the attempt ran out of time for live tests: a batch refused for time, or a case
    * stopped by a batch deadline the attempt's end set.
@@ -2393,6 +2395,10 @@ export const MintHarnessSnapshot: Schema.Schema<MintHarnessSnapshot> = Schema.St
   executions: Schema.Array(ExecutionEvidence),
   liveTests: Schema.optionalWith(Schema.Array(LiveTestRecord), { exact: true }),
   liveTestsHttp: Schema.optionalWith(Schema.Array(LiveTestRecord), { exact: true }),
+  liveTestsDropped: Schema.optionalWith(
+    Schema.Struct({ playwright: Schema.NonNegativeInt, http: Schema.NonNegativeInt }),
+    { exact: true },
+  ),
   liveTestsOutOfTime: Schema.optionalWith(Schema.Boolean, { exact: true }),
   signedInTestInputs: Schema.optionalWith(Schema.Array(Schema.String), { exact: true }),
   outcomeWrites: Schema.optionalWith(Schema.Array(OutcomeWrite), { exact: true }),

@@ -649,18 +649,19 @@ const oneCase = (id: string) => ({
   cases: [{ id, purpose: "The example's input.", input: { query: "lamp" }, expect: "result" }],
 });
 /** An edit that swaps the whole of a file for `after`. */
-const replaced = (path: string, before: unknown, after: unknown) => () => [
-  {
-    type: "apply_patch_call",
-    callId: `patch_${path.replaceAll(/[^a-z]/gu, "_")}`,
-    status: "completed",
-    operation: {
-      type: "update_file",
-      path,
-      diff: `@@\n-${JSON.stringify(before)}\n+${JSON.stringify(after)}\n`,
+const replaced =
+  (path: string, before: unknown, after: unknown) => (): ReturnType<typeof patch> => [
+    {
+      type: "apply_patch_call",
+      callId: `patch_${path.replaceAll(/[^a-z]/gu, "_")}`,
+      status: "completed",
+      operation: {
+        type: "update_file",
+        path,
+        diff: `@@\n-${JSON.stringify(before)}\n+${JSON.stringify(after)}\n`,
+      },
     },
-  },
-];
+  ];
 const runCases = (callId: string) => () => [
   call(
     "live_tests",

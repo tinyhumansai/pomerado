@@ -546,6 +546,40 @@ describe("liveTestsReport", () => {
     expect(JSON.stringify(report)).not.toContain("lamp");
   });
 
+  it("flags a record the host could not build, which holds no version to read", () => {
+    const report = liveTestsReport(liveTestsEvidenceProblem("an error stopped it").record);
+    expect(report).toEqual({ versions: [], recordProblem: true });
+  });
+
+  it("counts a failing case the minter changed and never ran again as retired", () => {
+    const changed = { ...deleted, expect: "empty" as const };
+    const { record, coverage } = liveTestsEvidence({
+      file: { cases: [changed] },
+      versions: [{ ...version, records: new Map([[deleted.id, result(deleted, "fail")]]) }],
+    });
+    expect(record.retired).toEqual([
+      expect.objectContaining({
+        id: deleted.id,
+        retiredBecause: "changed after it failed, and not run since",
+        lastVerdict: "fail",
+      }),
+    ]);
+    expect(liveTestsReport(record).versions[0]).toMatchObject({
+      counts: { stale: 1 },
+      retired: { total: 1, lastFailed: 1, stillCounting: 1 },
+    });
+    expect(coverage).toContain("1 retired case (1 last failed)");
+  });
+
+  it("says how many retired failures the host dropped past what it keeps", () => {
+    const { record } = liveTestsEvidence({
+      file: { cases: [kept] },
+      versions: [{ ...version, retiredDropped: 3 }],
+    });
+    expect(liveTestsReport(record).versions[0]?.retiredDropped).toBe(3);
+    expect(record.versions[0]?.retiredDropped).toBe(3);
+  });
+
   it("keeps both through the checkpoint's schema, and reads a checkpoint with neither", () => {
     const report = liveTestsReport(
       liveTestsEvidence({ file: { cases: [] }, fileProblem: "unread", versions: [version] }).record,
