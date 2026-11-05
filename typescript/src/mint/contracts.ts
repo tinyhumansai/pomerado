@@ -13,6 +13,7 @@ import type { SignedInMarkerCheck } from "../destinations/signed-in-marker.js";
 import type { DestinationReason } from "./destination-reason.js";
 import {
   LiveTestRecord,
+  LiveTestsReport,
   type LiveTestBatchCase,
   type LiveTestCaseRun,
 } from "./live-tests.js";
@@ -1747,6 +1748,20 @@ export type MintOutcome = {
   /** Site defaults the build took instead of asking, as screened entries without private data. */
   readonly assumptions?: readonly BuildAssumption[];
   /**
+   * Set by the harness on a published read: its live tests on the source it published, as counts
+   * (`LiveTestsReport`). Absent on a write, which runs none, on a host with no live tests, on a
+   * signed-in read no case ran signed in for, and on a publication a takeover rejoined. Unlike
+   * `summary`, whose line of these counts comes after the minter's own words, the minter never
+   * writes it.
+   */
+  readonly liveTests?: LiveTestsReport;
+  /**
+   * Set by the harness when the host reports the review that allowed the publication: its ID and
+   * Guardian's rationale, screened. Unlike `publicationDenial`, this rationale is for the host, not
+   * its caller: it may quote what a page returned, so keep it out of what the caller reads.
+   */
+  readonly publicationReview?: { readonly reviewId: string; readonly rationale: string };
+  /**
    * Set by the harness on an unpublished build whose ending it can name; see `mintStopReasons`.
    * Absent on a published build, and on an ending none of them names.
    */
@@ -2139,6 +2154,8 @@ export interface MintHarnessSnapshot {
     | "publicationRef"
     | "artifact"
     | "assumptions"
+    | "liveTests"
+    | "publicationReview"
     | "summary"
     | "recoveryReason"
     | "hostFailure"
@@ -2342,6 +2359,12 @@ const HarnessTerminal = Schema.Struct({
         choice: Schema.String,
       }),
     ),
+    { exact: true },
+  ),
+  // Optional, and dropped by an older worker's decode.
+  liveTests: Schema.optionalWith(LiveTestsReport, { exact: true }),
+  publicationReview: Schema.optionalWith(
+    Schema.Struct({ reviewId: Schema.String, rationale: Schema.String }),
     { exact: true },
   ),
   recoveryReason: Schema.optionalWith(

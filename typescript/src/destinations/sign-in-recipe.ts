@@ -259,10 +259,14 @@ export interface SignInBrowser<E> {
 const loginIdentifierKinds = ["username", "email", "phone", "account_number"] as const;
 
 /** A login question's `currentStep` for a login with no password. */
-export interface PasswordlessLoginStep {
-  readonly identifierKinds: readonly (typeof loginIdentifierKinds)[number][];
-  readonly password: false;
-}
+export const PasswordlessLoginStep = Schema.Struct({
+  identifierKinds: Schema.Array(Schema.Literal(...loginIdentifierKinds)).pipe(
+    Schema.minItems(1),
+    Schema.maxItems(loginIdentifierKinds.length),
+  ),
+  password: Schema.Literal(false),
+});
+export type PasswordlessLoginStep = typeof PasswordlessLoginStep.Type;
 
 /**
  * What a run's login needs from the owner when its recipe types no password, as a login question's

@@ -1,7 +1,7 @@
 import type { ModelProvider } from "@openai/agents";
 import { type Effect, Schema } from "effect";
 import { ExpectedConfirms } from "../browser/dialogs/expected.js";
-import { SignInRecipe } from "../destinations/sign-in-recipe.js";
+import { SignInRecipe, type PasswordlessLoginStep } from "../destinations/sign-in-recipe.js";
 import type { MintOutcome } from "../mint/contracts.js";
 import type { MintArtifact } from "../mint/input-feedback.js";
 import type {
@@ -88,10 +88,27 @@ export interface PomeradoRequest {
   readonly authenticationOrigins?: readonly string[];
 }
 
+/** A mint's request: what any call on the site takes, and the login its account signs in with. */
+export interface PomeradoMintRequest extends PomeradoRequest {
+  /**
+   * For an account with no password, such as one that signs in by a phone number and the code the
+   * site sends: the identifier kinds it signs in with, and `password: false`. A build has no recipe
+   * to read this from, as a run has (`recipeLoginStep`), so the host says it. Its login question
+   * carries this as `currentStep` and its answer holds the identifier alone; a code is asked for
+   * each screen that shows one. `ask` answers each with the value itself, since only a run reveals
+   * (`PomeradoOptions.reveal`). A screen that takes a password types nothing, and the minter hears
+   * that the login has none. Anything but one or more of a login's identifier kinds and no password
+   * fails before the mint starts. Absent, a build's login asks for a username and a password.
+   */
+  readonly passwordless?: PasswordlessLoginStep;
+}
+
 /**
- * A local mint's outcome. A build no longer sets `untrustedSignInOrigins`: it refuses a sign-in
- * form that submits off the site and `authenticationOrigins` before anything is typed, and counts
- * a screen as sent by its clicked submit. The field stays so older callers still type-check.
+ * A local mint's outcome. A published build reports its live tests (`liveTests`) and the Guardian
+ * review that allowed it (`publicationReview`). A build no longer sets `untrustedSignInOrigins`:
+ * it refuses a sign-in form that submits off the site and `authenticationOrigins` before anything
+ * is typed, and counts a screen as sent by its clicked submit. The field stays so older callers
+ * still type-check.
  */
 export type LocalMintOutcome = MintOutcome & {
   readonly untrustedSignInOrigins?: readonly string[];
@@ -105,7 +122,7 @@ export type LocalMintOutcome = MintOutcome & {
  * a run.
  */
 export interface Pomerado {
-  readonly mint: (request: PomeradoRequest) => Effect.Effect<LocalMintOutcome, Error>;
+  readonly mint: (request: PomeradoMintRequest) => Effect.Effect<LocalMintOutcome, Error>;
   /**
    * Runs a minted artifact on `url` with no Guardian review and no model request. Guardian
    * reviewed the artifact when it was minted. `intent`, `effect` and `authenticationOrigins` are

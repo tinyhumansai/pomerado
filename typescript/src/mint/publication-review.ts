@@ -551,8 +551,8 @@ const publicationAllowedEffect =
 /**
  * The local host's Guardian call for a publication review: `files` is the bundle, `evidence` the
  * publication files with the definition first, and `baseline` the source a read example ran, under
- * `executed/`. It returns the review's ID once Guardian allows; a denial fails as `ReviewDenied`
- * with Guardian's reason and findings.
+ * `executed/`. It returns the review's ID and rationale once Guardian allows; a denial fails as
+ * `ReviewDenied` with Guardian's reason and findings.
  */
 export type PublicationReview = (request: {
   readonly entrypoint: string;
@@ -568,7 +568,7 @@ export type PublicationReview = (request: {
   readonly references?: ReadonlyMap<string, string>;
   /** The minter's answers to the last denial's findings, screened (`PendingExecution`). */
   readonly findingResponses?: readonly FindingResponse[];
-}) => Effect.Effect<string, MintFailure>;
+}) => Effect.Effect<{ readonly reviewId: string; readonly rationale: string }, MintFailure>;
 
 /** What one finish_build would publish, and the evidence it is reviewed against. */
 export interface PublicationCandidate {
@@ -838,8 +838,8 @@ export const requestedNamesFeedback = (
 };
 
 /**
- * Runs the publication review and returns the allowing review's ID. An intent-derived example
- * input key the published schema does not list is a value the tool fixes itself, and an input the
+ * Runs the publication review and returns the allowing review's ID and rationale. An intent-derived
+ * example input key the published schema does not list is a value the tool fixes itself, and an input the
  * caller's request named that it does not list is one the tool drops: once Guardian allows, each
  * comes back as the host's own input feedback on the reviewed candidate, so, like Guardian's, the
  * minter gets rounds to fix it. A requested output field the output schema lacks comes back the
@@ -852,7 +852,7 @@ export const reviewPublication = (review: PublicationReview, candidate: Publicat
       { input: candidate.inputSchema, output: candidate.outputSchema },
       candidate.requested ?? {},
     );
-    const reviewId = yield* review({
+    const allowed = yield* review({
       entrypoint: candidate.entrypoint,
       files: candidate.files,
       allowedEffects: [publicationAllowedEffect],
@@ -865,6 +865,6 @@ export const reviewPublication = (review: PublicationReview, candidate: Publicat
         : { findingResponses: candidate.findingResponses }),
     });
     if (unlisted.length === 0 && missing.inputs.length === 0 && missing.outputs.length === 0)
-      return reviewId;
-    return yield* requestedNamesFeedback(candidate, { unlisted, ...missing }, reviewId);
+      return allowed;
+    return yield* requestedNamesFeedback(candidate, { unlisted, ...missing }, allowed.reviewId);
   });

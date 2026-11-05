@@ -451,10 +451,10 @@ export const requestContext = (session: StandaloneSession, request: PomeradoRequ
         const result = yield* guardian
           .review(reviewed, readSource)
           .pipe(Effect.mapError((failure) => reviewFailureOf(failure)));
-        const { outcome } = result.decision;
+        const { outcome, rationale } = result.decision;
         if (outcome !== "allow")
           return yield* reviewDenied(result.reviewId, { ...result.decision, outcome });
-        return result.reviewId;
+        return { reviewId: result.reviewId, rationale };
       });
     /** Guardian's review of a question the minter or a running script asks. */
     const reviewQuestion = (

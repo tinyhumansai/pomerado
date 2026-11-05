@@ -225,9 +225,10 @@ export const localSignInLogin = (options: {
   readonly register: (value: string) => void;
   readonly siteOrigin: string;
   /**
-   * What the login needs when the sign-in types no password (`recipeLoginStep`): the question
-   * offers only its identifier kinds, and the login is held without a password. A correction
-   * offers only the kind of the login the site rejected.
+   * What the login needs when the sign-in types no password (`recipeLoginStep` for a run, the
+   * host's `PomeradoMintRequest.passwordless` for a build): the question offers only its identifier
+   * kinds, and the login is held without a password. A correction offers only the kind of the
+   * login the site rejected.
    */
   readonly passwordless?: PasswordlessLoginStep;
 }): SignInLogin<MintFailure> => {

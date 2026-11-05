@@ -140,6 +140,7 @@ import {
   liveTestsEvidence,
   liveTestsEvidencePath,
   liveTestsEvidenceProblem,
+  liveTestsReport,
   liveTestsShortfall,
   liveTestVersion,
   LiveTestOutputChecks,
@@ -1852,8 +1853,17 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
         published: MintCompletion,
         coverage: string,
         assumptions: readonly BuildAssumption[] = [],
+        /** The publication record of the source this build published, for a read that has one. */
+        liveTests?: Parameters<typeof liveTestsReport>[0],
       ) =>
         Effect.gen(function* () {
+          const review =
+            published.review === undefined
+              ? undefined
+              : {
+                  ...published.review,
+                  rationale: yield* screenRationale(published.review.rationale),
+                };
           terminal = {
             build: "published",
             ...(published.publicationRef === undefined
@@ -1862,17 +1872,14 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
             ...("artifact" in published ? { artifact: published.artifact } : {}),
             summary: coverage,
             ...(assumptions.length === 0 ? {} : { assumptions }),
+            ...(liveTests === undefined ? {} : { liveTests: liveTestsReport(liveTests) }),
+            ...(review === undefined
+              ? {}
+              : { publicationReview: { reviewId: review.reviewId, rationale: review.rationale } }),
           };
           return JSON.stringify({
             status: "published",
-            ...(published.review === undefined
-              ? {}
-              : {
-                  review: {
-                    ...published.review,
-                    rationale: yield* screenRationale(published.review.rationale),
-                  },
-                }),
+            ...(review === undefined ? {} : { review }),
             ...(published.shareability === undefined
               ? {}
               : {
@@ -6752,7 +6759,12 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
                     " A fresh reviewed example read requires an available live host and host repeatableRead:true within the same input/account after confirmed executor cleanup. Otherwise never repeat the example or a write step that may have committed.",
                 );
               }
-              return yield* publicationResult(publication.right, coverage, assumptions);
+              return yield* publicationResult(
+                publication.right,
+                coverage,
+                assumptions,
+                liveTests?.record,
+              );
             }).pipe(recordPublicationDecision),
           ),
         // One open request at a time: the execution permit is held while the caller decides.
