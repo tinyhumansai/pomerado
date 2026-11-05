@@ -1,9 +1,10 @@
-import { writeFile } from "node:fs/promises";
+import { writeFileSync } from "node:fs";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Usage } from "@openai/agents";
 import type { AgentInputItem, ModelProvider, ModelRequest, ModelResponse } from "@openai/agents";
 import { Effect } from "effect";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { MintFailure } from "../../src/mint/contracts.js";
 import type { ExecutionEvidence, MintDependencies } from "../../src/mint/contracts.js";
 import { makeOpenAIMinter } from "../../src/mint/openai.js";
@@ -1268,4 +1269,87 @@ it("tracks a write across a takeover when the reviewer's save failed", async () 
       status: "may_have_applied",
     }),
   ]);
+});
+
+// The repeat guard reads a step's own import closure, whatever else a host lists: a name a step
+// uses, such as `process`, says nothing of which write it repeats.
+describe("the repeat guard on a host that lists its workspace", () => {
+  const plain = `import { defineOperation } from "../../runtime/index.js";\nexport default defineOperation;\n`;
+  const usesProcess = `${plain}export const zone = process.env["TZ"];\n`;
+  const ran = (dispatched: string[]) =>
+    allowedStep((entrypoint) =>
+      Effect.sync(() => {
+        dispatched.push(entrypoint);
+        return {
+          executionId: `write_${entrypoint}`,
+          status: "completed" as const,
+          effect: "possible" as const,
+          resultRef: "booking_result",
+          observations: { page: "Table booked." },
+        };
+      }),
+    );
+  const listing = (root: () => string): NonNullable<MintDependencies["workspaceFiles"]> =>
+    Effect.promise(async () => {
+      const entries = await readdir(root(), { recursive: true, withFileTypes: true });
+      return entries
+        .filter((entry) => entry.isFile())
+        .map((entry) => join(entry.parentPath, entry.name).slice(root().length + 1));
+    });
+
+  it.each([
+    ["a plain step", plain],
+    ["a step that uses a loader's name", usesProcess],
+  ])("refuses a copy of %s under a new name", async (_what, source) => {
+    const dispatched: string[] = [];
+    let root = "";
+    const f = await fixture(
+      (_request, index) => {
+        // The minter saves its copy after the write's digest was taken.
+        if (index === 1) writeFileSync(join(root, "src/book-copy.mjs"), source);
+        return (
+          [
+            minter("execute", step("src/book.mjs"), "first"),
+            minter("execute", step("src/book-copy.mjs"), "copy"),
+          ][index] ?? respond(message("Stopped."))
+        );
+      },
+      {
+        reviewAndExecute: ran(dispatched),
+        outcomeReview: reviewHost(scriptedReviewer(() => respond(message("Waiting."))).provider)
+          .host,
+        workspaceFiles: listing(() => root),
+      },
+      { effect: "write" },
+    );
+    root = (f.workspace as unknown as { root: string }).root;
+    await writeFile(join(root, "src/book.mjs"), source);
+    await f.run();
+    expect(dispatched).toEqual(["src/book.mjs"]);
+  });
+
+  it("runs a different step that also uses a loader's name", async () => {
+    const dispatched: string[] = [];
+    let root = "";
+    const f = await fixture(
+      (_request, index) =>
+        [
+          minter("execute", step("src/book.mjs"), "first"),
+          minter("execute", step("explore/readback.mjs"), "readback"),
+        ][index] ?? respond(message("Stopped.")),
+      {
+        reviewAndExecute: ran(dispatched),
+        outcomeReview: reviewHost(scriptedReviewer(() => respond(message("Waiting."))).provider)
+          .host,
+        workspaceFiles: listing(() => root),
+      },
+      { effect: "write" },
+    );
+    root = (f.workspace as unknown as { root: string }).root;
+    await writeFile(join(root, "src/book.mjs"), usesProcess);
+    await mkdir(join(root, "explore"), { recursive: true });
+    await writeFile(join(root, "explore/readback.mjs"), `${usesProcess}export const reads = true;\n`);
+    await f.run();
+    expect(dispatched).toEqual(["src/book.mjs", "explore/readback.mjs"]);
+  });
 });

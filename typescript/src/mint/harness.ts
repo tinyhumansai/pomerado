@@ -124,7 +124,7 @@ import {
   memoryHistoryArchive,
   minterHistory,
 } from "./outcome-review.js";
-import { executedSourceClosure, readImportClosure } from "./operation-source.js";
+import { readImportClosure } from "./operation-source.js";
 import { boundedResult, digestResult, resultDigestPath } from "./result-digest.js";
 import { contentDigest } from "./step-checks.js";
 import { writePathNotice } from "./write-session.js";
@@ -3413,26 +3413,29 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
       /** The caller's accepted answers and approved changes, in order, for the outcome reviewer. */
       const acceptedAnswers: unknown[] = [];
       /**
-       * The digest of what `entrypoint` can load from the workspace now, without paths: every file
-       * a computed import might name, on a host that lists its files (`workspaceFiles`), else its
-       * static imports. Undefined when it cannot be read, and a failed read is reported to the host.
+       * The digest of what `entrypoint`'s import closure holds in the workspace now, without
+       * paths, with `computed` for a module whose imports cannot be resolved statically; undefined
+       * when it cannot be read, and a failed read is reported to the host.
        */
-      const stepDigest = (entrypoint: string) =>
-        (dependencies.workspaceFiles === undefined
-          ? Effect.tryPromise({
-              try: () =>
-                readImportClosure(async (path) => {
+      const closureDigest = (
+        entrypoint: string,
+        computed: Effect.Effect<readonly string[], unknown>,
+      ) =>
+        computed.pipe(
+          Effect.flatMap((paths) =>
+            Effect.tryPromise({
+              try: async () => {
+                const read = async (path: string) => {
                   if ((await session.pathExists?.(path)) === false) return undefined;
                   const text: unknown = await session.readFile?.({ path });
                   return typeof text === "string" ? text : undefined;
-                }, entrypoint),
+                };
+                const files = await readImportClosure(read, entrypoint, paths);
+                return files.size === 0 ? undefined : contentDigest(files);
+              },
               catch: (error) => error,
-            })
-          : dependencies.workspaceFiles.pipe(
-              Effect.map((files) => executedSourceClosure(new Map(files), entrypoint)),
-            )
-        ).pipe(
-          Effect.map((files) => (files.size === 0 ? undefined : contentDigest(files))),
+            }),
+          ),
           Effect.catchAll((error) =>
             reportFailure(error, {
               component: "mint",
@@ -3443,6 +3446,21 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
             }).pipe(Effect.as(undefined)),
           ),
         );
+      /** A step's own source: its static imports, which tell one write's step from another. */
+      const stepDigest = (entrypoint: string) => closureDigest(entrypoint, Effect.succeed([]));
+      /**
+       * The source a live test speaks for: `entrypoint`'s import closure and, on a host that lists
+       * its files, all of src/ for a module whose imports cannot be resolved statically, since
+       * src/ ships whole. Never the rest of the workspace: a note or a probe there runs nothing.
+       */
+      const liveTestDigest = (entrypoint: string) => {
+        const listed: Effect.Effect<readonly string[], unknown> =
+          dependencies.workspaceFiles ?? Effect.succeed([]);
+        return closureDigest(
+          entrypoint,
+          Effect.map(listed, (paths) => paths.filter((path) => path.startsWith("src/"))),
+        );
+      };
       /** A write Guardian labelled, as the outcome reviewer tracks it. */
       const trackedWrite = (
         executionId: string,
@@ -4511,7 +4529,8 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
         Effect.suspend(() =>
           Effect.forEach(
             [...new Set(batchHistory.map(({ batch }) => batch.entrypoint))],
-            (entrypoint) => stepDigest(entrypoint).pipe(Effect.map((digest) => [entrypoint, digest] as const)),
+            (entrypoint) =>
+              liveTestDigest(entrypoint).pipe(Effect.map((digest) => [entrypoint, digest] as const)),
           ),
         ).pipe(
           Effect.map((digests) => {
@@ -4697,7 +4716,7 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
         Effect.gen(function* () {
           const host = dependencies.liveTests;
           if (host === undefined) return { problem: "This host runs no live test batches." };
-          const key = `${entrypoint}\n${(yield* stepDigest(entrypoint)) ?? ""}`;
+          const key = `${entrypoint}\n${(yield* liveTestDigest(entrypoint)) ?? ""}`;
           const known = liveTestSchemas.get(key);
           const schemas =
             known === undefined ? yield* Effect.either(host.schemas(entrypoint)) : Either.right(known);
@@ -4725,7 +4744,7 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
         Effect.gen(function* () {
           const read = yield* readCasesFile;
           const file = Either.isRight(read) ? read.right : emptyCases;
-          const digest = yield* stepDigest(entrypoint);
+          const digest = yield* liveTestDigest(entrypoint);
           const cases = file.cases.map((testCase) => ({
             ...caseView(testCase, countedRecord(entrypoint, testCase.id), digest),
             ...(options.show?.includes(testCase.id) &&
@@ -4891,7 +4910,7 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
               instruction:
                 "A next_page case needs the list fields in the tool's schemas: the string input cursor and output next_cursor, which listInputFields and listOutputFields from pomerado/runtime give. Add them, or drop next_page. Nothing was executed.",
             });
-          const digest = yield* stepDigest(request.entrypoint);
+          const digest = yield* liveTestDigest(request.entrypoint);
           if (digest === undefined)
             return JSON.stringify({
               kind: "host_live_tests",
@@ -4987,7 +5006,7 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
               ),
             );
           // The source the batch ran: a change while it ran leaves its results stale.
-          const after = yield* stepDigest(request.entrypoint);
+          const after = yield* liveTestDigest(request.entrypoint);
           const sourceDigest = after === digest ? digest : "changed_while_running";
           const verdicts: Record<string, number> = {};
           const judgedRuns = result.cases.flatMap((run) => {
@@ -5189,7 +5208,7 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
             {
               version: published,
               entrypoint,
-              sourceDigest: yield* stepDigest(entrypoint),
+              sourceDigest: yield* liveTestDigest(entrypoint),
               records: recordsOf(published),
               replaced: replacedOf(published),
               ...(yield* inputSchemaOf(entrypoint)),
@@ -5216,7 +5235,7 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
               versions.push({
                 version: "http",
                 entrypoint: httpEntrypoint,
-                sourceDigest: yield* stepDigest(httpEntrypoint),
+                sourceDigest: yield* liveTestDigest(httpEntrypoint),
                 records: recordsOf("http"),
                 replaced: replacedOf("http"),
                 ...(yield* inputSchemaOf(httpEntrypoint)),
@@ -5303,7 +5322,7 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
           const named = Either.isLeft(read)
             ? []
             : yield* Effect.forEach(entrypoints, (entrypoint) =>
-                stepDigest(entrypoint).pipe(
+                liveTestDigest(entrypoint).pipe(
                   Effect.flatMap((digest) =>
                     digest === undefined
                       ? Effect.succeed({ now: [], afterEdit: [] })
@@ -6115,7 +6134,7 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
                           liveTests: liveTests.record,
                           testedFields: fillsOnSource(
                             proposed.entrypoint,
-                            yield* stepDigest(proposed.entrypoint),
+                            yield* liveTestDigest(proposed.entrypoint),
                           ),
                         },
                       ]),

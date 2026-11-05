@@ -60,7 +60,7 @@ const mintDependencies = (state: MintState, publicationDecisions: PublicationDec
   const { projection, options } = state.session;
   const dependencies: MintDependencies = {
     workspace: workspace.session,
-    workspaceFiles: workspace.snapshot,
+    workspaceFiles: workspace.list,
     // Read-only, like the host's other captures, and never staged as source.
     saveResult: (path, text) => workspace.install(path, text).pipe(Effect.mapError(mintError)),
     instructions: authoring.instructions,
