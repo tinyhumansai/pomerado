@@ -273,6 +273,26 @@ describe("a phone number", () => {
     expect(secrets.redactCut("Sent to 298 55")).toBe("Sent to 298 55");
   });
 
+  // A calling code with so little after it says nothing: its patterns would mask every `+1`.
+  it.each([
+    ["+1 000 000 0000", "+1"],
+    ["001000", "+1"],
+    ["+1 000 000 0001", "+1 1"],
+    ["+44 020", "+44 20"],
+    ["+298 555", "+298 5 55"],
+  ])("registers %s only as given, never by its calling code", (number, shown) => {
+    const secrets = phone(number);
+    expect(secrets.redact(number)).toBe("[private]");
+    expect(secrets.redact(`Call ${shown} (800)`)).toBe(`Call ${shown} (800)`);
+    expect(refused(secrets, `const i${shown};`)).toBe(false);
+  });
+
+  it("masks a number of the fewest digits any country's has, behind its calling code", () => {
+    const secrets = phone("+683 4002");
+    expect(secrets.redact("Sent to +683 40 02.")).toBe("Sent to [private].");
+    expect(refused(secrets, "+683 40 02")).toBe(true);
+  });
+
   it("registers no digits a number has too few of to tell it from any other", () => {
     const secrets = phone("+1234567");
     expect(secrets.redact("+1234567 234567 1234567")).toBe("[private] 234567 1234567");

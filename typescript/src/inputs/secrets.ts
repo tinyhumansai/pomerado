@@ -41,6 +41,11 @@ const phoneGap = "(?:[\\s\\p{Pd}\\p{Cf}().+/]|%[0-9A-Fa-f]{2}){0,3}";
  * counts only behind its calling code, written in international form.
  */
 const phoneLocalLeast = 7;
+/**
+ * Fewer digits than this after the calling code are no country's number, and a number of all zeros
+ * has none left: patterns of so little would mask its calling code alone.
+ */
+const phoneLocalFewest = 4;
 /** A pattern for `digits` with `phoneGap` between each. */
 const gapped = (digits: string) => [...digits].join(phoneGap);
 /** A pattern for `digits` that a cut may end after any of them. */
@@ -57,10 +62,11 @@ const cutGapped = (digits: string) =>
  * escape may stand right before them (`run`); and one for the start of the run where a cut ended
  * the text (`cut`). A number with too few digits after its calling code (`phoneLocalLeast`) has no
  * `digits`, and its patterns match only with that code, after a `+` or `00`. Undefined for a value
- * not written as a number, such as a host's handle, or too short to say its calling code. Any marks
- * may group its digits, as a saved login or a login of another kind never met the shape a phone
- * answer must have, and what a letter starts, such as an extension, is no part of the number: the
- * value as given then counts whole in `run`, so its end doesn't stay beside what's masked.
+ * not written as a number, such as a host's handle, one too short to say its calling code, or one
+ * with too little after that code (`phoneLocalFewest`). Any marks may group its digits, as a saved
+ * login or a login of another kind never met the shape a phone answer must have, and what a letter
+ * starts, such as an extension, is no part of the number: the value as given then counts whole in
+ * `run`, so its end doesn't stay beside what's masked.
  */
 const phoneForms = (given: string) => {
   if (!writtenAsNumber(given)) return undefined;
@@ -68,7 +74,7 @@ const phoneForms = (given: string) => {
   const code = callingCode(number) ?? "";
   const local = (nationalDigits(number) ?? number.replaceAll(/[^0-9]/gu, "")).replace(/^0+/u, "");
   const short = local.length < phoneLocalLeast;
-  if (short && code === "") return undefined;
+  if (local.length < phoneLocalFewest || (short && code === "")) return undefined;
   const edge = "(?:(?<![0-9])|(?<=%[0-9A-Fa-f]{2}))";
   const lead = `${edge}${short ? "(?:\\+|%2[Bb]|00)" : "[+(]?"}`;
   const trunk = `(?:0${phoneGap})?`;
