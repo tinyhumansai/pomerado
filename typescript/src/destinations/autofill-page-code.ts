@@ -288,10 +288,11 @@ export type AutofillFillCall =
        * before the click every field of the step holds nothing (lengths only); its click reaches
        * none of them, and none of the elements `apartFrom` names in its frame, the screen's own
        * submit, methods and dismiss; its document holds no password in any form, as one an earlier
-       * screen typed may still be; and the form a control its click reaches submits, if any, holds
-       * no value in a text field a person could have typed (`resendRefused`). So nothing typed goes
-       * out with the press's own post, and it presses no other control of the screen. A control
-       * that submits no form may still send what its own script reads, as any click may.
+       * screen typed may still be; the form a control its click reaches submits, if any, holds no
+       * value in a text field a person could have typed; and its click reaches no link to another
+       * origin (`resendRefused`). So nothing typed goes out with the press's own post, it presses
+       * no other control of the screen, and it leaves no origin. A control that submits no form
+       * may still send what its own script reads, as any click may.
        */
       readonly resend?: { readonly apartFrom: readonly string[] };
     };
@@ -532,8 +533,9 @@ const noticeCoverCode = `(element, own, scroll) => {
  * every element a click of `element` may reach (`dismissCode`, `resendChecksCode`). A selector may
  * name what a control holds or a label for it, so the element alone says too little: a click at
  * its centre lands on whatever it holds there and bubbles through what holds it, and a label
- * among them clicks its control. A label that holds both a box and the element counts the box,
- * though a browser skips a label's click from a button inside it: refusing is the safe side.
+ * among them clicks its control, which bubbles in turn. A label that holds both a box and the
+ * element counts the box, though a browser skips a label's click from a button inside it: refusing
+ * is the safe side.
  */
 const clickReachCode = `// Open shadow roots count as part of their host: a host holds what its root holds.
   const parentOf = (node) => (node.parentNode instanceof ShadowRoot ? node.parentNode.host : node.parentNode);
@@ -559,7 +561,7 @@ const clickReachCode = `// Open shadow roots count as part of their host: a host
     const held = [...ancestry(element), ...within(element)];
     return [
       ...held,
-      ...held.flatMap((node) => (node instanceof HTMLLabelElement && node.control !== null ? [node.control] : [])),
+      ...held.flatMap((node) => (node instanceof HTMLLabelElement && node.control !== null ? ancestry(node.control) : [])),
     ];
   };`;
 
@@ -908,9 +910,10 @@ const pickerBesideCode = `(element, code) => {
  * field that still holds something fails the check, with its index; a control whose click may
  * reach (`clickReachCode`) one of the step's fields or of the elements `apartFrom` names in its
  * frame refuses as `same_control`, one whose document holds a password anywhere, by its type or
- * its autocomplete, as `password_held`, and one whose click may reach a control that submits a
- * form with a value in a text field a person could have typed, as `value_held`. Lengths only,
- * never a value; a read that fails refuses.
+ * its autocomplete, as `password_held`, one whose click may reach a control that submits a form
+ * with a value in a text field a person could have typed, as `value_held`, and one whose click may
+ * reach a link to another origin, as `other_origin`. Lengths only, never a value; a read that
+ * fails refuses.
  */
 const resendChecksCode = (apartFrom: readonly string[]) => `for (const [index, field] of fields.entries()) {
   const empty = await field.locator
@@ -994,11 +997,25 @@ const valueHeld = await resendControl
       );
   })
   .catch(() => true);
-if (valueHeld) return { resendRefused: "value_held", url: primary.url() };`;
+if (valueHeld) return { resendRefused: "value_held", url: primary.url() };
+// A link the click may reach that leaves the control's origin. What's inspected reads a link only
+// on the element itself, so a link that holds it, or a label's, counts only here. An address that
+// is a script stays: a page's own handler runs it, and what the handler sends is the page's.
+const otherOrigin = await resendControl
+  .evaluate((element) => {
+    ${clickReachCode}
+    return clickReach(element).some((node) => {
+      if (!node.matches("a[href], area[href]")) return false;
+      const to = new URL(node.getAttribute("href"), element.ownerDocument.baseURI);
+      return to.protocol !== "javascript:" && to.origin !== self.origin;
+    });
+  })
+  .catch(() => true);
+if (otherOrigin) return { resendRefused: "other_origin", url: primary.url() };`;
 
 /** A resend press's submit call that refused its control before the click (`resendChecksCode`). */
 export const ResendRefusedAnswer = Schema.Struct({
-  resendRefused: Schema.Literal("same_control", "password_held", "value_held"),
+  resendRefused: Schema.Literal("same_control", "password_held", "value_held", "other_origin"),
   url: Schema.String,
 });
 

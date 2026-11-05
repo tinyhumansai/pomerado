@@ -488,6 +488,74 @@ test("a press of a control that submits no form goes out beside a value that for
   expect(posts).toEqual([{ path: "/resend", form: {} }]);
 });
 
+// A click may reach a link the selector doesn't name, as what a link holds or a label beside it.
+const codeForm = `<form method="post" action="/verify">
+<label>Code <input id="code" name="code" autocomplete="one-time-code"></label>
+<button id="verify">Verify</button>
+</form>`;
+for (const [name, control] of [
+  [
+    "a span an off-site link holds",
+    '<a href="https://elsewhere.example.org/resend"><span id="press">Resend code</span></a>',
+  ],
+  [
+    "a label that holds an off-site link",
+    '<label id="press"><a href="https://elsewhere.example.org/resend">Resend code</a></label>',
+  ],
+  [
+    "a label for a button an off-site link holds",
+    '<a href="https://elsewhere.example.org/resend"><button type="button" id="again">Again</button></a><label id="press" for="again">Resend code</label>',
+  ],
+  [
+    "a span a link to another origin of the site holds",
+    '<a href="https://accounts.phone.example.test/resend"><span id="press">Resend code</span></a>',
+  ],
+] as const)
+  test(`a press never leaves the origin through ${name}`, async ({ page }) => {
+    const left: string[] = [];
+    await page.route(/elsewhere\.example\.org|accounts\.phone\.example\.test/u, async (route) => {
+      left.push(route.request().url());
+      await route.fulfill({ contentType: "text/html", body: "<p>Elsewhere</p>" });
+    });
+    const { pressed, posts, events } = await pressOn(page, `${codeForm}${control}`, {
+      ...codeOnly,
+      resend: "#press",
+    });
+    expect(pressed).toBe(false);
+    expect(posts).toEqual([]);
+    expect(left).toEqual([]);
+    expect(events).toEqual([expect.objectContaining({ outcome: "refused", part: "other_origin" })]);
+  });
+
+test("a press goes out through a span a link on the same site holds", async ({ page }) => {
+  const opened: string[] = [];
+  page.on("request", (request) => {
+    if (request.isNavigationRequest()) opened.push(new URL(request.url()).pathname);
+  });
+  const { pressed } = await pressOn(
+    page,
+    `${codeForm}<a href="/resend"><span id="press">Resend code</span></a>`,
+    { ...codeOnly, resend: "#press" },
+  );
+  expect(pressed).toBe(true);
+  expect(opened).toContain("/resend");
+});
+
+test("a press goes out through a link whose address is a script that does nothing", async ({
+  page,
+}) => {
+  const { pressed, posts } = await pressOn(
+    page,
+    `${codeForm}<a id="link" href="javascript:void(0)"><span id="press">Resend code</span></a>
+<script>document.getElementById("link").addEventListener("click", () => {
+  fetch("/resend", { method: "POST" });
+});</script>`,
+    { ...codeOnly, resend: "#press" },
+  );
+  expect(pressed).toBe(true);
+  expect(posts).toEqual([{ path: "/resend", form: {} }]);
+});
+
 test("a press never sends a code its box put back once emptied", async ({ page }) => {
   const { pressed, posts } = await pressOn(
     page,
