@@ -21,7 +21,7 @@ import { Deadline } from "../../src/runtime/deadline.js";
 import type { FieldFill } from "../../src/runtime/output-lint.js";
 import { validateAnswer } from "../../src/runtime/input-request.js";
 import { makeMintContinuationFixture, readAllow } from "../support/mint-fixtures.js";
-import { portableJobSession } from "../support/portable-mint.js";
+import { portableJobSession, portableMintProjection } from "../support/portable-mint.js";
 
 // A read signed out designs its own live test cases, runs them as batches and reads every result;
 // publication review gets the host's own record of them. These drive the minter's live_tests tool
@@ -348,6 +348,172 @@ it("runs the cases a read designed as one batch and hands publication the host's
   expect(published.seen[0]?.coverage).toContain(
     "4 cases. Playwright version (src/tool.ts): 3 pass, 1 fail, 0 inconclusive; 1 passed cold.",
   );
+});
+
+/** A build Guardian allowed, as a host's publish returns it. */
+const allowedBuild = (rationale: string) => ({
+  review: { reviewId: "review_publication", outcome: "allow" as const, rationale },
+  publicationRef: "published_revision",
+  diagnostics: [],
+});
+const allowed = (rationale: string): MintDependencies["publish"] => () =>
+  Effect.succeed(allowedBuild(rationale));
+
+// A host keeps a build by what its outcome says: the summary's coverage comes after the minter's
+// own words, so only these fields tell it what the live tests showed and what Guardian said.
+it("reports a published read's live test counts and Guardian's review in its outcome", async () => {
+  const { host } = liveTestHost({
+    "sort-price": {
+      status: "failed",
+      errorClass: "TimeoutError",
+      message: "locator.click: Timeout 5000ms exceeded",
+      frame: "src/tool.ts:12",
+    },
+    nothing: { status: "inconclusive", reason: "deadline" },
+  });
+  let root = "";
+  const f = await fixture(
+    async (_request, index) => {
+      if (index === 0) await writeWorkspace(root, { "test/cases.json": JSON.stringify(withPassing(cases, 3)) });
+      return (
+        [
+          call("execute", example, "example"),
+          call("live_tests", runAll, "run"),
+          call("finish_build", finish, "finish"),
+        ][index] ?? prose()
+      );
+    },
+    {
+      liveTests: host,
+      deadline: Deadline.after(30 * 60_000),
+      reviewAndExecute: completedExample,
+      publish: allowed("Reads the catalog only, for the account secret-canary."),
+      projection: portableMintProjection(["secret-canary"]),
+    },
+    read,
+  );
+  root = (f.workspace as unknown as { root: string }).root;
+  await writeWorkspace(root, { "src/tool.ts": toolSource });
+  const outcome = await f.run();
+
+  expect(outcome.build).toBe("published");
+  expect(outcome.liveTests).toEqual({
+    versions: [
+      {
+        version: "playwright",
+        entrypoint: "src/tool.ts",
+        sourceDigest: expect.any(String),
+        counts: { pass: 5, fail: 1, inconclusive: 1 },
+        coldPasses: expect.any(Number),
+      },
+    ],
+  });
+  // Guardian's words reach the host screened, as they reach the minter.
+  expect(outcome.publicationReview).toEqual({
+    reviewId: "review_publication",
+    rationale: expect.stringContaining("Reads the catalog only"),
+  });
+  expect(outcome.publicationReview?.rationale).not.toContain("secret-canary");
+  // Counts only: a case's input, purpose and output may hold what a page returned.
+  const reported = JSON.stringify(outcome.liveTests);
+  for (const held of ["lamp", "Timeout", "Sorting by price", "sort-price"])
+    expect(reported).not.toContain(held);
+});
+
+it("reports the live tests and the review of the publication that published", async () => {
+  const nothing = {
+    status: "completed",
+    output: { results: [], has_next_page: false, next_cursor: null },
+  } as const;
+  const { host } = liveTestHost((batch) => ({
+    nothing,
+    ...(batch === 0
+      ? { "sort-price": { status: "failed", errorClass: "Error", message: "No sort" } }
+      : {}),
+  }));
+  let published = 0;
+  let root = "";
+  const f = await fixture(
+    async (_request, index) => {
+      // The fix Guardian's denial asked for, whose results replace the first batch's.
+      if (index === 3) await writeWorkspace(root, { "src/tool.ts": `${toolSource}// fixed\n` });
+      return (
+        [
+          call("live_tests", runAll, "run"),
+          call("execute", example, "example"),
+          call("finish_build", finish, "denied"),
+          call("live_tests", runAll, "again"),
+          call("execute", example, "fixed_example"),
+          call("finish_build", finish, "published"),
+        ][index] ?? prose()
+      );
+    },
+    {
+      liveTests: host,
+      deadline: Deadline.after(30 * 60_000),
+      reviewAndExecute: completedExample,
+      publish: () =>
+        published++ === 0
+          ? Effect.fail(
+              new MintFailure({
+                code: "ReviewDenied",
+                review: { outcome: "deny", reviewId: "review_denied", rationale: "Sorting fails." },
+              }),
+            )
+          : Effect.succeed(allowedBuild("Sorting works now.")),
+    },
+    read,
+  );
+  root = (f.workspace as unknown as { root: string }).root;
+  await writeWorkspace(root, {
+    "src/tool.ts": toolSource,
+    "test/cases.json": JSON.stringify(withPassing(cases, 3)),
+  });
+  const outcome = await f.run();
+
+  expect(outcome.build).toBe("published");
+  expect(outcome.liveTests?.versions[0]?.counts).toEqual({ pass: 7, fail: 0, inconclusive: 0 });
+  expect(outcome.publicationReview).toEqual({
+    reviewId: "review_publication",
+    rationale: "Sorting works now.",
+  });
+});
+
+it("reports no live tests or review on a build that published nothing", async () => {
+  const { host } = liveTestHost({});
+  let root = "";
+  const f = await fixture(
+    async (_request, index) => {
+      if (index === 0) await writeWorkspace(root, { "test/cases.json": JSON.stringify(cases) });
+      return (
+        [
+          call("live_tests", runAll, "run"),
+          call("execute", example, "example"),
+          call("finish_build", finish, "denied"),
+        ][index] ?? prose()
+      );
+    },
+    {
+      liveTests: host,
+      deadline: Deadline.after(30 * 60_000),
+      reviewAndExecute: completedExample,
+      publish: () =>
+        Effect.fail(
+          new MintFailure({
+            code: "ReviewDenied",
+            review: { outcome: "deny", reviewId: "review_denied", rationale: "Never." },
+          }),
+        ),
+    },
+    read,
+  );
+  root = (f.workspace as unknown as { root: string }).root;
+  await writeWorkspace(root, { "src/tool.ts": toolSource });
+  const outcome = await f.run();
+
+  expect(outcome.build).toBe("incomplete");
+  expect(outcome.liveTests).toBeUndefined();
+  expect(outcome.publicationReview).toBeUndefined();
 });
 
 it("marks results stale in the publication record when the source changed after they ran", async () => {
@@ -2216,6 +2382,76 @@ it("runs no live tests for a write, signed in or not", async () => {
   await f.run();
   expect(resultOf(f.requests[2], "run")).toMatchObject({ status: "unavailable" });
   expect(batches).toHaveLength(0);
+});
+
+it("marks a signed-in read's reported live tests as run signed in", async () => {
+  const { host } = liveTestHost({});
+  const f = await fixture(
+    (_request, index) =>
+      [
+        call("execute", signInStep, "sign_in"),
+        call("execute", example, "example"),
+        call("live_tests", runAll, "run"),
+        call("finish_build", finish, "finish"),
+      ][index] ?? prose(),
+    {
+      liveTests: host,
+      deadline: Deadline.after(30 * 60_000),
+      reviewAndExecute: signingIn,
+      publish: allowed("Reads the signed-in account's orders."),
+    },
+    read,
+  );
+  const root = (f.workspace as unknown as { root: string }).root;
+  await writeWorkspace(root, {
+    "src/tool.ts": toolSource,
+    "src/sign-in.ts": toolSource,
+    "test/cases.json": JSON.stringify(combined),
+  });
+  const outcome = await f.run();
+
+  expect(outcome.build).toBe("published");
+  expect(outcome.liveTests).toMatchObject({
+    signedIn: true,
+    versions: [{ version: "playwright", counts: { pass: 2, fail: 0, inconclusive: 0 } }],
+  });
+});
+
+// A write's act session is the one run that proves it, so it has no live tests to report.
+it("reports Guardian's review and no live tests on a published write", async () => {
+  const { host } = liveTestHost({});
+  const f = await fixture(
+    (_request, index) =>
+      [
+        call("execute", { ...example, purpose: "act" }, "act"),
+        call("finish_build", finish, "finish"),
+      ][index] ?? prose(),
+    {
+      liveTests: host,
+      deadline: Deadline.after(30 * 60_000),
+      reviewAndExecute: () =>
+        Effect.succeed({
+          executionId: "execution_one",
+          status: "completed" as const,
+          effect: "verified" as const,
+          confirmation: "message",
+          resultRef: "protected_result",
+          observations: "Saved",
+        }),
+      publish: allowed("Saves the note and reads it back."),
+    },
+    { ...read, effect: "write" },
+  );
+  const root = (f.workspace as unknown as { root: string }).root;
+  await writeWorkspace(root, { "src/tool.ts": toolSource });
+  const outcome = await f.run();
+
+  expect(outcome.build).toBe("published");
+  expect(outcome.liveTests).toBeUndefined();
+  expect(outcome.publicationReview).toEqual({
+    reviewId: "review_publication",
+    rationale: "Saves the note and reads it back.",
+  });
 });
 
 // Testing scope follows what the tool is now. A repair of a read that starts signed out runs its

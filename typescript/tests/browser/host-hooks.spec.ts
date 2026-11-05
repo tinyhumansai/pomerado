@@ -19,8 +19,17 @@ import { SignInRunFailed } from "../../src/runtime/sign-in-replay.js";
 import { makeInputAsker } from "../../src/inputs/callback.js";
 import type { InputRequest } from "../../src/runtime/input-request.js";
 import type { EnteredCommit, OperationHooks } from "../../src/runtime/operation-hooks.js";
-import { html, startSite } from "./guardian-context-fixture.js";
+import {
+  call,
+  execution,
+  executionIdOf,
+  html,
+  patch,
+  recordingGuardian,
+  startSite,
+} from "./guardian-context-fixture.js";
 import { projectBrowser } from "./project-browser.js";
+import { mint } from "./standalone-mint-fixture.js";
 
 // A host drives Pomerado through its hooks: it watches each run start and move, holds a write's
 // click until it accepts the checkout the script read, hands the session's site data in and out,
@@ -905,5 +914,99 @@ test("a handle for a code on six one-character boxes is revealed once and typed 
     expect(calls).toEqual([]);
   } finally {
     await shop.close();
+  }
+});
+
+/** Reads the page's heading. Its query only tells one live test case from another. */
+const searchHeading = `import { Schema } from "effect";
+import { defineOperation } from "../runtime/index.js";
+export default defineOperation({name:"read_heading",input:Schema.Struct({query:Schema.String}),output:Schema.Struct({heading:Schema.String})},
+async ({kernel,sessionId}) => {
+  const read = await kernel.browsers.playwright.execute(sessionId,{code:"return await page.locator('h1').innerText();",timeout_sec:10});
+  if(!read.success) throw new Error(String(read.error));
+  return {heading:String(read.result)};
+});`;
+
+/** One case for each query, each expecting a result. */
+const headingCases = (...queries: readonly string[]) =>
+  JSON.stringify({
+    cases: queries.map((query) => ({
+      id: query,
+      purpose: `The heading for ${query}.`,
+      input: { query },
+      expect: "result",
+    })),
+  });
+
+/** Runs every live test case, then the example, and publishes the example's step. */
+const testAndPublish = [
+  () => [
+    call("live_tests", {
+      intent: "Run every planned case",
+      action: "run",
+      entrypoint: "src/tool.mjs",
+      cases: null,
+      maxWorkers: 1,
+    }),
+  ],
+  () => [
+    call(
+      "execute",
+      execution("example", "src/tool.mjs", { exampleInput: '{"query":"lamp"}' }),
+      "example",
+    ),
+  ],
+  (request: Parameters<typeof executionIdOf>[0]) => [
+    call("finish_build", {
+      intent: "Publish the reader",
+      entrypoint: "src/tool.mjs",
+      executionId: executionIdOf(request, "example"),
+      metadata: { name: "read_heading", description: "Read the page's heading" },
+      coverage: "Every case passes on this source. Host live tests: 99 pass, 0 fail.",
+    }),
+  ],
+];
+
+test("a published mint reports its live test counts and Guardian's notes in its outcome", async () => {
+  test.setTimeout(120_000);
+  const site = await startSite((_request, response) =>
+    html(response, "<title>Shop</title><h1>Shop</h1>"),
+  );
+  try {
+    const { built } = await mint({
+      effect: "read",
+      url: site.url,
+      guardian: recordingGuardian(),
+      intent: "Read the page's heading",
+      timeoutMs: 600_000,
+      turns: [
+        () =>
+          patch({
+            "src/tool.mjs": searchHeading,
+            "test/cases.json": headingCases("lamp", "chair"),
+          }),
+        ...testAndPublish,
+      ],
+    });
+
+    expect(built.build, JSON.stringify(built)).toBe("published");
+    // The host's own counts, whatever the minter's coverage says.
+    expect(built.liveTests).toEqual({
+      versions: [
+        {
+          version: "playwright",
+          entrypoint: "src/tool.mjs",
+          sourceDigest: expect.any(String),
+          counts: { pass: 2, fail: 0, inconclusive: 0 },
+          coldPasses: 0,
+        },
+      ],
+    });
+    expect(built.publicationReview).toEqual({
+      reviewId: expect.any(String),
+      rationale: "Recorded fixture review",
+    });
+  } finally {
+    await site.close();
   }
 });

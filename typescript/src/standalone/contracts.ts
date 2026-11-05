@@ -89,9 +89,11 @@ export interface PomeradoRequest {
 }
 
 /**
- * A local mint's outcome. A build no longer sets `untrustedSignInOrigins`: it refuses a sign-in
- * form that submits off the site and `authenticationOrigins` before anything is typed, and counts
- * a screen as sent by its clicked submit. The field stays so older callers still type-check.
+ * A local mint's outcome. A published build reports its live tests (`liveTests`) and the Guardian
+ * review that allowed it (`publicationReview`). A build no longer sets `untrustedSignInOrigins`:
+ * it refuses a sign-in form that submits off the site and `authenticationOrigins` before anything
+ * is typed, and counts a screen as sent by its clicked submit. The field stays so older callers
+ * still type-check.
  */
 export type LocalMintOutcome = MintOutcome & {
   readonly untrustedSignInOrigins?: readonly string[];

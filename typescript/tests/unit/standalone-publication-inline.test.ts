@@ -108,7 +108,7 @@ const publish = async (
     },
     browser: { execute: () => Effect.void },
   } as unknown as StandaloneSession;
-  const reviewId = await Effect.runPromise(
+  const allowed = await Effect.runPromise(
     requestContext(session, {
       intent: "Read the totals",
       url: "https://totals.example.test/",
@@ -125,7 +125,7 @@ const publish = async (
       ),
     ),
   );
-  expect(typeof reviewId).toBe("string");
+  expect(allowed).toEqual({ reviewId: expect.any(String), rationale: expect.any(String) });
   const input = reviewInput(requests[0]);
   return {
     publication: input["trusted_publication"] as Readonly<Record<string, unknown>>,

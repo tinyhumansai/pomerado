@@ -1355,6 +1355,48 @@ export const liveTestsEvidence = (options: {
 };
 
 /**
+ * What a published read's outcome says of its live tests: the counts of the publication record
+ * (`liveTestsEvidence`), the published version first, for a host that keeps a build by them. It
+ * holds no case: a case's input, purpose and result may quote what a page returned, so those stay
+ * with the review. `signedIn` says only cases run signed in count, so a `not_run` case is no gap;
+ * `outOfTime` and `noRunsLeft` say no further batch could run.
+ */
+export const LiveTestsReport = Schema.Struct({
+  versions: Schema.Array(
+    Schema.Struct({
+      version: Schema.Literal("playwright", "http"),
+      entrypoint: Schema.optionalWith(Schema.String, { exact: true }),
+      sourceDigest: Schema.optionalWith(Schema.String, { exact: true }),
+      counts: Schema.Struct({
+        pass: Schema.NonNegativeInt,
+        fail: Schema.NonNegativeInt,
+        inconclusive: Schema.NonNegativeInt,
+        stale: Schema.optionalWith(Schema.NonNegativeInt, { exact: true }),
+        not_run: Schema.optionalWith(Schema.NonNegativeInt, { exact: true }),
+      }),
+      coldPasses: Schema.NonNegativeInt,
+    }),
+  ),
+  signedIn: Schema.optionalWith(Schema.Literal(true), { exact: true }),
+  outOfTime: Schema.optionalWith(Schema.Literal(true), { exact: true }),
+  noRunsLeft: Schema.optionalWith(Schema.Literal(true), { exact: true }),
+});
+export type LiveTestsReport = typeof LiveTestsReport.Type;
+
+/** A publication record as the build's outcome reports it (`LiveTestsReport`). */
+export const liveTestsReport = (record: {
+  readonly versions: LiveTestsReport["versions"];
+  readonly signedIn?: boolean;
+  readonly outOfTime?: boolean;
+  readonly noRunsLeft?: boolean;
+}): LiveTestsReport => ({
+  versions: record.versions,
+  ...(record.signedIn === true ? { signedIn: true } : {}),
+  ...(record.outOfTime === true ? { outOfTime: true } : {}),
+  ...(record.noRunsLeft === true ? { noRunsLeft: true } : {}),
+});
+
+/**
  * The share of the published version's counted cases, in percent, that must pass on its source
  * before the harness sends a read's publication to review. Below it the review would hold
  * publication back on the failing cases anyway, so it is not started. The bar sits below every
