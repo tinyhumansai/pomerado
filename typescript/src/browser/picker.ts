@@ -200,6 +200,33 @@ const pickerPageCode = String.raw`(element, args) => {
     /(^|[\s_-])(group|header|heading|separator|divider|no-?results?|no-?options|no-?matches|no-?data|empty|loading|searching|optgroup|placeholder|footer|message)([\s_-]|$)/i;
   const creation = (node, text) =>
     /^\+?\s*(add|create)\s+(new\b|["\u201C\u2018'])/i.test(text) || node.matches('[class*="create-option" i], [class*="option-create" i], [data-create]');
+  // A row that would have the site locate the device, never a place: a tool sets the place it was
+  // given. Its words may be in any of its names or on a line of their own. They are a verb on the
+  // device's place ("Use my current location", "Set my location", "Using current location", "Use
+  // device location", "Use my position"), that verb and a bare "location" where the name starts
+  // ("Use location"), "Locate me", "Near me", a way to turn it on ("Enable location", "Allow access
+  // to your location", "Turn location on", "Use GPS", "Detect using GPS"), or a name that is only
+  // "My location" or "Your location", with at most a note such as "(GPS)". A store's "Use this
+  // location" or "Select location", a bare "Current location", which may name the store in use, and
+  // a place's name that holds such words, as "My Location Heights" does, stay rows to pick. A place
+  // whose name reads as one of these rows is dropped: that fails loud, as option_missing, where a
+  // locating row pressed would fail silently.
+  const locatingNames = [
+    /\b(?:using|use|(?:auto[-\s]?)?detect(?:ing)?|shar(?:e|ing)|fetch(?:ing)?|get(?:ting)?|find(?:ing)?|set(?:ting)?|select(?:ing)?|choos(?:e|ing)|pick(?:ing)?|go\s+to|access(?:ing)?)\s+(?:to\s+)?(?:(?:(?:my|your|the)\s+)?(?:current|device|live|precise|exact|browser|phone)|my|your)\s+(?:location|position)\b/i,
+    /^\W*(?:using|use|shar(?:e|ing)|fetch(?:ing)?|get(?:ting)?|find(?:ing)?|access(?:ing)?)\s+(?:location|position)\b|\b(?:auto[-\s]?)?detect(?:ing)?\s+(?:location|position)\b/i,
+    /\blocate\s+(?:me|my\s+(?:location|position|address))\b|^\W*(?:locate|find\s+me|(?:auto[-\s]?)?detect(?:ing)?(?:\s+automatically)?)\W*$/i,
+    /\bnear\s+(?:me|(?:my|your)\s+(?:current\s+)?(?:location|position))\b|\baround\s+me\b/i,
+    /\b(?:enabl(?:e|ing)|allow(?:ing)?|grant(?:ing)?|giv(?:e|ing)|provide|(?:turn(?:ing)?|switch(?:ing)?)\s+on|activat(?:e|ing))\s+(?:access\s+to\s+)?(?:(?:my|your|the|device|precise)\s+)*(?:location|gps)\b|\b(?:turn|switch)\s+(?:(?:my|your)\s+)?(?:location|gps)\s+on\b/i,
+    /\b(?:using|use|get(?:ting)?|fetch(?:ing)?|detect(?:ing)?)\s+(?:(?:my|your)\s+)?gps\b|\b(?:detect(?:ing)?|locat(?:e|ing)|find(?:ing)?)\s+(?:me\s+)?(?:using|via|by|with|through)\s+gps\b|^\W*(?:via|by)\s+gps\b|^\W*gps(?:\s+location)?\W*$|\blocation\s*\(gps\)/i,
+    /^\W*(?:my|your)\s+(?:current\s+)?(?:location|position)(?:\W*$|\s*[([,:|·•›>–—-])/i,
+  ];
+  const locating = (node, names) => {
+    const hints = [typeof node.className === "string" ? node.className : "", node.id, node.getAttribute("data-testid") ?? ""].join(" ");
+    return names.some((name) => locatingNames.some((rule) => rule.test(name))) ||
+      /geo-?locat|detect[-_]?(?:(?:my|your)[-_]?)?(?:current[-_]?)?location|locate[-_]?me/i.test(hints) ||
+      // A word of its own, so "warehouse-location" is no hint and "btnUseMyLocation" is one.
+      /(?:(?<![A-Za-z])use|Use)[-_]?(?:(?:[Mm]y|[Yy]our)[-_]?)?(?:(?:[Cc]urrent|[Dd]evice)[-_]?)?[Ll]ocation/.test(hints);
+  };
   const tiers = [
     "[role=option]",
     "[role=menuitem], [role=menuitemradio], [role=menuitemcheckbox], [role=treeitem]",
@@ -422,7 +449,7 @@ const pickerPageCode = String.raw`(element, args) => {
       names,
       value,
       disabled,
-      creation: creation(node, text),
+      creation: creation(node, text) || locating(node, [...names, ...lines]),
       selected: node.getAttribute("aria-selected") === "true" || node.getAttribute("aria-checked") === "true",
       top: scroller ? scroller.scrollTop : 0,
     };
@@ -535,7 +562,13 @@ const pickerPageCode = String.raw`(element, args) => {
  * (as whole words, only after the value's other words and ending the name or one of its parts),
  * and the like) are tried against names, so Fifth Avenue for 5th Avenue outranks an option with
  * the same words in another order. Two options at the best rank are ambiguous; an "Add ..." or "Create
- * ..." row is never matched.
+ * ..." row is never matched or offered, nor is a row that would have the site use, detect, set,
+ * find or go to the device's place, or turn on its location or GPS, such as "Use my current
+ * location", "Set my location", "Use device location", "Locate me", "Near me", "Allow location
+ * access", "Use GPS" or a name that is only "My location" or "Your location", in any of its names,
+ * on a line of its own, or as a class such as `use-current-location`. The rule is English only, and
+ * leans toward dropping a row: a place named like one fails as `option_missing`. A native list's
+ * options are not judged.
  *
  * The query is typed key by key, as a person types it, never filled at once, after clearing any
  * text the field holds. Waits follow the page, never a fixed pause: after typing, the options count once no loading

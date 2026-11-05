@@ -38,6 +38,48 @@ number; ask when it does not settle which. Build only that one, and state it in 
 description and the quantity field's description, such as "Units to add; an existing line grows
 by this many".
 
+Set a line's quantity with the site's own stepper through the SDK's `setQuantity`: import
+`quantityCode` from the runtime, paste it after `waitCode`, and call `setQuantity({ count,
+increase, decrease, add }, quantity, { overlays, limit })` with the verified locators of the line's
+count, its `+` and `−` controls, the control that adds the first one, such as ADD, and the loader
+the site draws over the stepper as `overlays`. It presses one step at a time and reads the count
+back after each, since many sites drop a press made under their loader or post each press as its
+own cart write, so presses sent together get lost or add too many. Each press is a cart write:
+enter the commit mark before the call, as the writes skill says. It returns `{ set: true, quantity,
+presses }`, or `{ set: false, reason: "limit", quantity, presses }` when the site takes no more, or
+no fewer, its next control greyed out, its own `limit` sign showing or a step it showed and then
+took back: return the site's limit as the tool's answer, the line as it stands. After its last
+press it waits for the page to show no progress for 2 s, so a site that saves the count a while
+after the last press, and then caps or reverts it, has answered first: a count the site takes back,
+as far as the count the line started from, comes back as the site's limit at that count. A page not
+yet quiet at the deadline, or a save still in flight then, fails as `unanswered`, since the write's
+outcome isn't known; on a page that never goes quiet it stops waiting after 15 s, once the requests
+then in flight end. Leave the call's deadline room for that wait. A press that leaves the count as
+it was, moves it by more than one or gets no settled answer by the deadline (`unanswered`) fails as
+a `QuantityFailure` with the count read: read the cart again before anything else, since a press
+may have landed. Never press a stepper with clicks of your own.
+
+## Read amounts
+
+Read money from the page with the SDK's `readAmount` and `readAmounts`: import `amountCode` from
+the runtime and paste it after `visibleTextCode`. `readAmounts(rows, { label, amount }, { currency
+})` reads a bill's or a cart's lines in one call, each as `{ label, amount, struck, text }`, and
+`readAmount(locator, { currency })` one element, such as a total or the amount an order button
+names. `amount` is `{ minor, currency, free }`, in the money form the core skill gives, and signed:
+an amount the page shows with a minus, or in brackets around an amount showing its currency, such
+as (₹20), is negative, as a wallet deduction often is, and an unsigned one, a bare bracketed number
+included, is positive, so tell a deduction the page shows unsigned by its line's own label; a line
+the site shows as FREE is zero with `free`; a free gift's zero line is zero; and an amount struck
+out beside the live one, such as an old price or a waived fee, comes back in `struck`, never as the
+amount. Pass as `currency` the currency the page prices in, for a bare number, a symbol several
+currencies share, or a currency code that is also an English word, such as ALL or TOP, which names
+a currency only when it is that `currency`. A deduction may show as a minus, a dash and a space ("-
+20,00 €"), or brackets, and comes back negative. Name the element that holds one amount: text with
+two numbers, such as a count beside a price, is no amount (null). `parseAmount(text, { currency })`
+reads text the tool already holds the same way. Return every line the page shows, fees, tips,
+donations, wallets and zero-priced gifts included, as data, and leave none out or fold it into
+another.
+
 ## Read the cart before and after
 
 Read the cart's lines before the write, in the session and in the composed script; never
@@ -68,6 +110,20 @@ plan for the item bought, is an input or a question too. A paid membership, subs
 trial the checkout offers is outside its purpose: decline it without asking, never accept it
 without an input the caller set, and handle its pop-up as conditional (the forms skill), since
 it shows only to some accounts.
+
+Choose the way to pay with `chooseOne` (the forms skill) on the way's own control, inside the
+payment frame through `frameLocator` when the site shows its ways to pay in one, and read which
+way is chosen with `readChoices` just before the commit, so the commit reports the way the page
+shows chosen. A way the page greys out or says is not available comes back unavailable with its
+words: return that as the site's answer, never pick another way unasked.
+
+When the site shows a payment QR code, return the payment it holds as text, never a picture of
+the page: read it with the SDK's `readQrCode(locator)`, after importing `qrCodeCode` from the
+runtime and pasting it, on the element that holds the code alone, an image, a canvas or an SVG,
+inside a frame through `frameLocator` too. It returns the code's text, such as a `upi://pay` link,
+and fails as `no_code` when the element shows no code it can read. When the page holds that link
+itself, such as in a link's `href`, prefer reading it there. Wait for the code to show first, and
+press a control that reveals it with a real click.
 
 ## Minimums and refusals
 

@@ -62,6 +62,16 @@ export { PickManyOutcome, PickOutcome, pickRefusal, pickerCode } from "./picker.
 export { closestFirst, pickerRanks, rankChoices } from "./picker-rank.js";
 export type { PickerChoice, PickerRank, PickerRanking } from "./picker-rank.js";
 export { visibleTextCode } from "./visible-text.js";
+export { chooseCode } from "./choose.js";
+export type { ChoiceState, ChoiceUnavailable, Chosen, ChooseOutcome, ChosenSign } from "./choose.js";
+export { quantityCode } from "./quantity.js";
+export type { QuantityLimited, QuantityOutcome, QuantitySet } from "./quantity.js";
+export { amountCode } from "./amounts.js";
+export type { AmountLine, AmountRead } from "./amounts.js";
+export { parseAmount } from "../runtime/amounts.js";
+export type { Amount } from "../runtime/amounts.js";
+export { qrCodeCode } from "./qr-code.js";
+export { decodeQr } from "../runtime/qr-decode.js";
 export { normalizeText, rankByWords, readBackMatches, sameText, spellingsOf } from "../runtime/text.js";
 export { saveAndReadBack } from "../runtime/save-read-back.js";
 export type { SavedValueDifference } from "../runtime/save-read-back.js";

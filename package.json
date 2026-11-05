@@ -1059,6 +1059,7 @@
     "@types/node": "24.13.4",
     "effect": "3.22.2",
     "patchright": "1.64.2",
+    "qrcode-generator": "2.0.4",
     "typescript": "7.0.2",
     "vitest": "5.0.5"
   },

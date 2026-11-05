@@ -33,7 +33,23 @@ export default defineConfig({
     {
       name: "firefox",
       use: { browserName: "firefox", launchOptions: { firefoxUserPrefs: firefoxPrefs } },
-      testMatch: ["**/native-firefox.spec.ts", "**/host-hooks.spec.ts"],
+      testMatch: [
+        "**/native-firefox.spec.ts",
+        "**/host-hooks.spec.ts",
+        "**/choose.spec.ts",
+        "**/quantity.spec.ts",
+        "**/amounts.spec.ts",
+        "**/qr-code.spec.ts",
+        "**/dismiss-patterns.spec.ts",
+        "**/order-press.spec.ts",
+        "**/location-pick.spec.ts",
+        "**/autofill-phone-read-back.spec.ts",
+        "**/autofill-code-boxes.spec.ts",
+        "**/sign-in-code-boxes.spec.ts",
+        "**/sign-in-code-sends-itself.spec.ts",
+        "**/sign-in-code-closes-in-place.spec.ts",
+        "**/sign-in-code-either-side.spec.ts",
+      ],
     },
     // Camoufox, a Firefox build, when CAMOUFOX_EXECUTABLE names its binary.
     ...(camoufox === undefined

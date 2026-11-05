@@ -167,16 +167,43 @@ const visibleTextPage = (elements, arg) => {
     return true;
   };
   const inline = (display) => display.startsWith("inline") || display === "contents" || display.startsWith("ruby");
-  const read = (root, lines) => {
+  // Struck out: an s, del or strike element, or a line-through on it.
+  const strikes = (element) =>
+    ["s", "del", "strike"].includes(element.localName) || String(style(element).textDecorationLine).includes("line-through");
+  // The root's text. With split, for reading amounts: text a person sees struck out, here or on an
+  // element around the root, is left out of it and comes back apart, one entry per struck-out
+  // element; a raised part, such as cents set as a superscript, reads apart from the text beside
+  // it only where two digits meet; and the text also comes back grouped, with a no-break or thin
+  // space that groups digits kept.
+  const read = (root, lines, split = false) => {
     const parts = [];
-    const visit = (node) => {
+    const runs = [];
+    let run = parts;
+    // Marks each side of a raised part. A mark reads as a space between two digits and as nothing
+    // elsewhere, so "$12" with a raised "97" is two numbers, while "$12." with a raised "97", or
+    // "₹1,299" with a raised ".00", reads as one.
+    const gap = {};
+    const joined = (pieces) => {
+      const text = [];
+      let gapped = false;
+      for (const piece of pieces) {
+        if (piece === gap) gapped = true;
+        else if (piece !== "") {
+          if (gapped && /\d$/u.test(text.at(-1) ?? "") && /^\d/u.test(piece)) text.push(" ");
+          text.push(piece);
+          gapped = false;
+        }
+      }
+      return text.join("");
+    };
+    const visit = (node, struck) => {
       if (node.nodeType === Node.TEXT_NODE) {
         const parent = parentOf(node);
         if (parent === null) return;
         const computed = style(parent);
         if (computed.visibility !== "visible") return;
         const keepBreaks = /^(pre|break-spaces)/u.test(computed.whiteSpace);
-        parts.push(keepBreaks ? node.data : node.data.replace(/[\t\n\r\f ]+/gu, " "));
+        (struck ? run : parts).push(keepBreaks ? node.data : node.data.replace(/[\t\n\r\f ]+/gu, " "));
         return;
       }
       if (node.nodeType !== Node.ELEMENT_NODE) return;
@@ -185,22 +212,43 @@ const visibleTextPage = (elements, arg) => {
         const computed = style(node);
         if (computed.display === "none" || parseFloat(computed.opacity) === 0 || excluded(node, computed)) return;
       }
+      const starts = split && !struck && node !== root && strikes(node);
+      if (starts) runs.push((run = []));
+      const inside = struck || starts;
+      const out = inside ? run : parts;
       if (node.localName === "br") {
-        parts.push("\n");
+        out.push("\n");
         return;
       }
       const computed = style(node);
       const display = computed.display;
-      const separator = display === "table-cell" ? " " : inline(display) ? "" : "\n";
-      parts.push(separator);
-      if (computed.contentVisibility !== "hidden") for (const child of childrenOf(node)) visit(child);
-      parts.push(separator);
+      const raised = split && (node.localName === "sup" || computed.verticalAlign === "super");
+      const separator = display === "table-cell" ? " " : inline(display) ? (raised ? gap : "") : "\n";
+      out.push(separator);
+      if (computed.contentVisibility !== "hidden") for (const child of childrenOf(node)) visit(child, inside);
+      out.push(separator);
     };
-    visit(root);
-    return normalize(parts.join(""), { lines });
+    let struckAround = false;
+    for (let at = root; split && at !== null && at.nodeType === Node.ELEMENT_NODE; at = parentOf(at))
+      if (strikes(at)) struckAround = true;
+    if (struckAround) runs.push((run = []));
+    visit(root, struckAround);
+    const text = normalize(joined(parts), { lines });
+    if (!split) return text;
+    // Normalized, but for a no-break or thin space between digits that three digits follow, as in
+    // "1 234,50", which groups them and which normalize would read as a plain space.
+    const grouped = (raw, keepLines) =>
+      raw.split(/(?<=\d)([\u00A0\u202F\u2009])(?=\d{3}(?!\d))/u)
+        .map((piece, at) => (at % 2 === 1 ? piece : normalize(piece, { lines: keepLines })))
+        .join("");
+    return {
+      text,
+      grouped: grouped(joined(parts), lines),
+      struck: runs.map((each) => grouped(joined(each), false)).filter((each) => each !== ""),
+    };
   };
   if (arg.fields === undefined)
-    return elements.map((element) => (rendered(element, null) ? read(element, arg.lines) : null));
+    return elements.map((element) => (rendered(element, null) ? read(element, arg.lines, arg.split === true) : null));
   const rows = elements.filter((element) => rendered(element, null));
   // No row rendered: an empty list when every row is a template with no box, such as a
   // no-results page's hidden or display: none row. A row that has a box but is hidden another
@@ -218,11 +266,11 @@ const visibleTextPage = (elements, arg) => {
       const candidates = field.selector === ":scope" ? [row] : [...row.querySelectorAll(field.selector)];
       const match = candidates.find((element) => element === row || rendered(element, row));
       const value = match === undefined ? null
-        : field.attribute === null ? read(match, field.lines ?? arg.lines)
+        : field.attribute === null ? read(match, field.lines ?? arg.lines, field.split === true)
         : match.getAttribute(field.attribute)?.trim() ?? null;
       if (value === null && field.required) return { missing: { field: name, row: index } };
-      if (value !== null && value.length > arg.maxLength)
-        return { tooLong: { field: name, row: index, length: value.length } };
+      const length = typeof value === "string" ? value.length : value?.text.length ?? 0;
+      if (length > arg.maxLength) return { tooLong: { field: name, row: index, length } };
       record[name] = value;
     }
     records.push(record);

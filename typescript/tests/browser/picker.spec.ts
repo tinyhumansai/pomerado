@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import type { Page } from "playwright";
 import { pageGlobal } from "./page-world.js";
 import { call, callFailure, serve, submitted } from "./picker-fixture.js";
 
@@ -1141,6 +1142,220 @@ input.addEventListener("input", () => {
   expect(await call(page, `return await pickValue(page.getByLabel("Vendor"), "Fabrikam", fast);`)).toEqual({
     result: { picked: false, reason: "option_missing", wanted: "Fabrikam", available: [], matches: [] },
   });
+});
+
+/**
+ * An area search whose suggestions always start with `locating`, rows that would share the
+ * browser's location, before the `areas` that hold the typed text. A press on such a row counts in
+ * `#located`.
+ */
+const areaSearch = (
+  locating: readonly string[],
+  areas: readonly string[] = ["Lake Road, Sector 4", "Lakeview Colony", "Old Market"],
+) => `<form><label>Area <input id="area" role="combobox" aria-controls="areas" autocomplete="off"></label>
+<ul id="areas" role="listbox"></ul><input type="hidden" name="area"><output id="located">0</output></form>
+<script>
+const input = document.getElementById("area"), list = document.getElementById("areas");
+input.addEventListener("input", () => {
+  const areas = ${JSON.stringify(areas)}.filter((name) => name.toLowerCase().includes(input.value.toLowerCase()));
+  list.innerHTML = ${JSON.stringify(locating)}.map((name) => '<li role="option" class="locate">' + name + "</li>").join("") +
+    areas.map((name) => '<li role="option">' + name + "</li>").join("");
+});
+list.addEventListener("click", (event) => {
+  const option = event.target.closest("[role=option]");
+  if (option.classList.contains("locate")) document.getElementById("located").value = "1";
+  else document.querySelector("[name=area]").value = option.textContent;
+  input.value = option.textContent;
+});
+</script>`;
+/** The labels `pickerOptions` lists for the area search after typing "Lake". */
+const lakeAreas = `return (await pickerOptions(page.getByLabel("Area"), { ...fast, query: "Lake" })).options.map((option) => option.label);`;
+/** `pickValue` of `wanted` in the area search, with room to type a value no row holds twice, key by key. */
+const pickArea = (page: Page, wanted: string) =>
+  call(page, `return await pickValue(page.getByLabel("Area"), ${JSON.stringify(wanted)}, { ...fast, timeout: 16000 });`);
+
+// A tool sets the place it was given and never lets the site locate the device.
+test("pickValue never picks or offers a row that uses or detects the device's location", async ({ page }) => {
+  await serve(page, areaSearch(["Use my current location", "Detect location using GPS"]));
+  // Only a locate row holds "Current location": none matches, and none is offered instead.
+  expect(await call(page, `return await pickValue(page.getByLabel("Area"), "Current location", fast);`)).toEqual({
+    result: { picked: false, reason: "option_missing", wanted: "Current location", available: [], matches: [] },
+  });
+  // Nor is one listed beside the areas a search finds.
+  expect(await call(page, lakeAreas)).toEqual({ result: ["Lake Road, Sector 4", "Lakeview Colony"] });
+  expect(await call(page, `return await pickValue(page.getByLabel("Area"), "Lake Road, Sector 4", fast);`)).toMatchObject({
+    result: { picked: true, label: "Lake Road, Sector 4" },
+  });
+  expect(await page.locator("#located").textContent()).toBe("0");
+});
+
+test("pickValue never picks or offers a row that finds or gets the device's location, or names it as yours", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  await serve(
+    page,
+    areaSearch(["Your location", "Find my location", "Get my location", "Find my current location", "Get my current location"]),
+  );
+  expect(await call(page, lakeAreas)).toEqual({ result: ["Lake Road, Sector 4", "Lakeview Colony"] });
+  for (const wanted of ["Your location", "My location", "Current location"])
+    expect(await pickArea(page, wanted)).toEqual({
+      result: { picked: false, reason: "option_missing", wanted, available: [], matches: [] },
+    });
+  expect(await page.locator("#located").textContent()).toBe("0");
+});
+
+test("pickValue never picks or offers a row that would turn on the device's location or GPS, or names it as mine", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  await serve(page, areaSearch(["My location", "Enable location", "Allow location access", "Turn on GPS", "Use GPS", "Locate me"]));
+  expect(await call(page, lakeAreas)).toEqual({ result: ["Lake Road, Sector 4", "Lakeview Colony"] });
+  for (const wanted of ["My location", "Allow location access", "Use GPS"])
+    expect(await pickArea(page, wanted)).toEqual({
+      result: { picked: false, reason: "option_missing", wanted, available: [], matches: [] },
+    });
+  expect(await page.locator("#located").textContent()).toBe("0");
+});
+
+test("pickValue never picks or offers a row that sets, goes to or shares the device's place, in any of its words", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  await serve(
+    page,
+    areaSearch([
+      "Set current location",
+      "Select current location",
+      "Go to current location",
+      "Using current location",
+      "Detecting current location",
+      "Set my location",
+      "Go to my location",
+      "Near my location",
+      "My location (GPS)",
+      "Use location",
+      "Near me",
+      "Grant location access",
+      "Use device location",
+      "Use my position",
+      "Autodetect location",
+      "Detect automatically",
+      "Allow access to your location",
+      "Turn location on",
+      "Detect using GPS",
+    ]),
+  );
+  expect(await call(page, lakeAreas)).toEqual({ result: ["Lake Road, Sector 4", "Lakeview Colony"] });
+  for (const wanted of ["Current location", "My location", "Near me"])
+    expect(await pickArea(page, wanted)).toEqual({
+      result: { picked: false, reason: "option_missing", wanted, available: [], matches: [] },
+    });
+  expect(await page.locator("#located").textContent()).toBe("0");
+});
+
+/**
+ * A search that lists `rows`, the markup of each row, whatever is typed. `#pressed` names the row
+ * last pressed, by its `data-name`.
+ */
+const rowSearch = (rows: readonly string[]) => `<form><label>Area <input id="area" role="combobox" aria-controls="areas" autocomplete="off"></label>
+<ul id="areas" role="listbox"></ul><output id="pressed">none</output></form>
+<script>
+const input = document.getElementById("area"), list = document.getElementById("areas");
+input.addEventListener("input", () => { list.innerHTML = ${JSON.stringify(rows.join(""))}; });
+list.addEventListener("click", (event) => {
+  const row = event.target.closest("[role=option]");
+  document.getElementById("pressed").textContent = row.dataset.name;
+  input.value = row.dataset.name;
+});
+</script>`;
+
+test("pickValue never picks or offers a locating row whose words are only in a label, a title, a line or a class", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  await serve(
+    page,
+    rowSearch([
+      '<li role="option" data-name="by label" aria-label="Use my current location">Current location</li>',
+      '<li role="option" data-name="by title" title="Use my current location">Current location</li>',
+      '<li role="option" data-name="by line">My location<br><small>Near MG Road</small></li>',
+      '<li role="option" data-name="by class" class="use-current-location">Current location</li>',
+      '<li role="option" data-name="by camel class" class="btnUseMyLocation">Current location</li>',
+      '<li role="option" data-name="by test id" data-testid="use-my-location">Current location</li>',
+      '<li role="option" data-name="Lake Road">Lake Road</li>',
+    ]),
+  );
+  expect(
+    await call(page, `return (await pickerOptions(page.getByLabel("Area"), { ...fast, query: "Lake" })).options.map((option) => option.label);`),
+  ).toEqual({ result: ["Lake Road"] });
+  for (const wanted of ["Current location", "My location"])
+    expect(await pickArea(page, wanted)).toMatchObject({
+      result: { picked: false, reason: "option_missing", wanted, matches: [] },
+    });
+  await expect(page.locator("#pressed")).toHaveText("none");
+});
+
+test("pickValue still picks a store row whose offer is to choose it, in a class of its own too", async ({ page }) => {
+  test.setTimeout(60_000);
+  await serve(
+    page,
+    rowSearch([
+      '<li role="option" data-name="Riverside Store">Riverside Store<br><small>Select location</small></li>',
+      '<li role="option" data-name="Hillcrest Store">Hillcrest Store<br><small>Set as my location</small></li>',
+      '<li role="option" data-name="Lakeside Store" class="warehouse-location use-this-location">Lakeside Store</li>',
+    ]),
+  );
+  for (const wanted of ["Riverside Store", "Hillcrest Store", "Lakeside Store"]) {
+    expect(await pickArea(page, wanted)).toMatchObject({
+      result: { picked: true, label: wanted },
+    });
+    await expect(page.locator("#pressed")).toHaveText(wanted);
+  }
+});
+
+// Places whose names hold those words, beside a row that would locate the device: a place is
+// named, never asked for, so it stays a row to pick.
+test("pickValue still picks a place whose name holds words a locating row uses", async ({ page }) => {
+  test.setTimeout(60_000);
+  const places = ["My Location Heights, Sector 2", "GPS Colony", "Location Enabled Plaza", "Near Metro Station", "Current Location Bar, Goa"];
+  await serve(page, areaSearch(["Use GPS"], places));
+  for (const wanted of places) {
+    expect(await pickArea(page, wanted)).toMatchObject({
+      result: { picked: true, label: wanted },
+    });
+    expect(await submitted(page)).toEqual({ area: wanted });
+  }
+  expect(await page.locator("#located").textContent()).toBe("0");
+});
+
+// A store search that lists the store in use first, as "Current location", then each store with
+// an offer to use it: "Use this location" and a bare "Current location" name a store, never the
+// device's location, so the rows stay ones to pick.
+test("pickValue still picks a store row that offers to use that location, or names the current one", async ({ page }) => {
+  await serve(page, `<form><label>Store <input id="store" role="combobox" aria-controls="stores" autocomplete="off"></label>
+<ul id="stores" role="listbox"></ul><input type="hidden" name="store"></form>
+<script>
+const input = document.getElementById("store"), list = document.getElementById("stores");
+input.addEventListener("input", () => {
+  const stores = ["Lakeside Store", "Hillcrest Store"].filter((name) => name.toLowerCase().includes(input.value.toLowerCase()));
+  list.innerHTML = '<li role="option" data-value="Hillcrest Store">Current location</li>' +
+    stores.map((name) => '<li role="option" data-value="' + name + '"><span>' + name + '</span><br><small>Use this location</small></li>').join("");
+});
+list.addEventListener("click", (event) => {
+  const option = event.target.closest("[role=option]");
+  document.querySelector("[name=store]").value = option.dataset.value;
+  input.value = option.dataset.value;
+});
+</script>`);
+  expect(await call(page, `return await pickValue(page.getByLabel("Store"), "Lakeside Store", fast);`)).toMatchObject({
+    result: { picked: true, label: "Lakeside Store" },
+  });
+  expect(await submitted(page)).toEqual({ store: "Lakeside Store" });
+  expect(await call(page, `return await pickValue(page.getByLabel("Store"), "Current location", fast);`)).toMatchObject({
+    result: { picked: true, label: "Current location", value: "Hillcrest Store" },
+  });
+  expect(await submitted(page)).toEqual({ store: "Hillcrest Store" });
 });
 
 test("pickValue fails fast as popup_missing when the control opens nothing", async ({ page }) => {
