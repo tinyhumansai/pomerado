@@ -205,3 +205,17 @@ it("masks a phone number the owner gives in place in each form a page writes it"
     "[private], [private], [private], [private]",
   );
 });
+
+it("masks a number the owner gives in place for any identifier, and leaves other values as given", async () => {
+  const secrets = makeRunSecrets();
+  const ask = makeLoginFieldAsk({
+    broker: localSecretBroker(secrets),
+    unavailable: (operation) => new UnavailableField({ operation }),
+    site: "example.com",
+    given: { current: {} },
+  });
+  await Effect.runPromise(ask.ask(owner(["5551234567"], "text").asker, ["account_number"]));
+  expect(secrets.redact("Account 555-123-4567")).toBe("Account [private]");
+  await Effect.runPromise(ask.ask(owner(["12345678"], "secret").asker, "recovery_code"));
+  expect(secrets.redact("Code 1234-5678")).toBe("Code 1234-5678");
+});

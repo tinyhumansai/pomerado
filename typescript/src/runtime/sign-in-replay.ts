@@ -31,7 +31,12 @@ import type {
   AutofillRetryState,
 } from "./autofill-replay-steps.js";
 import type { ReplayWorkspace } from "./autofill-replay-workspace.js";
-import type { AutofillHooks, SecretBroker } from "./autofill-state.js";
+import {
+  type AutofillHooks,
+  isIdentifier,
+  type RegisteredEntity,
+  type SecretBroker,
+} from "./autofill-state.js";
 import { typedValues } from "./autofill-values.js";
 import { logicalRejectedField } from "./autofill-rejection.js";
 import type { InputAsker } from "./input-request.js";
@@ -138,8 +143,9 @@ export type WorkspaceOriginEvent =
   | { readonly kind: "unrecognized_sibling"; readonly origin: string };
 
 /**
- * What the local host masks: each value a sign-in types, and a text checked for one. A value named
- * a `phone` number also counts in the forms a site writes it back in.
+ * What the local host masks: each value a sign-in types, and a text checked for one. A value that
+ * may be a `phone` number, as any identifier may, also counts in the forms a site writes a number
+ * back in, when it has a phone's shape.
  */
 export interface RunSignInSecrets {
   readonly register: (value: string, kind?: "phone") => void;
@@ -241,7 +247,8 @@ const revealedValues = (
       }
       // Each field's own form, as one handle may fill fields that take it differently.
       for (const form of revealedForms(input.step.fields[index], revealed)) secrets.register(form);
-      if (input.step.fields[index]?.slot === "phone") secrets.register(revealed, "phone");
+      const field = input.step.fields[index];
+      if (field !== undefined && isIdentifier(field.slot)) secrets.register(revealed, "phone");
       values.push(revealed);
       revealedFor.push(origin);
     }
@@ -365,10 +372,18 @@ const replayHooks = <E>(
   };
 };
 
+/** The entities of a login's identifiers, any of which may be a number. */
+const identifierEntities: ReadonlySet<RegisteredEntity> = new Set([
+  "EMAIL",
+  "PHONE",
+  "ACCOUNT_NUMBER",
+  "PRIVATE_IDENTIFIER",
+]);
+
 /** The local masking as the shared sign-in code's broker, for runs and builds. */
 export const localSecretBroker = (secrets: RunSignInSecrets): SecretBroker => ({
   register: ({ entity, value }) =>
-    Effect.sync(() => secrets.register(value, entity === "PHONE" ? "phone" : undefined)),
+    Effect.sync(() => secrets.register(value, identifierEntities.has(entity) ? "phone" : undefined)),
   registeredSecretMatches: (text) =>
     Effect.either(secrets.assertAbsent(text)).pipe(
       Effect.map((found) => (found._tag === "Left" ? [found.left] : [])),

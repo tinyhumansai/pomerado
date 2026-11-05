@@ -274,14 +274,14 @@ export const localSignInLogin = (options: {
         return yield* new MintFailure({ code: "Unavailable", loginDeclined: answer.value.declined });
       if (answer?.type !== "credential" || answer.value.username === undefined)
         return yield* loginFailure(new Error("The login answer holds no username"));
-      options.register(answer.value.username);
+      // Any login's identifier may be a number a site writes back in its own format.
+      options.register(answer.value.username, "phone");
       // A sign-in that types no password holds none; any other needs one. The kind the question
       // offered, or the one the owner picked, is the login's own, as a saved login's record says:
       // its field fills the screens that accept it.
       if (kinds !== undefined) {
         const { username } = answer.value;
         const kind = answer.value.identifierKind ?? (kinds.length === 1 ? kinds[0] : undefined);
-        if (kind === "phone") options.register(username, "phone");
         held = {
           username,
           ...(kind === undefined ? {} : { primaryIdentifierKind: kind }),
