@@ -152,13 +152,21 @@ test("takes a phone box beside a calling-code picker that shows the number's cal
   expect(typed).toEqual([number]);
 });
 
-/** A fill the host stopped as it stops today: the typed field gone, nothing typed again or sent. */
-const refusedAsToday = async (page: Page, received: readonly object[], result: Awaited<ReturnType<typeof fill>>) => {
+/**
+ * A fill the host stopped as it stops today: the typed field gone, nothing typed again or sent,
+ * for `phoneSwap`, the reason it didn't follow the swap (`followPhoneSwap`).
+ */
+const refusedAsToday = async (
+  page: Page,
+  received: readonly object[],
+  result: Awaited<ReturnType<typeof fill>>,
+  phoneSwap: string,
+) => {
   expect(result.report).toMatchObject({
     outcome: "filled",
     fields: [{ slot: "phone", status: "filled" }],
     submit: "refused",
-    failureDetail: { phase: "not_found" },
+    failureDetail: { phase: "not_found", context: { phoneSwap } },
   });
   expect(result.report).not.toHaveProperty("clicked");
   expectOriginsOnly(result.report);
@@ -171,7 +179,7 @@ test("refuses a phone box beside a calling-code picker that shows another callin
   page,
 }) => {
   const received = await serve(page, screen(pickerAndBox("1")));
-  await refusedAsToday(page, received, await fill(page));
+  await refusedAsToday(page, received, await fill(page), "calling_code");
   await expect(page.locator("#phone")).toHaveValue("9876543210");
 });
 
@@ -180,10 +188,7 @@ const refusedForCallingCode = async (
   page: Page,
   received: readonly object[],
   result: Awaited<ReturnType<typeof fill>>,
-) => {
-  await refusedAsToday(page, received, result);
-  expect(result.report).toMatchObject({ failureDetail: { context: { phoneSwap: "calling_code" } } });
-};
+) => refusedAsToday(page, received, result, "calling_code");
 
 for (const [name, picker] of [
   [
@@ -300,57 +305,74 @@ document.getElementById("phone").value = national;`),
 
 test("refuses a phone box in another origin's frame", async ({ page }) => {
   const received = await serve(page, screen(`box.innerHTML = '<iframe src="${other}/phone"></iframe>';`), {
-    [`${other}/phone`]: '<input id="phone" name="phone" type="tel" value="9876543210">',
+    [`${other}/phone`]: '<input id="phone" name="phone" type="tel" value="+919876543210">',
   });
-  await refusedAsToday(page, received, await fill(page));
+  await refusedAsToday(page, received, await fill(page), "another_document");
 });
 
 test("refuses a phone box in another document of the same origin", async ({ page }) => {
   const received = await serve(page, screen(`box.innerHTML = '<iframe src="${site}/phone"></iframe>';`), {
-    [`${site}/phone`]: '<input id="phone" name="phone" type="tel" value="9876543210">',
+    [`${site}/phone`]: '<input id="phone" name="phone" type="tel" value="+919876543210">',
   });
-  await refusedAsToday(page, received, await fill(page));
+  await refusedAsToday(page, received, await fill(page), "another_document");
 });
 
-test("refuses a phone box in another form", async ({ page }) => {
-  const received = await serve(
-    page,
-    screen(`box.remove();
-document.body.insertAdjacentHTML("beforeend", '<form action="/elsewhere" method="post"><label>Mobile number <input id="phone" name="phone" type="tel"></label></form>');
-document.getElementById("phone").value = national;`),
-  );
-  await refusedAsToday(page, received, await fill(page));
-});
+// Each holds the whole number, so only what the host judged of its form tells it from a phone box
+// it would follow: national digits alone would stop for their calling code first.
+for (const [name, form] of [
+  ["that sends elsewhere", '<form action="/elsewhere" method="post">'],
+  ["that sends by another method", '<form action="/session" method="get">'],
+] as const)
+  test(`refuses a phone box in another form ${name}`, async ({ page }) => {
+    const received = await serve(
+      page,
+      screen(`box.remove();
+document.body.insertAdjacentHTML("beforeend", '${form}<label>Mobile number <input id="phone" name="phone" type="tel"></label></form>');
+document.getElementById("phone").value = "+91" + national;`),
+    );
+    await refusedAsToday(page, received, await fill(page), "another_document");
+  });
 
-for (const [name, box] of [
-  ["a password box", '<label>Password <input id="other" name="password" type="password"></label>'],
-  ["a code box", '<label>Code <input id="other" name="otp" autocomplete="one-time-code"></label>'],
-  ["a code box that takes digits as a phone box does", '<label>PIN <input id="other" name="pin" type="tel"></label>'],
-  ["a text box that names no phone", '<label>Name <input id="other" name="name"></label>'],
+// Each holds the whole number, so only what the box is tells it from a phone box the host would
+// follow: national digits alone would stop for their calling code first.
+for (const [name, box, reason] of [
+  ["a password box", '<label>Password <input id="other" name="password" type="password"></label>', "no_phone_box"],
+  ["a code box", '<label>Code <input id="other" name="otp" autocomplete="one-time-code"></label>', "no_phone_box"],
+  [
+    "a code box that takes digits as a phone box does",
+    '<label>PIN <input id="other" name="pin" type="tel"></label>',
+    "other_kind",
+  ],
+  [
+    "a box that takes digits and names a card",
+    '<label>Card <input id="other" name="cardNumber" inputmode="tel"></label>',
+    "other_kind",
+  ],
+  ["a text box that names no phone", '<label>Name <input id="other" name="name"></label>', "no_phone_box"],
 ] as const)
   test(`refuses a swap to ${name}`, async ({ page }) => {
     const received = await serve(
       page,
       screen(`box.innerHTML = ${JSON.stringify(box)};
-document.getElementById("other").value = national;`),
+document.getElementById("other").value = "+91" + national;`),
     );
-    await refusedAsToday(page, received, await fill(page));
+    await refusedAsToday(page, received, await fill(page), reason);
   });
 
 test("refuses a phone box that holds another number", async ({ page }) => {
-  const received = await serve(page, screen(phoneBox('"9999988888"')));
-  await refusedAsToday(page, received, await fill(page));
-  await expect(page.locator("#phone")).toHaveValue("9999988888");
+  const received = await serve(page, screen(phoneBox('"+919999988888"')));
+  await refusedAsToday(page, received, await fill(page), "value_changed");
+  await expect(page.locator("#phone")).toHaveValue("+919999988888");
 });
 
 test("refuses a phone box that holds the number cut short", async ({ page }) => {
-  const received = await serve(page, screen(phoneBox("national.slice(1)")));
-  await refusedAsToday(page, received, await fill(page));
+  const received = await serve(page, screen(phoneBox('"+91" + national.slice(1)')));
+  await refusedAsToday(page, received, await fill(page), "value_changed");
 });
 
 test("refuses a swap that clears the value", async ({ page }) => {
   const received = await serve(page, screen(phoneBox('""')));
-  await refusedAsToday(page, received, await fill(page));
+  await refusedAsToday(page, received, await fill(page), "value_gone");
   await expect(page.locator("#phone")).toHaveValue("");
 });
 
@@ -358,10 +380,10 @@ test("refuses two phone boxes, either of which may be the replacement", async ({
   const received = await serve(
     page,
     screen(`box.innerHTML = '<input id="phone" name="phone" type="tel"><input id="phone2" name="phone2" type="tel">';
-document.getElementById("phone").value = national;
-document.getElementById("phone2").value = national;`),
+document.getElementById("phone").value = "+91" + national;
+document.getElementById("phone2").value = "+91" + national;`),
   );
-  await refusedAsToday(page, received, await fill(page));
+  await refusedAsToday(page, received, await fill(page), "refused");
 });
 
 /** The screen with no form: its button sends what the phone box and picker hold by script. */
@@ -395,7 +417,7 @@ test("refuses a picker beside a phone box in no form that shows another calling 
   page,
 }) => {
   const received = await serve(page, formless("1"));
-  await refusedAsToday(page, received, await fill(page));
+  await refusedAsToday(page, received, await fill(page), "calling_code");
 });
 
 test("refuses a phone box in a frame of its own that reads as the screen's place, on a screen with no form", async ({
