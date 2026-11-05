@@ -955,6 +955,38 @@ test.describe("readiness before acting", () => {
     expect(answer.message).toMatch(/: covered by div#chat-launcher\.widget\.frame; /u);
   });
 
+  test("a control the page turns clicks off for with pointer-events: none waits as covered until they are back", async ({
+    page,
+  }) => {
+    // A save bar that turns its button's clicks off while it saves, with no disabled attribute.
+    await page.setContent(`
+      <div class="save-bar"><button id="save" class="btn disabled" style="pointer-events: none">Save</button></div>
+      <script>
+        window.begin = () => setTimeout(() => {
+          const save = document.getElementById("save");
+          save.classList.remove("disabled");
+          save.style.pointerEvents = "";
+        }, 500);
+      </script>`);
+    const answer = await ready(page, `page.locator("#save")`, "stableMs: 100");
+    expect(answer.waitedFor).toContain("covered");
+    expect(answer.ms).toBeGreaterThanOrEqual(500);
+  });
+
+  test("a control behind a modal dialog waits as covered until the dialog closes", async ({ page }) => {
+    await page.setContent(`
+      <button id="pay">Pay</button>
+      <dialog id="confirm"><p>Confirm your address</p><button>Confirm</button></dialog>
+      <script>
+        const dialog = document.getElementById("confirm");
+        dialog.showModal();
+        window.begin = () => setTimeout(() => dialog.close(), 500);
+      </script>`);
+    const answer = await ready(page, `page.locator("#pay")`, "stableMs: 100");
+    expect(answer.waitedFor).toContain("covered");
+    expect(answer.ms).toBeGreaterThanOrEqual(500);
+  });
+
   /** A checkout whose Pay button sits in a frame from another origin, under `layer` in the page. */
   const framedPay = async (page: Page, layer: string) => {
     await page.context().route("https://shop.example.test/**", (route) =>
@@ -994,6 +1026,162 @@ ${layer}`,
     await framedPay(page, `<div id="banner" style="position: fixed; bottom: 0; left: 0; right: 0; height: 40px">Offer</div>`);
     expect(await ready(page, framedButton, "")).toMatchObject({ looks: 2, waitedFor: [] });
   });
+
+  /** Serves each page in `pages` at its URL, the frames' pages included, and opens the first. */
+  const framedSite = async (page: Page, pages: Record<string, string>) => {
+    await page.context().route("https://*.example.test/**", (route) => {
+      const url = new URL(route.request().url());
+      const body = pages[url.origin + url.pathname];
+      return body === undefined
+        ? route.fulfill({ status: 404, body: "" })
+        : route.fulfill({ contentType: "text/html", body });
+    });
+    await page.goto(Object.keys(pages)[0] ?? "about:blank");
+  };
+  /** A payment frame's six ways to pay, 64 px apart, each naming itself in `#pressed` when pressed. */
+  const waysToPay = `<style>body { margin: 0 } .way { display: block; width: 280px; height: 56px; margin: 8px }</style>
+${["Card", "UPI", "Net banking", "Wallet", "Pay later", "Cash on delivery"]
+  .map((name) => `<button type="button" class="way">${name}</button>`)
+  .join("\n")}
+<output id="pressed"></output>
+<script>
+for (const way of document.querySelectorAll(".way"))
+  way.addEventListener("click", () => { document.getElementById("pressed").textContent = way.textContent; });
+</script>`;
+  const ways = `page.frameLocator('iframe[title="Payment"]')`;
+  const sixthWay = `${ways}.getByRole("button", { name: "Cash on delivery" })`;
+  /** After a ready wait, presses the sixth way as Playwright does, and returns what the frame says was pressed. */
+  const pressSixth = `(async () => {
+    await ${sixthWay}.click({ timeout: 2000 });
+    return ${ways}.locator("#pressed").textContent();
+  })()`;
+
+  test("a control below the fold of a frame that scrolls is ready, and the click scrolls to it and presses it", async ({
+    page,
+  }) => {
+    // The sixth way's centre sits below the 320 px frame's fold, where the page shows its own
+    // text below the frame: no click lands there before the frame scrolls.
+    await framedSite(page, {
+      "https://shop.example.test/checkout": `<h1>Checkout</h1>
+<iframe title="Payment" src="https://pay.example.test/ways" style="display: block; width: 320px; height: 320px; border: 0"></iframe>
+<p style="height: 200px">Your order ships in two days.</p>`,
+      "https://pay.example.test/ways": waysToPay,
+    });
+    await page.frameLocator('iframe[title="Payment"]').getByRole("button", { name: "Cash on delivery" }).waitFor();
+    expect(await ready(page, sixthWay, "", pressSixth)).toMatchObject({ looks: 2, waitedFor: [], extra: "Cash on delivery" });
+  });
+
+  test("a control in a frame that a scrolling box in the page clips is ready, and the click scrolls to it and presses it", async ({
+    page,
+  }) => {
+    // The frame shows all six ways, but the 160 px box around it scrolls, and clips the sixth
+    // way's centre over the page's own text below the box.
+    await framedSite(page, {
+      "https://shop.example.test/checkout": `<h1>Checkout</h1>
+<div style="height: 160px; overflow: auto"><iframe title="Payment" src="https://pay.example.test/ways" style="display: block; width: 320px; height: 420px; border: 0"></iframe></div>
+<p style="height: 400px">Your order ships in two days.</p>`,
+      "https://pay.example.test/ways": waysToPay,
+    });
+    await page.frameLocator('iframe[title="Payment"]').getByRole("button", { name: "Cash on delivery" }).waitFor();
+    expect(await ready(page, sixthWay, "", pressSixth)).toMatchObject({ looks: 2, waitedFor: [], extra: "Cash on delivery" });
+  });
+
+  test("a control that a scrolling box in its own document clips is ready, and the click scrolls to it and presses it", async ({
+    page,
+  }) => {
+    // The 160 px box scrolls, and clips the sixth way's centre over the page's own text below it.
+    await page.setContent(`<h1>Checkout</h1>
+<div style="height: 160px; overflow: auto">${waysToPay}</div>
+<p style="height: 400px">Your order ships in two days.</p>`);
+    const sixth = `page.getByRole("button", { name: "Cash on delivery" })`;
+    const press = `(async () => {
+      await ${sixth}.click({ timeout: 2000 });
+      return page.locator("#pressed").textContent();
+    })()`;
+    expect(await ready(page, sixth, "", press)).toMatchObject({ looks: 2, waitedFor: [], extra: "Cash on delivery" });
+  });
+
+  test("a layer over a control that a scrolling box shows covers it, until it goes", async ({ page }) => {
+    // The box is scrolled to its end, where the sixth way shows, under a layer the page draws over
+    // the box while it updates.
+    await page.setContent(`<h1>Checkout</h1>
+<div style="position: relative">
+<div id="list" style="height: 160px; overflow: auto">${waysToPay}</div>
+<div id="updating" style="position: absolute; inset: 0; background: rgba(255, 255, 255, 0.6)"></div>
+</div>
+<p style="height: 400px">Your order ships in two days.</p>
+<script>
+document.getElementById("list").scrollTop = 1000;
+window.begin = () => setTimeout(() => document.getElementById("updating").remove(), 500);
+</script>`);
+    const answer = await ready(page, `page.getByRole("button", { name: "Cash on delivery" })`, "stableMs: 100");
+    expect(answer.waitedFor).toContain("covered");
+    expect(answer.ms).toBeGreaterThanOrEqual(500);
+  });
+
+  /**
+   * A checkout frame (6 px border, 24 px padding) whose page holds a payment frame (3 px border,
+   * 5 px padding) at (40, 20), with `layer` drawn after it. The Pay button's centre is (110, 50) in
+   * the payment frame, (158, 78) in the checkout frame and (188, 108) in the page.
+   */
+  const nestedPay = (page: Page, layer: string) =>
+    framedSite(page, {
+      "https://shop.example.test/checkout": `<style>body { margin: 0 }</style>
+<iframe title="Checkout" src="https://checkout.example.test/form" style="display: block; width: 420px; height: 300px; border: 6px solid; padding: 24px"></iframe>`,
+      "https://checkout.example.test/form": `<style>body { margin: 0 }</style>
+<iframe title="Payment" src="https://pay.example.test/form" style="display: block; margin: 20px 0 0 40px; width: 300px; height: 160px; border: 3px solid; padding: 5px"></iframe>
+${layer}`,
+      "https://pay.example.test/form": `<style>body { margin: 0 }</style>
+<button style="display: block; margin: 30px 0 0 60px; width: 100px; height: 40px; padding: 0; border: 0">Pay</button>`,
+    });
+  const nestedButton = `page.frameLocator('iframe[title="Checkout"]').frameLocator('iframe[title="Payment"]').getByRole("button", { name: "Pay" })`;
+
+  test("a control in a frame within a bordered, padded frame is judged at its centre in the frame between", async ({
+    page,
+  }) => {
+    // A 20 px layer the checkout frame draws over the Pay button's centre covers it.
+    await nestedPay(page, `<div id="updating" style="position: absolute; left: 148px; top: 68px; width: 20px; height: 20px"></div>`);
+    await page.frameLocator('iframe[title="Checkout"]').frameLocator('iframe[title="Payment"]').getByRole("button", { name: "Pay" }).waitFor();
+    expect((await ready(page, nestedButton, "")).message).toMatch(/: covered by div#updating; /u);
+    // One over the payment frame where the page's point would land, read as the checkout frame's
+    // own, or offset by the payment frame's border and padding instead, does not.
+    await nestedPay(page, `<div id="badge" style="position: absolute; left: 178px; top: 98px; width: 20px; height: 20px"></div>`);
+    await page.frameLocator('iframe[title="Checkout"]').frameLocator('iframe[title="Payment"]').getByRole("button", { name: "Pay" }).waitFor();
+    expect(await ready(page, nestedButton, "")).toMatchObject({ looks: 2, waitedFor: [] });
+  });
+
+  for (const mode of ["closed", "open"] as const)
+    test(`a control in a frame that a shadow root holds (${mode}) is ready, until a layer in that root covers the frame`, async ({
+      page,
+    }) => {
+      /** A checkout component that keeps its payment frame in its shadow root, under `layer` there. */
+      const component = (layer: string) => `<h1>Checkout</h1><pay-form></pay-form>
+<script>
+customElements.define("pay-form", class extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "${mode}" }).innerHTML = '<div style="position: relative">' +
+      '<iframe title="Payment" src="https://pay.example.test/form" style="display: block; width: 320px; height: 200px; border: 0"></iframe>' +
+      '${layer}</div>';
+  }
+});
+</script>`;
+      await framedSite(page, {
+        "https://shop.example.test/checkout": component(""),
+        "https://shop.example.test/processing": component(`<div id="processing" class="veil" style="position: absolute; inset: 0"></div>`),
+        "https://pay.example.test/form": `<button style="margin: 40px">Pay</button>`,
+      });
+      // CSS selectors don't reach into a closed root: the frame is found among the page's frames.
+      const button = `page.frames().find((frame) => frame.url().startsWith("https://pay.example.test/")).getByRole("button", { name: "Pay" })`;
+      const payFrame = () => page.frames().find((frame) => frame.url().startsWith("https://pay.example.test/"));
+      await expect.poll(() => payFrame() !== undefined).toBe(true);
+      await payFrame()?.getByRole("button", { name: "Pay" }).waitFor();
+      expect(await ready(page, button, "")).toMatchObject({ looks: 2, waitedFor: [] });
+      await page.goto("https://shop.example.test/processing");
+      await expect.poll(() => payFrame() !== undefined).toBe(true);
+      await payFrame()?.getByRole("button", { name: "Pay" }).waitFor();
+      expect((await ready(page, button, "")).message).toMatch(/: covered by div#processing\.veil; /u);
+    });
 
   test("a custom until condition holds the wait until it is true", async ({ page }) => {
     test.skip(

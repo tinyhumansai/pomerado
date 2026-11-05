@@ -1215,8 +1215,9 @@ const waitForChange = async (fields, options = {}) => {
  * dismissLimit, watch, deadline, ...options })` waits before an action until the control's one visible
  * match is attached, visible, enabled (and not read-only when `editable`), not busy (no
  * `aria-busy` around it, no spinner inside it), in the same place on two looks, and what a click
- * at its centre would hit is the control itself, not an overlay. It also waits while an `overlays`
- * locator shows, while `pending` (a function run in the page, such as
+ * at its centre would hit is the control itself, not an overlay; a centre outside the viewport, or
+ * one a scrolling box clips, is left to the click, which scrolls to it. It also waits while an
+ * `overlays` locator shows, while `pending` (a function run in the page, such as
  * `() => window.jQuery?.active ?? 0`) returns a truthy count, and until `until()` is true. On
  * Camoufox `pending` runs in a world apart from the page's own scripts, so one that reads a site's
  * variable always finds none: count something the page shows instead. Once

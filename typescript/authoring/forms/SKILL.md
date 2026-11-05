@@ -137,28 +137,34 @@ select. `references/custom-selection.ts` and
 `references/dialog-picker.ts` write out a combobox and a dialog picker step by step, for a
 control `pickValue` was seen failing on; say in the code what the page showed.
 
-Set a place, such as a delivery area or a pickup point, by typing it into the site's own search
-for places and picking the matching suggestion with `pickValue`, with `committed` naming where the
-page shows the place it set, such as a header, so the pick is read back there. `pickValue` never
-picks a row that would have the site locate the device, such as "Use my current location" or
-"Detect my location", and the tool never presses one either: the place comes from the input.
+Set a place, such as a delivery area or a pickup point, by typing it into the site's own search for
+places and picking the matching suggestion with `pickValue`, with `committed` naming where the page
+shows the place it set, such as a header, so the pick is read back there. `pickValue` never picks a
+row that would have the site locate the device or turn on its location or GPS, such as "Use my
+current location", "Set my location", "Near me", "Enable location", "Use GPS" or a bare "My
+location", in its text, its label or its class, and the tool never presses one either: the place
+comes from the input.
 
-Choose one option among several that a person picks by pressing it, such as a radio list, tiles
-or chips, a segmented control, or an accordion whose open row is the choice, such as a way to pay,
+Choose one option among several that a person picks by pressing it, such as a radio list, tiles or
+chips, a segmented control, or an accordion whose open row is the choice, such as a way to pay,
 with the SDK's `chooseOne`: import `chooseCode` from the runtime, paste it after `waitCode`, and
 call `chooseOne(option, options)` on the verified locator of the one option to choose, the element
 a person presses, inside a frame through `frameLocator` when the options sit in one, such as a
-payment frame. It reads the option's state before pressing and never presses an option already
-chosen, since pressing an open row again often closes it; otherwise it waits until the option is
-ready (pass `overlays` and `dismiss` as for `waitForReady`), presses it once, and confirms the page
-shows it chosen. It returns `{ chosen: true, pressed, label, by }`, or `{ chosen: false, reason:
-"unavailable", label }` for an option the page greys out or says is not available, which it never
-presses, with the page's own words in `label`: treat that as the site's answer, as a greyed-out
-choice the input asked for. When the page shows no state for the option, it refuses before
-pressing as `state_unknown`: pass `chosen`, a locator that shows only once this option is chosen,
-such as a summary naming it, and `unavailable` for the page's own sign that an option is not
-offered. `readChoices(locator)` reads every option a locator matches as `{ label, chosen,
-unavailable, by }`, pressing nothing, such as the ways to pay and which one is chosen. Use
+payment frame. Name the row or tile itself, not a name inside it: a part beside others of its tag
+shows no state, and a row whose header and body share a tag can fail as `not_chosen` after its
+press. A button under a card's heading shows no state either: name the card, or pass `chosen`. A
+class can't be told from a highlight, so on a page that marks the row under the pointer or keyboard
+by such a class, pass `chosen`. It reads the option's state before pressing and never presses an
+option already chosen, since pressing an open row again often closes it; otherwise it waits until
+the option is ready (pass `overlays` and `dismiss` as for `waitForReady`), presses it once, and
+confirms the page shows it chosen. It returns `{ chosen: true, pressed, label, by }`, or `{ chosen:
+false, reason: "unavailable", label }` for an option the page greys out or says is not available,
+which it never presses, with the page's own words in `label`: treat that as the site's answer, as a
+greyed-out choice the input asked for. When the page shows no state for the option, it refuses
+before pressing as `state_unknown`: pass `chosen`, a locator that shows only once this option is
+chosen, such as a summary naming it, and `unavailable` for the page's own sign that an option is
+not offered. `readChoices(locator)` reads every visible option a locator matches as `{ label,
+chosen, unavailable, by }`, pressing nothing, such as the ways to pay and which one is chosen. Use
 `pickValue` for a control that opens a list to pick from, and `chooseOne` for options shown side by
 side; never press such an option with clicks of your own.
 

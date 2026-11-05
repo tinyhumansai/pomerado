@@ -3,7 +3,8 @@ import { parseAmount, type Amount } from "../runtime/amounts.js";
 /**
  * One amount as `readAmount` and `readAmounts` read it: the amount the element shows, null when it
  * shows none or more than one; each struck-out amount beside it, such as an old price or a waived
- * fee; and the element's visible text without the struck-out part.
+ * fee; and the element's visible text without the struck-out part, with a space between a
+ * superscript and the text beside it where two digits meet.
  */
 export interface AmountRead {
   readonly amount: Amount | null;
@@ -38,8 +39,13 @@ export interface AmountLine {
  * order, so "₹120 ₹100" with ₹120 struck out is ₹100, once ₹120, and "₹25 FREE" with ₹25 struck
  * out is zero and free, once ₹25. `amount` is `parseAmount` of the rest, with `currency` as the
  * currency of a bare number or a symbol several currencies share, such as the currency the page
- * shows its prices in: a deduction is negative, FREE is zero with `free`, and text with no amount
- * or two numbers is null, so read the element that holds the amount, never a whole line or card.
+ * shows its prices in: an amount shown with a minus, or in brackets around an amount that shows
+ * its currency, is negative, FREE is zero with `free`, and text with no amount or two numbers is
+ * null, so read the element that holds the amount, never a whole line or card.
+ * A no-break or thin space that groups digits, as in "1 234,50 €", groups them for `parseAmount`,
+ * though `text` shows a plain space there, as `visibleText` does. A superscript reads apart from
+ * the text beside it only where two digits meet: "$12" with a raised "97" is two numbers, so null,
+ * and its `text` is "$12 97", while "$12." with a raised "97" is $12.97.
  *
  * They read the page as it is now and never wait, and fail as `visibleText` and `readRows` fail
  * (`VisibleTextFailure`: `not_found`, `hidden_only`, `ambiguous`, `too_long`).
@@ -47,7 +53,7 @@ export interface AmountLine {
 export const amountCode = String.raw`
 const parseAmount = ${String(parseAmount)};
 const amountOf = (read, currency) => ({
-  amount: parseAmount(read.text, { currency }),
+  amount: parseAmount(read.grouped, { currency }),
   struck: read.struck.map((text) => parseAmount(text, { currency })).filter((amount) => amount !== null),
   text: read.text,
 });

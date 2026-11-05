@@ -129,12 +129,21 @@ test("closes an offer pop-up that opens over the button while the wait runs", as
   <div style="background: #fff; margin: 40px; padding: 20px">Flat 10% off on your first order <button type="button" aria-label="Close offer">×</button></div>
 </div>
 <script>
-setTimeout(() => { document.getElementById("offer").hidden = false; }, 150);
 document.querySelector("[aria-label='Close offer']").addEventListener("click", () => document.getElementById("offer").remove());
 </script>`,
   );
-  await page.locator("#offer").waitFor();
-  const answer = await call(page, press(`page.getByRole("button", { name: "Close offer" })`));
+  await expect(page.locator("#offer")).toBeHidden();
+  // As the wait starts, the cart is still loading: Save stays disabled for 700 ms, and the offer
+  // opens over it 300 ms in. The wait closes it itself, so it counts as dismissed.
+  const answer = await call(
+    page,
+    `await page.evaluate(() => {
+  document.getElementById("save").disabled = true;
+  setTimeout(() => { document.getElementById("offer").hidden = false; }, 300);
+  setTimeout(() => { document.getElementById("save").disabled = false; }, 700);
+});
+${press(`page.getByRole("button", { name: "Close offer" })`)}`,
+  );
   expect(answer).toMatchObject({ dismissed: 1 });
   await expect(page.locator("#offer")).toHaveCount(0);
   await expect(page.locator("#saved")).toHaveText("1");

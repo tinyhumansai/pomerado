@@ -170,12 +170,32 @@ const visibleTextPage = (elements, arg) => {
   // Struck out: an s, del or strike element, or a line-through on it.
   const strikes = (element) =>
     ["s", "del", "strike"].includes(element.localName) || String(style(element).textDecorationLine).includes("line-through");
-  // The root's text. With split, text a person sees struck out, here or on an element around the
-  // root, is left out of it and comes back apart, one entry per struck-out element.
+  // The root's text. With split, for reading amounts: text a person sees struck out, here or on an
+  // element around the root, is left out of it and comes back apart, one entry per struck-out
+  // element; a raised part, such as cents set as a superscript, reads apart from the text beside
+  // it only where two digits meet; and the text also comes back grouped, with a no-break or thin
+  // space that groups digits kept.
   const read = (root, lines, split = false) => {
     const parts = [];
     const runs = [];
     let run = parts;
+    // Marks each side of a raised part. A mark reads as a space between two digits and as nothing
+    // elsewhere, so "$12" with a raised "97" is two numbers, while "$12." with a raised "97", or
+    // "₹1,299" with a raised ".00", reads as one.
+    const gap = {};
+    const joined = (pieces) => {
+      const text = [];
+      let gapped = false;
+      for (const piece of pieces) {
+        if (piece === gap) gapped = true;
+        else if (piece !== "") {
+          if (gapped && /\d$/u.test(text.at(-1) ?? "") && /^\d/u.test(piece)) text.push(" ");
+          text.push(piece);
+          gapped = false;
+        }
+      }
+      return text.join("");
+    };
     const visit = (node, struck) => {
       if (node.nodeType === Node.TEXT_NODE) {
         const parent = parentOf(node);
@@ -202,7 +222,8 @@ const visibleTextPage = (elements, arg) => {
       }
       const computed = style(node);
       const display = computed.display;
-      const separator = display === "table-cell" ? " " : inline(display) ? "" : "\n";
+      const raised = split && (node.localName === "sup" || computed.verticalAlign === "super");
+      const separator = display === "table-cell" ? " " : inline(display) ? (raised ? gap : "") : "\n";
       out.push(separator);
       if (computed.contentVisibility !== "hidden") for (const child of childrenOf(node)) visit(child, inside);
       out.push(separator);
@@ -212,9 +233,19 @@ const visibleTextPage = (elements, arg) => {
       if (strikes(at)) struckAround = true;
     if (struckAround) runs.push((run = []));
     visit(root, struckAround);
-    const text = normalize(parts.join(""), { lines });
+    const text = normalize(joined(parts), { lines });
     if (!split) return text;
-    return { text, struck: runs.map((each) => normalize(each.join(""))).filter((each) => each !== "") };
+    // Normalized, but for a no-break or thin space between digits that three digits follow, as in
+    // "1 234,50", which groups them and which normalize would read as a plain space.
+    const grouped = (raw, keepLines) =>
+      raw.split(/(?<=\d)([\u00A0\u202F\u2009])(?=\d{3}(?!\d))/u)
+        .map((piece, at) => (at % 2 === 1 ? piece : normalize(piece, { lines: keepLines })))
+        .join("");
+    return {
+      text,
+      grouped: grouped(joined(parts), lines),
+      struck: runs.map((each) => grouped(joined(each), false)).filter((each) => each !== ""),
+    };
   };
   if (arg.fields === undefined)
     return elements.map((element) => (rendered(element, null) ? read(element, arg.lines, arg.split === true) : null));

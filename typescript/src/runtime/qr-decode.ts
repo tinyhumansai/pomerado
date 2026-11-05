@@ -6,9 +6,13 @@
  * at any scale down to about two pixels a module, smoothed at its edges, with or without a quiet
  * zone, but not seen at an angle. It splits the picture into dark and light at Otsu's threshold,
  * finds the three finder patterns, reads every module at its centre, takes the format and version
- * from their own error-corrected copies, corrects each block with its Reed-Solomon codewords, and
- * decodes numeric, alphanumeric, byte (UTF-8, else Latin-1, or as an ECI names), and kanji
- * segments. A code it can't correct is null, never a guess.
+ * from their own error-corrected copies, corrects each block with its Reed-Solomon codewords (in
+ * the smallest codes, fewer errors than they have room for, keeping the codewords ISO 18004 sets
+ * aside for detecting a misdecode), and decodes numeric, alphanumeric, byte and kanji segments.
+ * Consecutive byte segments in one charset read as one, in UTF-8, else Latin-1, or in the charset
+ * an ECI names. A code it can't correct, an ECI with no charset TextDecoder reads, one part of a
+ * structured append, and a picture holding two codes with different texts, such as a payment code
+ * beside an app's download code, are null, never a guess.
  *
  * It is pure and self-contained: the page code of `qrCodeCode` embeds this same function.
  */
@@ -281,8 +285,10 @@ export const decodeQr = (pixels: ArrayLike<number>, width: number, height: numbe
     return modules;
   };
 
-  // One block corrected with its error correction codewords (Berlekamp-Massey, Chien, Forney).
-  const corrected = (block: readonly number[], ecc: number) => {
+  // One block corrected with its error correction codewords (Berlekamp-Massey, Chien, Forney), at
+  // most (ecc - protection) / 2 errors of them, where `protection` codewords are kept for
+  // detecting a misdecode.
+  const corrected = (block: readonly number[], ecc: number, protection: number) => {
     const syndromeAt = (values: readonly number[], power: number) =>
       values.reduce((value, codeword) => times(value, alpha(power)) ^ codeword, 0);
     const syndromes = Array.from({ length: ecc }, (_, power) => syndromeAt(block, power));
@@ -312,7 +318,7 @@ export const decodeQr = (pixels: ArrayLike<number>, width: number, height: numbe
       } else shift += 1;
       locator = next;
     }
-    if (errors * 2 > ecc) return undefined;
+    if (errors * 2 > ecc - protection) return undefined;
     const evaluate = (values: readonly number[], x: number) =>
       values.reduceRight((value, coefficient) => times(value, x) ^ coefficient, 0);
     const places: number[] = [];
@@ -355,21 +361,36 @@ export const decodeQr = (pixels: ArrayLike<number>, width: number, height: numbe
       return table[mode]?.[band] ?? 0;
     };
     const characters = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:";
-    const charsets: Record<number, string> = { 1: "latin1", 3: "latin1", 4: "iso-8859-2", 20: "shift_jis", 22: "windows-1251", 26: "utf-8" };
-    let charset: string | undefined;
-    const bytesText = (bytes: readonly number[]) => {
-      const view = Uint8Array.from(bytes);
-      if (charset !== undefined) return new TextDecoder(charset).decode(view);
-      try {
-        return new TextDecoder("utf-8", { fatal: true }).decode(view);
-      } catch {
-        return new TextDecoder("latin1").decode(view);
-      }
+    // Every ECI assignment TextDecoder can read. The rest, such as code page 437 (0 and 2), UTF-32
+    // (34 and 35) and binary data (899), and numbers never assigned, have no charset here.
+    const charsets: Record<number, string> = {
+      1: "latin1", 3: "latin1", 4: "iso-8859-2", 5: "iso-8859-3", 6: "iso-8859-4", 7: "iso-8859-5", 8: "iso-8859-6",
+      9: "iso-8859-7", 10: "iso-8859-8", 11: "iso-8859-9", 12: "iso-8859-10", 13: "iso-8859-11", 15: "iso-8859-13",
+      16: "iso-8859-14", 17: "iso-8859-15", 18: "iso-8859-16", 20: "shift_jis", 21: "windows-1250", 22: "windows-1251",
+      23: "windows-1252", 24: "windows-1256", 25: "utf-16be", 26: "utf-8", 27: "us-ascii", 28: "big5", 29: "gbk",
+      30: "euc-kr", 31: "gbk", 32: "gb18030", 33: "utf-16le", 170: "us-ascii",
     };
+    let charset: string | undefined;
     let out = "";
+    // Bytes of consecutive byte segments in one charset, read together, so a character that two
+    // segments split reads whole. False when the charset is one this runtime can't decode.
+    let pending: number[] = [];
+    const flush = () => {
+      if (pending.length === 0) return true;
+      const view = Uint8Array.from(pending);
+      pending = [];
+      try {
+        out += new TextDecoder(charset ?? "utf-8", { fatal: charset === undefined }).decode(view);
+      } catch {
+        if (charset !== undefined) return false;
+        out += new TextDecoder("latin1").decode(view);
+      }
+      return true;
+    };
     while (data.length * 8 - cursor >= 4) {
       const mode = read(4);
       if (mode === 0) break;
+      if (mode !== 4 && mode !== 7 && !flush()) return undefined;
       if (mode === 1) {
         let count = read(lengthBits(1));
         if (count < 0) return undefined;
@@ -399,13 +420,11 @@ export const decodeQr = (pixels: ArrayLike<number>, width: number, height: numbe
       } else if (mode === 4) {
         const count = read(lengthBits(4));
         if (count < 0) return undefined;
-        const bytes: number[] = [];
         for (let step = 0; step < count; step += 1) {
           const value = read(8);
           if (value < 0) return undefined;
-          bytes.push(value);
+          pending.push(value);
         }
-        out += bytesText(bytes);
       } else if (mode === 7) {
         const first = read(8);
         let value = -1;
@@ -413,7 +432,9 @@ export const decodeQr = (pixels: ArrayLike<number>, width: number, height: numbe
         else if (first >= 0 && (first & 0xc0) === 0x80) value = ((first & 0x3f) << 8) | read(8);
         else if (first >= 0 && (first & 0xe0) === 0xc0) value = ((first & 0x1f) << 16) | read(16);
         if (value < 0) return undefined;
-        charset = charsets[value];
+        const named = charsets[value];
+        if (named === undefined || (named !== charset && !flush())) return undefined;
+        charset = named;
       } else if (mode === 8) {
         const count = read(lengthBits(8));
         if (count < 0) return undefined;
@@ -427,12 +448,13 @@ export const decodeQr = (pixels: ArrayLike<number>, width: number, height: numbe
         }
         out += new TextDecoder("shift_jis").decode(Uint8Array.from(bytes));
       } else if (mode === 3) {
-        if (read(16) < 0) return undefined;
+        // A structured append header: the code holds one part of a text that several codes hold.
+        return undefined;
       } else if (mode === 9) {
         if (read(8) < 0) return undefined;
       } else if (mode !== 5) return undefined;
     }
-    return out;
+    return flush() ? out : undefined;
   };
 
   // The code whose finders are `ends`, read as a code `side` modules square.
@@ -543,6 +565,10 @@ export const decodeQr = (pixels: ArrayLike<number>, width: number, height: numbe
     const raw = Math.floor(dataModules(version) / 8);
     const ecc = eccPerBlock[level]?.[version] ?? 0;
     const blocks = blockCounts[level]?.[version] ?? 0;
+    // Misdecode protection codewords (ISO 18004, Table 9): 3 for 1-L, 2 for 1-M, 1 for 1-Q and
+    // 1-H, 2 for 2-L and 1 for 3-L; every other code corrects as many errors as it has room for.
+    const protection =
+      version === 1 ? ([3, 2, 1, 1][level] ?? 0) : level === 0 && version === 2 ? 2 : level === 0 && version === 3 ? 1 : 0;
     if (codewords.length < raw || ecc === 0 || blocks === 0) return undefined;
     const short = blocks - (raw % blocks);
     const shortLength = Math.floor(raw / blocks);
@@ -557,13 +583,21 @@ export const decodeQr = (pixels: ArrayLike<number>, width: number, height: numbe
     const data: number[] = [];
     for (const [index, part] of parts.entries()) {
       if (index < short) part.splice(shortLength - ecc, 1);
-      const fixedPart = corrected(part, ecc);
+      const fixedPart = corrected(part, ecc, protection);
       if (fixedPart === undefined) return undefined;
       data.push(...fixedPart.slice(0, fixedPart.length - ecc));
     }
     return text(data, version);
   };
 
+  // The picture's one code. Once a code reads, trios that share no finder with it are read too, so
+  // a second code beside it, such as an app's download code beside a payment code, makes the
+  // answer null when its text differs.
+  let answer: string | undefined;
+  const taken: Finder[] = [];
+  // A finder closer than half a finder's width to one a code read used is that finder.
+  const usedAlready = (finder: Finder) =>
+    taken.some((used) => Math.hypot(finder.x - used.x, finder.y - used.y) < 3.5 * Math.max(finder.size, used.size));
   for (const inverted of [false, true]) {
     const bits = new Uint8Array(wide * tall);
     for (let y = 0; y < height; y += 1)
@@ -572,6 +606,8 @@ export const decodeQr = (pixels: ArrayLike<number>, width: number, height: numbe
         bits[(y + pad) * wide + x + pad] = isDark !== inverted ? 1 : 0;
       }
     for (const ends of corners(finders(bits))) {
+      const own = [ends.left, ends.right, ends.bottom];
+      if (own.some(usedAlready)) continue;
       const module = (ends.left.size + ends.right.size + ends.bottom.size) / 3;
       const measured =
         (Math.hypot(ends.right.x - ends.left.x, ends.right.y - ends.left.y) +
@@ -585,9 +621,13 @@ export const decodeQr = (pixels: ArrayLike<number>, width: number, height: numbe
         .filter((side) => side >= 21 && side <= 177);
       for (const side of sides) {
         const read = decode(bits, ends, module, side);
-        if (read !== undefined) return read;
+        if (read === undefined) continue;
+        if (answer !== undefined && read !== answer) return null;
+        answer = read;
+        taken.push(...own);
+        break;
       }
     }
   }
-  return null;
+  return answer ?? null;
 };

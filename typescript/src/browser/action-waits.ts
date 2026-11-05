@@ -471,7 +471,10 @@ const outcomeWaitEvidence = async (candidate, observation, state, events, now) =
  * progress code before it.
  */
 export const readyWaitCode = String.raw`
-// Runs in the page: the state of the control's visible matches at one look.
+// Runs in the page: the state of the control's visible matches at one look. For one visible
+// match, judged says whether its centre was hit-tested here, where this document shows it, and
+// framed whether this document is a child frame's, whose control a layer drawn by a document
+// above can cover too.
 const readyWaitInPage = (elements, spec) => {
   // Visible as Playwright counts it: a box and no visibility:hidden. A transparent native input
   // under a styled checkbox, radio or switch still counts.
@@ -497,11 +500,35 @@ const readyWaitInPage = (elements, spec) => {
   }
   const rect = element.getBoundingClientRect();
   const box = [rect.x, rect.y, rect.width, rect.height].map((value) => Math.round(value * 10) / 10).join(",");
+  // Whether a box around the control that clips its overflow, such as a list that scrolls, ends
+  // before the point: its padding box, in an axis it clips. The root's overflow, and the body's
+  // while the root's is visible, scroll the viewport instead, and an inline box, or an element
+  // with no box of its own, clips nothing.
+  const clips = (x, y) => {
+    const root = getComputedStyle(document.documentElement);
+    const bodyScrollsViewport = root.overflowX === "visible" && root.overflowY === "visible";
+    for (let at = element; ;) {
+      at = at.assignedSlot ?? at.parentElement ?? at.parentNode?.host ?? null;
+      if (at === null || at === document.documentElement) return false;
+      if (at === document.body && bodyScrollsViewport) continue;
+      const style = getComputedStyle(at);
+      const clipsX = style.overflowX !== "visible";
+      const clipsY = style.overflowY !== "visible";
+      if ((!clipsX && !clipsY) || style.display === "inline" || style.display === "contents") continue;
+      const outer = at.getBoundingClientRect();
+      const left = outer.left + at.clientLeft;
+      const top = outer.top + at.clientTop;
+      if ((clipsX && (x < left || x >= left + at.clientWidth)) || (clipsY && (y < top || y >= top + at.clientHeight)))
+        return true;
+    }
+  };
   // What a click at the control's centre would hit, through open shadow roots. A control whose
-  // centre is outside the viewport is scrolled to before a click, so it is not judged here.
+  // centre is outside the viewport, or that a box around it clips away there, is scrolled to
+  // before a click, so it is not judged here.
   const x = rect.x + rect.width / 2;
   const y = rect.y + rect.height / 2;
-  if (x >= 0 && y >= 0 && x < innerWidth && y < innerHeight) {
+  let judged = x >= 0 && y >= 0 && x < innerWidth && y < innerHeight;
+  if (judged) {
     let hit = document.elementFromPoint(x, y);
     while (hit?.shadowRoot) {
       const inner = hit.shadowRoot.elementFromPoint(x, y);
@@ -511,7 +538,14 @@ const readyWaitInPage = (elements, spec) => {
     const labels = [...(element.labels ?? [])];
     const reaches = hit !== null && (element.contains(hit) || labels.some((label) => label.contains(hit)) ||
       (hit.getRootNode() instanceof ShadowRoot && element.contains(hit.getRootNode().host)));
-    if (!reaches) {
+    // A layer over the control leaves it among the elements at its centre, under the layer. One
+    // missing there, its labels too, is clipped there when a box around it that clips its
+    // overflow ends before the centre. One the page takes no clicks on, such as one under
+    // pointer-events: none or behind a modal dialog, is missing there too, and counts as covered
+    // by what a click there would hit.
+    const there = (each) => element.contains(each) || labels.some((label) => label.contains(each));
+    if (!reaches && !element.getRootNode().elementsFromPoint(x, y).some(there) && clips(x, y)) judged = false;
+    else if (!reaches) {
       blockers.push("covered");
       details.covered = hit === null ? "nothing"
         : hit.localName + (hit.id ? "#" + hit.id : "") +
@@ -519,7 +553,8 @@ const readyWaitInPage = (elements, spec) => {
           (hit.getAttribute("role") ? '[role="' + hit.getAttribute("role") + '"]' : "");
     }
   }
-  return { blockers, box, details };
+  // window.top is readable from a frame of another origin too.
+  return { blockers, box, details, judged, framed: window !== window.top };
 };
 // Whether a section toggle shows its section collapsed: aria-expanded="false", or the summary of a
 // closed details element; null when it says neither, and then it is never clicked.
@@ -530,26 +565,47 @@ const readyWaitCollapsed = (toggle) =>
     const details = element.closest("details");
     return details !== null && element.localName === "summary" ? !details.open : null;
   });
-// Runs in a document a frame sits in: what a click at the point would hit, through open shadow
-// roots, named as the in-page check names it; undefined when it is the frame element itself or
-// the point is outside this document's viewport.
+// Runs in a document a frame sits in, at a point in this document's viewport: whether the frame
+// shows its own document there, and if so, as covered, what a click there would hit instead of the
+// frame, named as the in-page check names it. It does not show there when the point is outside
+// this viewport or the frame's content box, or a box around the frame clips it, such as one that
+// scrolls. The hit goes through open shadow roots, and through the roots that hold the frame,
+// closed ones too: the document alone would hit only their hosts.
 const readyWaitHitInPage = (frame, point) => {
-  if (point.x < 0 || point.y < 0 || point.x >= innerWidth || point.y >= innerHeight) return undefined;
-  let hit = document.elementFromPoint(point.x, point.y);
-  while (hit?.shadowRoot) {
-    const inner = hit.shadowRoot.elementFromPoint(point.x, point.y);
+  const { x, y } = point;
+  if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) return { shows: false };
+  const rect = frame.getBoundingClientRect();
+  const style = getComputedStyle(frame);
+  const contentX = rect.left + frame.clientLeft + parseFloat(style.paddingLeft);
+  const contentY = rect.top + frame.clientTop + parseFloat(style.paddingTop);
+  const contentRight = rect.left + frame.clientLeft + frame.clientWidth - parseFloat(style.paddingRight);
+  const contentBottom = rect.top + frame.clientTop + frame.clientHeight - parseFloat(style.paddingBottom);
+  if (x < contentX || y < contentY || x >= contentRight || y >= contentBottom) return { shows: false };
+  // A hit test skips what a box clips away. The frame's own root, a shadow root's included, lists
+  // the frame itself among the elements at the point wherever it shows.
+  const root = frame.getRootNode();
+  if (!root.elementsFromPoint(x, y).includes(frame)) return { shows: false };
+  const holders = new Map();
+  for (let at = root; at instanceof ShadowRoot; at = at.host.getRootNode()) holders.set(at.host, at);
+  let hit = document.elementFromPoint(x, y);
+  while (hit !== null) {
+    const inner = (holders.get(hit) ?? hit.shadowRoot)?.elementFromPoint(x, y) ?? null;
     if (inner === null || inner === hit) break;
     hit = inner;
   }
-  if (hit === frame) return undefined;
-  return hit === null ? "nothing"
-    : hit.localName + (hit.id ? "#" + hit.id : "") +
-      [...hit.classList].slice(0, 2).map((name) => "." + name).join("") +
-      (hit.getAttribute("role") ? '[role="' + hit.getAttribute("role") + '"]' : "");
+  if (hit === frame) return { shows: true };
+  return {
+    shows: true,
+    covered: hit === null ? "nothing"
+      : hit.localName + (hit.id ? "#" + hit.id : "") +
+        [...hit.classList].slice(0, 2).map((name) => "." + name).join("") +
+        (hit.getAttribute("role") ? '[role="' + hit.getAttribute("role") + '"]' : ""),
+  };
 };
-// What covers a control in a frame from above: a layer that a document the frame sits in draws
-// over the frame at the control's centre, such as a page's loader over a payment frame. Undefined
-// for a control in the page itself, or when nothing covers it there.
+// What covers a control in a child frame from above: a layer that a document the frame sits in
+// draws over the frame at the control's centre, such as a page's loader over a payment frame.
+// Undefined when nothing covers it there, or when a document above does not show that centre,
+// such as where a box that scrolls clips a frame: a click scrolls the control into view first.
 const readyWaitFramedCover = async (target) => {
   const handles = [];
   try {
@@ -576,8 +632,10 @@ const readyWaitFramedCover = async (target) => {
         });
         origin = { x: ownerBox.x + inset.x, y: ownerBox.y + inset.y };
       }
-      const covered = await owner.evaluate(readyWaitHitInPage, { x: centre.x - origin.x, y: centre.y - origin.y });
-      if (covered !== undefined) return covered;
+      const look = await owner.evaluate(readyWaitHitInPage, { x: centre.x - origin.x, y: centre.y - origin.y });
+      // A centre this document does not show, no document above it shows either.
+      if (!look.shows) return undefined;
+      if (look.covered !== undefined) return look.covered;
     }
     return undefined;
   } catch {
@@ -676,8 +734,9 @@ const waitForReady = async (target, options = {}) => {
         const state = navigating
           ? { blockers: ["absent"] }
           : await target.evaluateAll(readyWaitInPage, spec);
-        // A control in a frame is covered too by a layer a document above draws over the frame.
-        if (state.box !== undefined && !state.blockers.includes("covered")) {
+        // A control in a child frame is covered too by a layer a document above draws over the
+        // frame, looked for only at a centre the frame's own look judged.
+        if (state.framed && state.judged && !state.blockers.includes("covered")) {
           const covered = await readyWaitFramedCover(target);
           if (covered !== undefined) {
             state.blockers.push("covered");
