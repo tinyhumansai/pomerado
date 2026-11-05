@@ -7,7 +7,7 @@ import {
 } from "../destinations/payment-frames.js";
 import { callingCode, nationalDigits, numberPart } from "../destinations/login-field-formats.js";
 import { shownForms } from "../privacy/value-forms.js";
-import { writtenAsNumber } from "../runtime/input-request.js";
+import { unmarkedNumber, writtenAsNumber } from "../runtime/input-request.js";
 
 /**
  * A short form of a secret (`shownForms`) counts in source only as a whole token, as the
@@ -124,9 +124,12 @@ export const makeRunSecrets = () => {
    * be a `phone` number, its digits and their usual groupings count too (`phoneForms`), when it
    * is written as a number, since a site writes the number back in its own format and a `national`
    * field takes it without its calling code. Digits too short to be a number count as a whole
-   * token (`digitToken`), and their other forms as any short form does.
+   * token (`digitToken`), and their other forms as any short form does. A value with invisible
+   * marks counts without them too, as it is typed (`typedValues`).
    */
-  const register = (value: string, kind?: "phone") => {
+  const register = (value: string, kind?: "phone"): void => {
+    const unmarked = kind === "phone" ? unmarkedNumber(value) : value;
+    if (unmarked !== value && unmarked !== "") register(unmarked, kind);
     const number = kind === "phone" ? phoneForms(value) : undefined;
     const token = kind === "phone" && number === undefined && /^[0-9]+$/u.test(value);
     const phone = token ? digitToken(value) : number;

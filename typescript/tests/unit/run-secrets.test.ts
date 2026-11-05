@@ -249,6 +249,19 @@ describe("a phone number", () => {
     expect(secrets.redact("Sent to (0091) 98765 00000, today.")).toBe("Sent to [private], today.");
   });
 
+  // A number is typed without the invisible marks it was pasted with (`typedValues`).
+  it("masks and refuses a number in the form it is typed in, without its marks", () => {
+    const secrets = phone("\u202a0555012\u202c");
+    expect(secrets.redact("Sent to 0555012.")).toBe("Sent to [private].");
+    expect(refused(secrets, 'const typed = "0555012";')).toBe(true);
+    expect(secrets.redact("order 90555012")).toBe("order 90555012");
+    expect(refused(secrets, "90555012")).toBe(false);
+  });
+
+  it("registers nothing more for a value of marks alone", () => {
+    expect(phone("\u202a\u202c").redact("Sent to 1234.")).toBe("Sent to 1234.");
+  });
+
   it("leaves another number and a longer run of digits as they are", () => {
     const secrets = phone("+15555550123");
     for (const text of [
