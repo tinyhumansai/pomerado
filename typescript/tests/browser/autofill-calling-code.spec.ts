@@ -2,7 +2,7 @@ import { expect, test } from "@playwright/test";
 import type { Page } from "playwright";
 import { Effect } from "effect";
 import { inspectAutofillStep, type AutofillStep } from "../../src/destinations/autofill-step.js";
-import { fillAutofillStep } from "../../src/destinations/autofill-fill.js";
+import { fillAutofillStep, resubmitAutofillStep } from "../../src/destinations/autofill-fill.js";
 import { makeInputAsker } from "../../src/inputs/callback.js";
 import { makeRunSecrets } from "../../src/inputs/secrets.js";
 import { typedValues } from "../../src/runtime/autofill-values.js";
@@ -214,6 +214,52 @@ test("never picks an option whose label shows another country's code, whatever i
   await page.waitForTimeout(300);
   expect(received).toEqual([]);
   await expect(page.locator("#country")).toHaveValue("+1");
+});
+
+test("never picks an option whose value names another country's code, whatever its label", async ({ page }) => {
+  // The list shows India's code, but the site would post Norway's: the option names no code the
+  // host can trust.
+  const received = await serve(
+    page,
+    `<form action="/session" method="post">
+<label>Country <select id="country" name="country">
+<option value="+1">United States (+1)</option>
+<option value="+47">India (+91)</option>
+</select></label>
+<label>Mobile number <input id="phone" name="phone" type="tel" maxlength="10"></label>
+<button id="send">Send code</button>
+</form>`,
+  );
+  const { report } = await signIn(page, "+91 98765 43210");
+  expect(report).toMatchObject({ outcome: "refused", reason: "calling_code_unoffered", target: 0 });
+  await page.waitForTimeout(300);
+  expect(received).toEqual([]);
+  await expect(page.locator("#country")).toHaveValue("+1");
+});
+
+test("clicks a covered submit again beside a custom picker, which holds no text a read could count", async ({
+  page,
+}) => {
+  // A fixed footer covers the submit. The picker is a button, so only the box holds what the host
+  // typed: counting the picker as a typed field would stop a screen whose every field is in place.
+  const received = await serve(
+    page,
+    `${customScreen}<style>#send { position: fixed; bottom: 4px; left: 4px; }</style>
+<div id="footer" style="position: fixed; bottom: 0; left: 0; width: 100%; height: 60px; z-index: 5; background: white">Footer</div>`,
+  );
+  const { report } = await signIn(page, "+91 98765 43210");
+  expect(report).toMatchObject({ outcome: "filled", submit: "blocked" });
+  expect(received).toEqual([]);
+  const browser = await hostPage(page);
+  const inspection = await Effect.runPromise(
+    inspectAutofillStep({ step: pickerStep, page: browser, siteOrigin: site, authenticationOrigins: [] }),
+  );
+  if ("outcome" in inspection) throw new Error(`Refused: ${inspection.reason}`);
+  const again = await Effect.runPromise(
+    resubmitAutofillStep({ step: pickerStep, inspection, page: browser, settleMs: 1_000 }),
+  );
+  expect(again).toMatchObject({ outcome: "filled", submit: "clicked", via: "keyboard" });
+  await expect.poll(() => received).toEqual([{ country: "+91", phone: "9876543210" }]);
 });
 
 /**

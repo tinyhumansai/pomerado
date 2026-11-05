@@ -7,12 +7,15 @@
 // resend is offered; a resend's question spends a refused code's tries; the terminal or an MCP
 // caller can't ask for a resend; Guardian never sees the control before a press, a denial still
 // presses it, or the screen a press drew anew is filled without the checks of its first look;
-// Guardian denies the step that names it, or lets an explore press it.
+// Guardian denies the step that names it, or lets an explore press it; a recorded resend that names
+// the account or signs out passes; a press isn't told every control of the screen it must not be,
+// or a raised stop doesn't reach it; and an offer lost when a code that doesn't fit is asked again.
 import { randomUUID } from "node:crypto";
 import { PassThrough } from "node:stream";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
 import { Cause, Data, Effect, Either, Schema } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resendFits } from "../../src/destinations/autofill-contracts.js";
 import { CallingCodeAutofillRecipe } from "../../src/destinations/autofill-recipe.js";
 import type { AutofillStep } from "../../src/destinations/autofill-step.js";
 import {
@@ -35,6 +38,7 @@ import {
   type InputAsker,
   InputRequest,
   type InputRequest as Request,
+  type Question,
   validateAnswer,
 } from "../../src/runtime/input-request.js";
 import {
@@ -201,6 +205,31 @@ describe("asking for a code on a screen with a resend control", () => {
     expect(offered(requests)).toEqual([false]);
   });
 
+  it("keeps offering the resend when it asks again for a code that doesn't fit its boxes", async () => {
+    const { resend: control } = resend();
+    const answering = owner(["12345", "12"]);
+    const boxes: AutofillStep = {
+      fields: [
+        { selector: "#code-1", slot: "code" },
+        { selector: "#code-2", slot: "code" },
+      ],
+      submit: "#verify",
+    };
+    await Effect.runPromise(
+      makeAutofillValues({
+        broker: { register: () => Effect.void },
+        unavailable: (operation) => new UnavailableValue({ operation }),
+        site: "phone.example.test",
+        given: { current: {} },
+      }).valuesFor(boxes, {
+        credentials: { username: "+15555550123", phone: "+15555550123" },
+        ask: answering.ask,
+        resend: control,
+      }),
+    );
+    expect(offered(answering.requests)).toEqual([true, true]);
+  });
+
   it("spends none of a refused code's tries on a resend's question", async () => {
     const { resend: control } = resend();
     const codeRequests = { current: 1 };
@@ -225,7 +254,11 @@ describe("the terminal", () => {
   });
 
   /** Answers one code question by typing each of `lines` at each prompt in turn; keeps what was shown. */
-  const typed = async (lines: string | readonly string[], allowResend: boolean) => {
+  const typed = async (
+    lines: string | readonly string[],
+    allowResend: boolean,
+    question: object = codeQuestion,
+  ) => {
     const input = Object.assign(new PassThrough(), { isTTY: true, isRaw: false, setRawMode: () => input });
     Object.defineProperty(process, "stdin", { value: input, configurable: true });
     const shown: string[] = [];
@@ -243,7 +276,7 @@ describe("the terminal", () => {
       makeTerminalAsker()({
         id: randomUUID(),
         source: "system",
-        questions: [{ ...codeQuestion, ...(allowResend ? { allowResend } : {}) }],
+        questions: [{ ...question, ...(allowResend ? { allowResend } : {}) } as Question],
       }),
     );
     return { answer: answered["code"], shown };
@@ -260,6 +293,15 @@ describe("the terminal", () => {
     expect(answer).toEqual({ type: "secret", value: "424242" });
     expect(shown.join("")).not.toContain("Type resend");
     expect(shown.join("")).toContain("No new code can be asked for here. Type the code the site sent.");
+  });
+
+  it("takes the word as typed at a secret that is no code", async () => {
+    const { answer, shown } = await typed(["resend", "never-read"], false, {
+      ...codeQuestion,
+      secretKind: "private_text",
+    });
+    expect(answer).toEqual({ type: "secret", value: "resend" });
+    expect(shown.join("")).not.toContain("No new code can be asked for here.");
   });
 });
 
@@ -325,6 +367,12 @@ describe("a code screen's recorded resend", () => {
     ).toBe(true);
   });
 
+  it("is never one of the screen's methods", () => {
+    const step = { fields: [codeStep], submit: "#verify", resend: "#resend" };
+    expect(resendFits({ ...step, methods: [{ selector: "#by-call" }] })).toBe(true);
+    expect(resendFits({ ...step, methods: [{ selector: "#by-call" }, { selector: "#resend" }] })).toBe(false);
+  });
+
   const phoneStep = { page: `${site}/login`, fields: [{ selector: "#phone", accepts: ["phone"] }], submit: "#send" };
   const recorded = { page: `${site}/verify`, fields: [codeStep], submit: "#verify", resend: "#resend" };
   const recipe = { version: 12, steps: [phoneStep, recorded], signedIn: { selector: "#account" } };
@@ -386,6 +434,48 @@ describe("a code screen's recorded resend", () => {
       signedOutSnapshots: [],
     } as never);
     expect(findings).toContainEqual({ rule: "selector_names_contact", part: "recipe.steps[1].resend" });
+  });
+
+  it("is refused when it signs out, as every control a step clicks", () => {
+    const findings = checkSignInVersion({
+      siteOrigin: site,
+      version: {
+        entryUrl: `${site}/login`,
+        recipe: { ...recipe, steps: [phoneStep, { ...recorded, resend: "#signOutButton" }] },
+      },
+      signedOutSnapshots: [],
+    } as never);
+    expect(findings).toContainEqual({ rule: "sign_out", part: "recipe.steps[1].resend" });
+  });
+
+  it("tells a press the screen's own submit, methods and dismiss, none of which its control may be", async () => {
+    const apart: (readonly string[])[] = [];
+    const resend = makeCodeResend({
+      hooks: {
+        inspect: () => Effect.succeed({} as never),
+        resend: ({ apartFrom }) =>
+          Effect.sync(() => {
+            apart.push(apartFrom);
+            return { outcome: "filled", fields: [], submit: "clicked", url: site } as const;
+          }),
+      },
+      step: {
+        fields: [codeStep],
+        submit: "#verify",
+        methods: [
+          { selector: "#by-call", method: "call" },
+          { selector: "#by-text", method: "sms" },
+        ],
+        dismiss: "#close",
+        resend: "#resend",
+      },
+      presses: new Map(),
+      waitMs: 0,
+      pollMs: 0,
+      emit: () => Effect.void,
+    });
+    await Effect.runPromise(resend?.press ?? Effect.void);
+    expect(apart).toEqual([["#verify", "#by-call", "#by-text", "#close"]]);
   });
 });
 
@@ -654,6 +744,15 @@ describe("a build's code screen with a resend control", () => {
     expect(filled).toEqual(["#next"]);
   });
 
+  it("refuses a resend selector that names the account, as every recorded selector", async () => {
+    const { recorder, filled } = build([]);
+    const answer = await Effect.runPromise(
+      recorder.step({ ...step, resend: "text=Send to ada-owner" }, undefined, Effect.void),
+    );
+    expect(JSON.stringify(answer.result)).toContain("selector_names_contact");
+    expect(filled).toEqual([]);
+  });
+
   it("refuses a resend selector that holds the mask, as every recorded selector", async () => {
     const { recorder, inspected } = build([]);
     const answer = await Effect.runPromise(
@@ -683,7 +782,12 @@ describe("a run's code screen after a press", () => {
     signedIn: { selector: "#account" },
   } as const;
 
-  it("fills nothing on a screen the press moved to another origin", async () => {
+  /** What the screen is once pressed, with what its first look found. */
+  type Found = { readonly page: string; readonly popupTargetId?: string; readonly boxes?: number };
+  const unchanged: Found = { page: `${site}/verify` };
+
+  /** A run that presses the screen's resend, then answers its code, on a screen `after` draws. */
+  const afterPress = async (after: Found) => {
     const pressed: string[] = [];
     const filled: (string | undefined)[] = [];
     const answers = ["resend", "424242"];
@@ -696,8 +800,12 @@ describe("a run's code screen after a press", () => {
         return { code: answer === "resend" ? { resend: true } : answer };
       }),
     );
-    const at = (step: AutofillStep) =>
-      step.submit === "#send" ? login : pressed.length > 0 && step.submit === "#verify" ? "https://other.example.test/verify" : `${site}/verify`;
+    const at = (step: AutofillStep): Found =>
+      step.submit === "#send"
+        ? { page: login }
+        : pressed.length > 0 && step.submit === "#verify"
+          ? after
+          : unchanged;
     const secrets = makeRunSecrets();
     const failed = await Effect.runPromise(
       Effect.flip(
@@ -707,16 +815,25 @@ describe("a run's code screen after a press", () => {
           browser: {
             inspect: (step) =>
               Effect.sync(() => {
-                const page = at(step);
+                const { page, popupTargetId, boxes } = at(step);
                 const origin = new URL(page).origin;
                 const target = { ownerUrl: page, documentOrigin: origin, actions: [page], methods: ["post"], submitMethod: "post", editable: true, control: "text" } as const;
                 return {
                   url: page,
                   page,
+                  ...(popupTargetId === undefined ? {} : { popupTargetId }),
                   targets: { fields: step.fields.map(() => target), submit: target },
                   siteOrigin: site,
                   authenticationOrigins: [],
-                  screen: { origin, fields: [], submit: null, buttons: [] },
+                  screen: {
+                    origin,
+                    fields:
+                      boxes === undefined
+                        ? []
+                        : step.fields.map(() => ({ codeBox: { box: 1, of: boxes } }) as never),
+                    submit: null,
+                    buttons: [],
+                  },
                 };
               }),
             fill: ({ step }) =>
@@ -753,6 +870,15 @@ describe("a run's code screen after a press", () => {
         }),
       ),
     );
+    return { failed, pressed, filled };
+  };
+
+  it.each([
+    ["moved to another origin", { page: "https://other.example.test/verify" }],
+    ["moved to a popup", { ...unchanged, popupTargetId: "popup" }],
+    ["drew anew with its code split across boxes", { ...unchanged, boxes: 6 }],
+  ])("fills nothing on a screen the press %s", async (_name, after) => {
+    const { failed, pressed, filled } = await afterPress(after);
     expect(pressed).toEqual(["#resend"]);
     expect(filled).toEqual(["#send"]);
     expect(failed).toMatchObject({ reason: "screen_changed" });

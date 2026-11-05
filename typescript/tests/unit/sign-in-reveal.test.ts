@@ -863,6 +863,16 @@ describe("the fill of values revealed for an origin", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("refuses a calling-code picker the page moved to another origin, before the call that picks", async () => {
+    const step: AutofillStep = {
+      fields: [{ selector: "#country", slot: "phone", accepts: ["phone"], format: "calling_code" }],
+    };
+    const { report, calls } = fill(step, ["91"], [moved(login)], [www]);
+    expect(await report).toMatchObject({ outcome: "refused", reason: "credential_target_refused" });
+    // Only the call that found the field moved, which did nothing.
+    expect(calls).toHaveLength(1);
+  });
+
   it("refuses a field an earlier field's call found moved, after typing that one", async () => {
     const step: AutofillStep = {
       fields: [
