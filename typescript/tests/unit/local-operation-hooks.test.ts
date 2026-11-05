@@ -109,7 +109,7 @@ it("holds the click after a commit step until the host's commit hook accepts it,
     _tag: "Right",
     right: { output: { placed: true }, commits: [{ name: "place-order", state: "confirmed" }] },
   });
-  expect(entered).toEqual([{ name: "place-order", report }]);
+  expect(entered).toEqual([{ name: "place-order", report, callOut: false }]);
   const click = site.scriptCalls().find((call) => call.name === "click");
   expect(click?.at).toBeGreaterThanOrEqual(acceptedAt);
 }, 30_000);

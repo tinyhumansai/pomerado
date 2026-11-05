@@ -131,7 +131,7 @@ it("never sends an HTTP request the host refused, and the script reads it unsent
       stderr: expect.stringContaining(`{"dispatch":"not_sent"}`),
     },
   });
-  expect(host.asked).toEqual([{ name: "pay", report: { total_minor: 20_400 } }]);
+  expect(host.asked).toEqual([{ name: "pay", report: { total_minor: 20_400 }, callOut: false }]);
   expect(shop.sent).toEqual([]);
 }, 30_000);
 
@@ -188,7 +188,9 @@ export default defineHttpOperation({
       hooks: { commit: (mark) => Effect.sync(() => asked.push(mark)) },
     });
     expect(result, `${ops}`).toMatchObject({ _tag: "Right", right: { output: { status: 200 } } });
-    expect(asked, `${ops}`).toEqual([{ name: "pay", report: { total_minor: 20_400 } }]);
+    expect(asked, `${ops}`).toEqual([
+      { name: "pay", report: { total_minor: 20_400 }, callOut: false },
+    ]);
     expect(shop.sent, `${ops}`).toHaveLength(1);
   }
 }, 60_000);
