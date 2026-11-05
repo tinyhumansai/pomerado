@@ -67,9 +67,9 @@ const numberEdge = "(?:(?<![0-9])|(?<=%[0-9A-Fa-f]{2}))";
  * `00`. Undefined for a value not written as a number, such as a host's handle, one too short to
  * say its calling code, or one with too little after that code (`phoneLocalFewest`). Any marks may
  * group its digits, as a saved login or a login of another kind never met the shape a phone answer
- * must have, and what a letter or a `#` starts, such as an extension, is no part of it. `run` also
- * counts the value as given, since it goes first: an extension or a `(00NN)` lead would stay beside
- * what it masks.
+ * must have, and what ends it (`numberPart`), such as an extension's start, is no part of it.
+ * `run` also counts the value as given, since it goes first: an extension or a `(00NN)` lead would
+ * stay beside what it masks.
  */
 const phoneForms = (given: string) => {
   if (!writtenAsNumber(given)) return undefined;

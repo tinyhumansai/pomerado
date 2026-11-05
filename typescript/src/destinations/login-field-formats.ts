@@ -39,29 +39,29 @@ const shortCallingCodes = new Set([
 ]);
 
 /**
- * What ends the number in a value that goes on past it, as an extension does: a letter, or a `#`
- * after a digit. A `#` before the digits ends nothing, so `#1234567` is those digits.
+ * What ends the number in a value that goes on past it, as an extension does: a letter, or a `#`,
+ * `;` or `*` after a digit. One before the digits ends nothing, so `#1234567` is those digits.
  */
-const numberEnd = /\p{L}|(?<=[0-9].*)#/su;
+const numberEnd = /\p{L}|(?<=[0-9].*)[#;*]/su;
 /** `value` up to what ends its number (`numberEnd`), or whole when nothing does. */
 export const numberPart = (value: string) => value.split(numberEnd, 1)[0] ?? "";
 
 /**
- * A phone number written in international form: its digits after the `+` or `00`, which a bracket
- * may open. Undefined for a value that goes on past its number (`numberEnd`): a letter may mean a
+ * A phone number written in international form: its digits after the `+`, `00` or `+00`, which a
+ * bracket may open. Undefined for a value that goes on past its number (`numberEnd`): a letter may mean a
  * host's handle, and an extension's digits aren't the number's.
  */
 const internationalDigits = (number: string) => {
   const written = unmarkedNumber(number).trim();
   if (numberEnd.test(written)) return undefined;
-  const lead = /^\(?\s*(?:\+|00)/u.exec(written)?.[0];
+  const lead = /^\(?\s*(?:\+(?:00)?|00)/u.exec(written)?.[0];
   return lead === undefined ? undefined : written.slice(lead.length).replaceAll(/[^0-9]/gu, "");
 };
 
 /**
  * A phone number's country calling code, digits only, when the number is written in international
- * form, after `+` or `00`; undefined for a number written another way, or with a letter or a `#`,
- * which does not say it (`internationalDigits`).
+ * form, after `+` or `00`; undefined for a number written another way, or that goes on past its
+ * digits, which does not say it (`internationalDigits`).
  */
 export const callingCode = (number: string) => {
   const digits = internationalDigits(number);

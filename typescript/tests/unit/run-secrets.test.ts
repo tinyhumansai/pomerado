@@ -204,6 +204,7 @@ describe("a phone number", () => {
     ["+44 7700,900123", ["+44 7700 900123", "07700 900123", "7700900123"]],
     ["(0091) 98765 00000", ["+91 98765 00000", "98765-00000", "9876500000"]],
     ["(+91) 98765 00000", ["+91 98765 00000", "98765-00000", "9876500000"]],
+    ["+0091 98765 00000", ["+91 98765 00000", "98765-00000", "9876500000"]],
     ["\u200e+91 98765 00000", ["+91 98765 00000", "98765-00000", "9876500000"]],
     ["0170/5550100", ["0170 5550100", "170/5550100", "1705550100"]],
   ])("masks and refuses a number outside the phone shape, %s", (number, shown) => {
@@ -221,6 +222,8 @@ describe("a phone number", () => {
     "+91 98765 00000 x12",
     "+(91) 98765 00000 ext. 12",
     "+91 98765 00000 #12",
+    "+91 98765 00000;12",
+    "+91 98765 00000*12",
     "00 91 98765 00000 #12",
   ])(
     "masks and refuses the number before an extension, %s",
@@ -262,12 +265,15 @@ describe("a phone number", () => {
     expect(phone("\u202a\u202c").redact("Sent to 1234.")).toBe("Sent to 1234.");
   });
 
-  // A `#` ends a number only after a digit: before them it ends nothing, as in a login of digits.
-  it.each(["#1234567", "# 1234567"])("masks and refuses the digits behind a lead of #: %s", (login) => {
-    const secrets = phone(login);
-    expect(secrets.redact("Sent to 1234567.")).toBe("Sent to [private].");
-    expect(refused(secrets, 'const shown = "123 4567";')).toBe(true);
-  });
+  // A `#`, `;` or `*` ends a number only after a digit: before them it ends nothing.
+  it.each(["#1234567", "# 1234567", "*1234567", ";1234567"])(
+    "masks and refuses the digits behind a lead of a mark: %s",
+    (login) => {
+      const secrets = phone(login);
+      expect(secrets.redact("Sent to 1234567.")).toBe("Sent to [private].");
+      expect(refused(secrets, 'const shown = "123 4567";')).toBe(true);
+    },
+  );
 
   it("leaves another number and a longer run of digits as they are", () => {
     const secrets = phone("+15555550123");
