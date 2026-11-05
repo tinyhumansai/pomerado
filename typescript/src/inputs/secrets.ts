@@ -61,14 +61,15 @@ const numberEdge = "(?:(?<![0-9])|(?<=%[0-9A-Fa-f]{2}))";
  * The forms of a phone number beyond the value as given, as a site writes it back in its own way:
  * its digits, with and without its calling code (`digits`); a global pattern for those digits
  * with `phoneGap` between each, with a trunk 0 or none and no digit adjoining them, though a percent
- * escape may stand right before them (`run`); and one for the start of the run where a cut ended
- * the text (`cut`). A number with too few digits after its calling code (`phoneLocalLeast`) has no
- * `digits`, and its patterns match only with that code, after a `+` or `00`. Undefined for a value
- * not written as a number, such as a host's handle, one too short to say its calling code, or one
- * with too little after that code (`phoneLocalFewest`). Any marks may group its digits, as a saved
- * login or a login of another kind never met the shape a phone answer must have, and what a letter
- * starts, such as an extension, is no part of the number. `run` also counts the value as given,
- * since it goes first: an extension or a `(00NN)` lead would stay beside what it masks.
+ * escape or a `00` lead may stand right before them (`run`); and one for the start of the run where
+ * a cut ended the text (`cut`). A number with too few digits after its calling code
+ * (`phoneLocalLeast`) has no `digits`, and its patterns match only with that code, after a `+` or
+ * `00`. Undefined for a value not written as a number, such as a host's handle, one too short to
+ * say its calling code, or one with too little after that code (`phoneLocalFewest`). Any marks may
+ * group its digits, as a saved login or a login of another kind never met the shape a phone answer
+ * must have, and what a letter starts, such as an extension, is no part of the number. `run` also
+ * counts the value as given, since it goes first: an extension or a `(00NN)` lead would stay beside
+ * what it masks.
  */
 const phoneForms = (given: string) => {
   if (!writtenAsNumber(given)) return undefined;
@@ -77,8 +78,9 @@ const phoneForms = (given: string) => {
   const local = (nationalDigits(number) ?? number.replaceAll(/[^0-9]/gu, "")).replace(/^0+/u, "");
   const short = local.length < phoneLocalLeast;
   if (local.length < phoneLocalFewest || (short && code === "")) return undefined;
-  // A gap only after a lead the pattern needs: an optional one would take in what stands before.
-  const lead = `${numberEdge}${short ? `(?:\\+|%2[Bb]|00)${phoneGap}` : "[+(]?"}`;
+  // A gap only behind a lead: on its own it would take in what stands before the number.
+  const international = `(?:\\+|%2[Bb]|00)${phoneGap}`;
+  const lead = `${numberEdge}${short ? international : `(?:\\(|${international})?`}`;
   const trunk = `(?:0${phoneGap})?`;
   const calling = code === "" ? "" : `(?:${gapped(code)}${phoneGap})${short ? "" : "?"}`;
   const cuts = [
