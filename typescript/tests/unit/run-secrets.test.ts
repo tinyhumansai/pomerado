@@ -251,6 +251,10 @@ describe("a phone number", () => {
     "+298 0555012",
     "%2B298%20555012",
     "?phone=%2B298555012",
+    "+ 298 55 50 12",
+    "00 298 55 50 12",
+    "+(298) 555012",
+    "%2B%20298%20555012",
   ])("masks and refuses a short number with its calling code: %s", (shown) => {
     const secrets = phone("+298 555012");
     const masked = secrets.redact(`Sent to ${shown}.`);
@@ -259,7 +263,19 @@ describe("a phone number", () => {
     expect(refused(secrets, `const shown = "${shown}";`)).toBe(true);
   });
 
-  it.each(["555012", "55 50 12", "298555012", "298 55 50 12", "+299 555012", "+298 555013"])(
+  it.each([
+    "555012",
+    "55 50 12",
+    "298555012",
+    "298 55 50 12",
+    "+299 555012",
+    "+298 555013",
+    "+555012",
+    "+ 555012",
+    "+ 299 555012",
+    "100 298 555012",
+    "00 555012",
+  ])(
     "leaves what only looks like a short number as it is: %s",
     (text) => {
       const secrets = phone("+298 555012");
@@ -272,8 +288,14 @@ describe("a phone number", () => {
     const secrets = phone("+298 555012");
     expect(secrets.redactCut("Sent to +298 55 5")).toBe("Sent to ");
     expect(secrets.redactCut("Sent to 00298 55")).toBe("Sent to ");
+    expect(secrets.redactCut("Sent to + 298 55")).toBe("Sent to ");
+    expect(secrets.redactCut("Sent to 00 298 5")).toBe("Sent to ");
+    expect(secrets.redactCut("Sent to +298 055")).toBe("Sent to ");
+    expect(secrets.redactCut("Sent to +298 0")).toBe("Sent to ");
     expect(secrets.redactCut("Sent to 555")).toBe("Sent to 555");
+    expect(secrets.redactCut("Sent to +555")).toBe("Sent to +555");
     expect(secrets.redactCut("Sent to 298 55")).toBe("Sent to 298 55");
+    expect(secrets.redactCut("Sent to 298 0")).toBe("Sent to 298 0");
   });
 
   // A calling code with so little after it says nothing: its patterns would mask every `+1`.
@@ -313,6 +335,8 @@ describe("a phone number", () => {
     expect(secrets.redactCut("Sent to +91 98765 43")).toBe("Sent to ");
     expect(secrets.redactCut("Sent to 98765 4")).toBe("Sent to ");
     expect(secrets.redactCut("Sent to +91 ")).toBe("Sent to ");
+    expect(secrets.redactCut("Sent to +91 0987")).toBe("Sent to ");
+    expect(secrets.redactCut("Sent to +91 0")).toBe("Sent to ");
     expect(secrets.redactCut("Sent to +91 98765 43210 today")).toBe("Sent to [private] today");
     expect(secrets.redactCut("Sent to 12")).toBe("Sent to 12");
     expect(secrets.redactCut("?msg=sent%20to%2098765%2043")).toBe("?msg=sent%20to%20");

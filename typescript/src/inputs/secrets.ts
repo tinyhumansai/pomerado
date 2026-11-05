@@ -76,20 +76,19 @@ const phoneForms = (given: string) => {
   const short = local.length < phoneLocalLeast;
   if (local.length < phoneLocalFewest || (short && code === "")) return undefined;
   const edge = "(?:(?<![0-9])|(?<=%[0-9A-Fa-f]{2}))";
-  const lead = `${edge}${short ? "(?:\\+|%2[Bb]|00)" : "[+(]?"}`;
+  // A gap only after a lead the pattern needs: an optional one would take in what stands before.
+  const lead = `${edge}${short ? `(?:\\+|%2[Bb]|00)${phoneGap}` : "[+(]?"}`;
   const trunk = `(?:0${phoneGap})?`;
   const calling = code === "" ? "" : `(?:${gapped(code)}${phoneGap})${short ? "" : "?"}`;
-  const whole = cutGapped(`${code}${local}`);
+  const cuts = [
+    cutGapped(`${code}${local}`),
+    ...(code === "" ? [] : [`${gapped(code)}${phoneGap}0(?:${phoneGap}${cutGapped(local)})?`]),
+    ...(short ? [] : [`${trunk}${cutGapped(local)}`]),
+  ];
   return {
     digits: short ? [] : [local, `${code}${local}`],
-    run: new RegExp(
-      `${literal(given)}|${lead}${calling}${trunk}${gapped(local)}(?![0-9])`,
-      "gu",
-    ),
-    cut: new RegExp(
-      `${lead}(?:${short ? whole : `${whole}|${trunk}${cutGapped(local)}`})${phoneGap}$`,
-      "u",
-    ),
+    run: new RegExp(`${literal(given)}|${lead}${calling}${trunk}${gapped(local)}(?![0-9])`, "gu"),
+    cut: new RegExp(`${lead}(?:${cuts.join("|")})${phoneGap}$`, "u"),
   };
 };
 
