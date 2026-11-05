@@ -431,6 +431,36 @@ describe("a press under a sign-in's bound", () => {
     expect(waits).toEqual([]);
   });
 
+  it("presses nothing once the stop is raised", async () => {
+    const { browser, waits } = hooks();
+    const stop = new AbortController();
+    stop.abort();
+    const bounded = boundedSignInHooks(browser, { untilMs: Date.now() + 1_000, stop: stop.signal }, expired);
+    const report = await Effect.runPromise(bounded.resend?.({ ...code, waitMs: 120_000 }) ?? Effect.void);
+    expect(report).toMatchObject({ outcome: "refused", reason: "typing_unavailable" });
+    expect(waits).toEqual([]);
+  });
+
+  it("hands the press the stop, which its wait watches", async () => {
+    const stops: unknown[] = [];
+    const { browser } = hooks();
+    const stop = new AbortController();
+    const bounded = boundedSignInHooks(
+      {
+        ...browser,
+        resend: (input) =>
+          Effect.sync(() => {
+            stops.push(input.stop);
+            return { outcome: "filled", fields: [], submit: "clicked", url: site } as const;
+          }),
+      },
+      { untilMs: Date.now() + 1_000, stop: stop.signal },
+      expired,
+    );
+    await Effect.runPromise(bounded.resend?.({ ...code, waitMs: 10 }) ?? Effect.void);
+    expect(stops).toEqual([stop.signal]);
+  });
+
   it("gives a browser without a resend none", () => {
     const { resend: _resend, ...browser } = hooks().browser;
     const stop = new AbortController();

@@ -400,6 +400,11 @@ interface CallInput {
    */
   readonly enableMs?: number;
   /**
+   * Once raised, the wait for the submit makes no further call, any of which could click:
+   * a script's stop, for a code screen's resend press (`resendAutofillCode`).
+   */
+  readonly stop?: AbortSignal;
+  /**
    * A code screen's resend press (`resendAutofillCode`): the selectors of the screen's own
    * submit, methods and dismiss, none of which its control may be.
    */
@@ -792,6 +797,10 @@ const submitWhenEnabled = (
     let lastLost = false;
     const changes = { count: 0 };
     for (;;) {
+      if (input.stop?.aborted === true)
+        return Either.right<CallAnswer>({
+          refusal: withCheck(refused("typing_unavailable", "submit"), "stopped"),
+        });
       const looking = look !== undefined && Date.now() - started < sendMs;
       const answered = yield* fillCall(input, progress, changes)(looking ? look : call);
       if (looking && (Either.isLeft(answered) || unclicked(answered, "none"))) {
@@ -1229,10 +1238,11 @@ export const resubmitAutofillStep = (input: CallInput): Effect.Effect<AutofillSt
  * press, even when the control submits the code's own form. Then the control is judged, guarded
  * and clicked as a click again of a fill's submit is, with no look first and pressed from the
  * keyboard when another element covers it, once the site enables it: the host calls again while
- * the site keeps it disabled, as its timer does, for up to `waitMs`. Just before the click, each
- * field must still hold nothing, else that field fails and nothing is clicked; and a control that
- * is one of the fields or of the elements `apartFrom` names, or whose document holds a password in
- * any form, is refused (`resendChecksCode`). The report says what became of it, `clicked` when it went out and
+ * the site keeps it disabled, as its timer does, for up to `waitMs`, and no longer once `stop` is
+ * raised, which refuses the press. Just before the click, each field must still hold nothing, else
+ * that field fails and nothing is clicked; and a control that is one of the fields or of the
+ * elements `apartFrom` names, or whose document holds a password in any form, is refused
+ * (`resendChecksCode`). The report says what became of it, `clicked` when it went out and
  * `stayed_disabled` when the site never enabled it in time, with no field filled; a control the
  * host refuses is refused before any click.
  */

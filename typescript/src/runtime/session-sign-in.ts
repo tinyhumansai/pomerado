@@ -243,6 +243,7 @@ export interface BoundedSignInHooks<E> {
     readonly inspection: AutofillInspection;
     readonly waitMs: number;
     readonly apartFrom: readonly string[];
+    readonly stop?: AbortSignal;
   }) => Effect.Effect<AutofillStepReport>;
 }
 
@@ -256,7 +257,8 @@ type OpenFailure<Hooks> =
  * inspected and nothing is typed, so the host never fills after the script could have given up
  * and taken its browser back. A step already filling finishes; the next one never starts. An
  * open or inspection past the bound fails with the host's `expired` failure. A code screen's
- * resend presses nothing past the bound either, and waits for the site's timer only until it.
+ * resend presses nothing past the bound either, and waits for the site's timer only until it or
+ * until the stop is raised, which the press watches between its looks.
  */
 export const boundedSignInHooks = <Hooks extends BoundedSignInHooks<unknown>>(
   hooks: Hooks,
@@ -296,6 +298,7 @@ export const boundedSignInHooks = <Hooks extends BoundedSignInHooks<unknown>>(
               return resend.call(hooks, {
                 ...input,
                 waitMs: Math.min(input.waitMs, bound.untilMs - now),
+                stop: bound.stop,
               });
             }),
         }),

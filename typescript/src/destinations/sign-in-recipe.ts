@@ -247,14 +247,16 @@ export interface SignInBrowser<E> {
   /**
    * Presses a code screen's resend control, typing nothing (`resendAutofillCode`): the step's code
    * fields, emptied first, and the control as its submit, waited on for up to `waitMs` while the
-   * site keeps it disabled, never one of the elements `apartFrom` names (the screen's own submit,
-   * methods and dismiss). A browser without it never offers a resend.
+   * site keeps it disabled and `stop`, when given, isn't raised, never one of the elements
+   * `apartFrom` names (the screen's own submit, methods and dismiss). A browser without it never
+   * offers a resend.
    */
   readonly resend?: (input: {
     readonly step: AutofillStep;
     readonly inspection: AutofillInspection;
     readonly waitMs: number;
     readonly apartFrom: readonly string[];
+    readonly stop?: AbortSignal;
   }) => Effect.Effect<AutofillStepReport>;
   /**
    * Checks the minter's signed-in indicator on the page: `screens` are every screen the build

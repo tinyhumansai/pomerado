@@ -5,6 +5,7 @@ import { makeInputAsker } from "../../src/inputs/callback.js";
 import { makeRunSecrets } from "../../src/inputs/secrets.js";
 import { makeCodeResend } from "../../src/runtime/code-resend.js";
 import type { Question } from "../../src/runtime/input-request.js";
+import { boundedSignInHooks } from "../../src/runtime/session-sign-in.js";
 import { signInForRun } from "../../src/runtime/sign-in-replay.js";
 import { localSignInLogin, makeSignInBrowser } from "../../src/standalone/authentication.js";
 import { expectNotCarried, hostKeyboard, hostPage } from "./autofill-host-page.js";
@@ -366,6 +367,63 @@ code.addEventListener("input", () => { if (code.value === "") code.value = last;
   expect(pressed).toBe(false);
   expect(posts).toEqual([]);
   await expect(page.locator("#code")).toHaveValue("999999");
+});
+
+test("a press whose wait a script's stop ends never goes out, though the site then enables its control", async ({
+  page,
+}) => {
+  const posts: string[] = [];
+  await page.route(`${site}/**`, async (route) => {
+    if (route.request().method() === "POST") posts.push(new URL(route.request().url()).pathname);
+    await route.fulfill({
+      contentType: "text/html",
+      body: `<form method="post" action="/verify">
+<label>Code <input id="code" name="code" autocomplete="one-time-code"></label>
+<button id="verify">Verify</button>
+<button id="resend" formaction="/resend" disabled>Resend code</button>
+</form>`,
+    });
+  });
+  await page.goto(`${site}/verify`);
+  const browser = makeSignInBrowser({
+    page: await hostPage(page),
+    keyboard: (await hostKeyboard(page)).keyboard,
+    siteOrigin: site,
+    authenticationOrigins: [],
+    typing: { typed: false },
+  });
+  const stop = new AbortController();
+  const bounded = boundedSignInHooks(
+    browser,
+    { untilMs: Date.now() + 60_000, stop: stop.signal },
+    () => new Error("The bound passed"),
+  );
+  let waiting = false;
+  const resend = makeCodeResend({
+    hooks: {
+      inspect: (each) => bounded.inspect(each).pipe(Effect.orDie),
+      resend: (input) => {
+        waiting = true;
+        return bounded.resend?.(input) ?? Effect.die("The browser presses no resend");
+      },
+    },
+    step: codeOnly,
+    presses: new Map(),
+    waitMs: 20_000,
+    pollMs: 250,
+    emit: () => Effect.void,
+  });
+  if (resend === undefined) throw new Error("The step offers no resend");
+  const pressing = Effect.runPromise(resend.press);
+  await expect.poll(() => waiting).toBe(true);
+  await page.waitForTimeout(600);
+  stop.abort();
+  await page.locator("#resend").evaluate((element) => {
+    (element as HTMLButtonElement).disabled = false;
+  });
+  expect(await pressing).toBe(false);
+  await page.waitForTimeout(500);
+  expect(posts).toEqual([]);
 });
 
 for (const [name, resend] of [

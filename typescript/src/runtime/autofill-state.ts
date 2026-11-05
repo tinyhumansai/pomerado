@@ -68,15 +68,16 @@ export interface AutofillHooks<E = unknown, V extends string = string> {
   /**
    * Presses a code screen's resend control, typing nothing, after emptying its code fields
    * (`resendAutofillCode`): `step` is the screen's code fields with the control as its submit,
-   * waited on for up to `waitMs` while the site keeps it disabled, and `apartFrom` the selectors
-   * of the screen's own submit, methods and dismiss, none of which the control may be. A host
-   * without it never offers the owner a resend.
+   * waited on for up to `waitMs` while the site keeps it disabled and `stop`, when given, isn't
+   * raised, and `apartFrom` the selectors of the screen's own submit, methods and dismiss, none of
+   * which the control may be. A host without it never offers the owner a resend.
    */
   readonly resend?: (input: {
     readonly step: AutofillStep;
     readonly inspection: AutofillInspection;
     readonly waitMs: number;
     readonly apartFrom: readonly string[];
+    readonly stop?: AbortSignal;
   }) => Effect.Effect<AutofillStepReport>;
   /** The marker check alone, which verifies nothing: a replay polls it. */
   readonly check: (
