@@ -1,9 +1,11 @@
 import { Schema } from "effect";
 import {
+  amountCode,
   defineOperation,
   formControlsCode,
   sameText,
   timeoutDefaults,
+  visibleTextCode,
   waitCode,
 } from "../../src/browser/index.js";
 import type { KernelOperationContext } from "../../src/browser/index.js";
@@ -205,12 +207,14 @@ const fillCheckout = async (context: FillContext) => {
     throw new errors.OperationFailure(reviewed.failure, { dispatch: "not_sent" });
 };
 
-// The review's total in minor units, read the same way before the commit mark and inside it.
-// This site shows a two-decimal total with a "." separator, such as "$37.50"; parse the format
-// your site shows.
+// The review's total in minor units, read the same way before the commit mark and inside it,
+// with the runtime's readAmount (amountCode, pasted after visibleTextCode): it reads the amount
+// the total shows, such as "$37.50", in whatever grouping the site writes. A total that shows no
+// single amount ends the call as review_missing.
 const readTotal = `
-  const totalText = await page.getByLabel("Order total", { exact: true }).innerText({ timeout: 5000 });
-  const total_minor = Math.round(Number(totalText.replace(/[^0-9.]/g, "")) * 100);
+  const totalRead = await readAmount(page.getByLabel("Order total", { exact: true }), { currency: "USD" });
+  if (totalRead.amount === null) return { failure: "review_missing" };
+  const total_minor = totalRead.amount.minor;
 `;
 
 /**
@@ -221,6 +225,8 @@ export const checkReview = async ({ kernel, sessionId, input, errors }: Context)
   const answer = await kernel.browsers.playwright.execute(sessionId, {
     timeout_sec: 30,
     code: `
+      ${visibleTextCode}
+      ${amountCode}
       ${declineOffer}
       if ((await page.getByRole("button", { name: "Place order", exact: true }).count()) !== 1)
         return { failure: "review_missing" };
@@ -258,6 +264,8 @@ const clickPlace = async ({ kernel, sessionId, errors }: Context, checkedTotal: 
     code: `
       ${waitCode}
       ${formControlsCode}
+      ${visibleTextCode}
+      ${amountCode}
       const review = page.getByRole("form", { name: "Review", exact: true });
       const place = review.getByRole("button", { name: "Place order", exact: true });
       if ((await place.count()) !== 1) return { failure: "review_missing" };

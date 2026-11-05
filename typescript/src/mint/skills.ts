@@ -57,6 +57,7 @@ const catalog = [
       "custom-selection.ts",
       "dialog-picker.ts",
       "dates-and-files.ts",
+      "way-to-pay.ts",
     ],
   },
   {
@@ -69,7 +70,7 @@ const catalog = [
     name: "cart",
     description:
       "Read before building any tool that reads, adds to, changes or checks out a cart: when to sign in or check out as a guest, read the cart before and after, quantity, account values and site limits",
-    references: [],
+    references: ["cart-stepper.ts", "bill-lines.ts", "payment-qr.ts"],
   },
   {
     name: "caller-input",

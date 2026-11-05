@@ -164,9 +164,17 @@ greyed-out choice the input asked for. When the page shows no state for the opti
 before pressing as `state_unknown`: pass `chosen`, a locator that shows only once this option is
 chosen, such as a summary naming it, and `unavailable` for the page's own sign that an option is
 not offered. `readChoices(locator)` reads every visible option a locator matches as `{ label,
-chosen, unavailable, by }`, pressing nothing, such as the ways to pay and which one is chosen. Use
-`pickValue` for a control that opens a list to pick from, and `chooseOne` for options shown side by
-side; never press such an option with clicks of your own.
+chosen, unavailable, by }`, pressing nothing, such as the ways to pay and which one is chosen; open
+a list the page keeps folded, such as "More ways to pay", before reading or choosing in it.
+`readChoices` reads the page as it is at that moment and never waits: wait for the options to show
+first, and read an option it shows greyed out again once the page has gone quiet before refusing
+it, since pages grey an option out for a moment while they recalculate. Decode `chooseOne`'s result
+with `ChooseOutcome` and `readChoices`' with `ChoiceStates`. Choose only the option named as the
+input names it, never one whose name merely starts with the input. Use `pickValue` for a control
+that opens a list to pick from, and `chooseOne` for options shown side by side; never press such an
+option with clicks of your own. Publication review sends one back ("Own choice").
+`references/way-to-pay.ts` reads the ways to pay in a payment frame, refuses one the frame does not
+name or keeps greyed out before its commit mark, and chooses the caller's.
 
 Preserve add/replace and single/multiple intent. `pickValues`' `mode` keeps or replaces
 the chips already chosen. Query aliases
