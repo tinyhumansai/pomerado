@@ -400,8 +400,9 @@ interface CallInput {
    */
   readonly enableMs?: number;
   /**
-   * Once raised, the wait for the submit makes no further call, any of which could click:
-   * a script's stop, for a code screen's resend press (`resendAutofillCode`).
+   * Once raised, the wait for the submit starts no further call that could click: a script's
+   * stop, for a code screen's resend press (`resendAutofillCode`). A call already clicking can't
+   * be called back (`submitWhenEnabled`).
    */
   readonly stop?: AbortSignal;
   /**
@@ -776,7 +777,10 @@ const submitCall = (
  * screen as typed, or is lost, looks again, and any other answer is taken as the submit call's
  * would be. Only then does the submit call click. A click again of a blocked screen skips that
  * first look, and none of its later looks takes every box locked or emptied as the page's own send
- * (`codeLook`): its dismiss may have emptied every box itself.
+ * (`codeLook`): its dismiss may have emptied every box itself. With a `stop`, each click call waits
+ * on a call that only reads the submit (`enabledRead`), and the stop is read again after it, so a
+ * stop raised before the click call starts means no press, however the page answers meanwhile. A
+ * stop raised once that call started is too late: the call runs on, and may still click.
  */
 const submitWhenEnabled = (
   input: CallInput,
@@ -792,17 +796,27 @@ const submitWhenEnabled = (
       lookFirst && call.kind === "submit" && codeOnly(input.step) && sendMs > 0
         ? { ...call, look: true as const }
         : undefined;
+    const read =
+      input.stop !== undefined && call.kind === "submit"
+        ? { ...call, enabledRead: true as const }
+        : undefined;
     let unsentSince: number | undefined;
     let lost: Either.Either<CallAnswer, Error> | undefined;
     let lastLost = false;
     const changes = { count: 0 };
+    const stopRaised = () => input.stop?.aborted === true;
     for (;;) {
-      if (input.stop?.aborted === true)
+      if (stopRaised())
         return Either.right<CallAnswer>({
           refusal: withCheck(refused("typing_unavailable", "submit"), "stopped"),
         });
       const looking = look !== undefined && Date.now() - started < sendMs;
-      const answered = yield* fillCall(input, progress, changes)(looking ? look : call);
+      const enabled = read === undefined ? undefined : yield* fillCall(input, progress, changes)(read);
+      if (stopRaised()) continue;
+      const answered =
+        enabled !== undefined && unclicked(enabled, "disabled")
+          ? enabled
+          : yield* fillCall(input, progress, changes)(looking ? look : call);
       if (looking && (Either.isLeft(answered) || unclicked(answered, "none"))) {
         yield* Effect.sleep(submitPollMs);
         continue;

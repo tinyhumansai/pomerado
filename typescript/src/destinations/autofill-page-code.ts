@@ -263,6 +263,11 @@ export type AutofillFillCall =
       /** Only look: a call that finds the step's fields clicks nothing and answers `none`. */
       readonly look?: true;
       /**
+       * Only read the submit: a call that finds it disabled answers `disabled` as any submit call
+       * does, and one that finds it enabled clicks nothing and answers `none`.
+       */
+      readonly enabledRead?: true;
+      /**
        * The step's code boxes, by field index: its code fields the host typed one character each,
        * when it typed two or more. Each must still hold exactly one character before the click.
        */
@@ -1124,6 +1129,7 @@ try {
   return `${call.look === true ? "return { submit: \"none\", url: primary.url() };\n" : ""}if (submit === null) return { submit: "none", url: primary.url() };
 // Disabled as Playwright's own click judges it, read where page code cannot redefine the answer.
 if (await submit.locator.isDisabled({ timeout: 5000 })) return { submit: "disabled", url: primary.url() };
+${call.enabledRead === true ? 'return { submit: "none", url: primary.url() };' : ""}
 ${call.resend === undefined ? "" : resendChecksCode(call.resend.apartFrom)}
 const guardKey = ${JSON.stringify(call.guardKey)};
 const guardCall = ${JSON.stringify(call.guardCall)};
