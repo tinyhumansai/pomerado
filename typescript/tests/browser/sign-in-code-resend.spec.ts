@@ -734,6 +734,26 @@ for (const [name, resend] of [
     expect(posts).toEqual([]);
   });
 
+// A browser skips a label's click from a button inside it, so this press would reach no box. The
+// reach counts the box all the same: refusing is the safe side, and the code is still asked for.
+test("a press never clicks a resend inside the code box's own label", async ({ page }) => {
+  const { pressed, posts, events } = await pressOn(
+    page,
+    `<form method="post" action="/verify">
+<label>Code <input id="code" name="code" autocomplete="one-time-code">
+<button type="button" id="resend">Resend code</button></label>
+<button id="verify">Verify</button>
+</form>
+<script>document.getElementById("resend").addEventListener("click", () => {
+  fetch("/resend", { method: "POST" });
+});</script>`,
+    codeOnly,
+  );
+  expect(pressed).toBe(false);
+  expect(posts).toEqual([]);
+  expect(events).toEqual([expect.objectContaining({ outcome: "refused", part: "same_control" })]);
+});
+
 for (const [name, screen] of [
   [
     "a span the screen's submit holds",
