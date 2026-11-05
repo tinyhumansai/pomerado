@@ -1,48 +1,59 @@
+import { Schema } from "effect";
 import { normalizeText } from "../runtime/text.js";
+
+/** What showed an option's state, as `readChoices` reads it: never the caller's own sign. */
+const PageSign = Schema.Literal(
+  "checked",
+  "aria-checked",
+  "aria-selected",
+  "aria-pressed",
+  "aria-expanded",
+  "aria-current",
+  "data-state",
+  "data-selected",
+  "data-checked",
+  "data-active",
+  "class",
+);
 
 /**
  * What showed an option's state: a native radio or checkbox's `checked`, one of the ARIA states,
  * one of the data attributes component libraries set, a class only the chosen option among its
  * like options carries, or the caller's own `chosen` sign.
  */
-export type ChosenSign =
-  | "checked"
-  | "aria-checked"
-  | "aria-selected"
-  | "aria-pressed"
-  | "aria-expanded"
-  | "aria-current"
-  | "data-state"
-  | "data-selected"
-  | "data-checked"
-  | "data-active"
-  | "class"
-  | "chosen";
+export type ChosenSign = typeof PageSign.Type | "chosen";
 
-/** `chooseOne`'s answer when the option is chosen: whether it pressed it, its text and the sign. */
-export interface Chosen {
-  readonly chosen: true;
-  readonly pressed: boolean;
-  readonly label: string;
-  readonly by: ChosenSign;
-}
+/**
+ * `chooseOne`'s answer: chosen, with whether it pressed the option, its text and what showed it
+ * chosen; or, for an option the page offers greyed out or says is not available, `unavailable`
+ * with its text. Decode a call's result with it.
+ */
+export const ChooseOutcome = Schema.Union(
+  Schema.Struct({
+    chosen: Schema.Literal(true),
+    pressed: Schema.Boolean,
+    label: Schema.String,
+    by: Schema.Union(PageSign, Schema.Literal("chosen")),
+  }),
+  Schema.Struct({ chosen: Schema.Literal(false), reason: Schema.Literal("unavailable"), label: Schema.String }),
+);
+export type ChooseOutcome = typeof ChooseOutcome.Type;
+export type Chosen = Extract<ChooseOutcome, { readonly chosen: true }>;
+export type ChoiceUnavailable = Extract<ChooseOutcome, { readonly chosen: false }>;
 
-/** `chooseOne`'s answer for an option the page offers greyed out or says is not available. */
-export interface ChoiceUnavailable {
-  readonly chosen: false;
-  readonly reason: "unavailable";
-  readonly label: string;
-}
-
-export type ChooseOutcome = Chosen | ChoiceUnavailable;
-
-/** One visible option as `readChoices` reads it; `chosen` and `by` are null when nothing shows. */
-export interface ChoiceState {
-  readonly label: string;
-  readonly chosen: boolean | null;
-  readonly unavailable: boolean;
-  readonly by: Exclude<ChosenSign, "chosen"> | null;
-}
+/**
+ * `readChoices`' answer: each visible option, its text, whether it is chosen and what showed it,
+ * both null when the page shows no state, and whether the page offers it greyed out.
+ */
+export const ChoiceStates = Schema.Array(
+  Schema.Struct({
+    label: Schema.String,
+    chosen: Schema.NullOr(Schema.Boolean),
+    unavailable: Schema.Boolean,
+    by: Schema.NullOr(PageSign),
+  }),
+);
+export type ChoiceState = (typeof ChoiceStates.Type)[number];
 
 /**
  * Page code for a Kernel call body, pasted after `waitCode` (./wait.ts), whose `waitForReady`,

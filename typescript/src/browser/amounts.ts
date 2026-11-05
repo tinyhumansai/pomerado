@@ -1,24 +1,32 @@
-import { parseAmount, type Amount } from "../runtime/amounts.js";
+import { Schema } from "effect";
+import { Amount, parseAmount } from "../runtime/amounts.js";
 
 /**
- * One amount as `readAmount` and `readAmounts` read it: the amount the element shows, null when it
- * shows none or more than one; each struck-out amount beside it, such as an old price or a waived
- * fee; and the element's visible text without the struck-out part, with a space between a
- * superscript and the text beside it where two digits meet.
+ * One amount as `readAmount` reads it: the amount the element shows, null when it shows none or
+ * more than one; each struck-out amount beside it, such as an old price or a waived fee; and the
+ * element's visible text without the struck-out part, with a space between a superscript and the
+ * text beside it where two digits meet. Decode a call's result with it.
  */
-export interface AmountRead {
-  readonly amount: Amount | null;
-  readonly struck: readonly Amount[];
-  readonly text: string;
-}
+export const AmountRead = Schema.Struct({
+  amount: Schema.NullOr(Amount),
+  struck: Schema.Array(Amount),
+  text: Schema.String,
+});
+export type AmountRead = typeof AmountRead.Type;
 
-/** One line of a bill as `readAmounts` reads it; `label` and `text` are null when not shown. */
-export interface AmountLine {
-  readonly label: string | null;
-  readonly amount: Amount | null;
-  readonly struck: readonly Amount[];
-  readonly text: string | null;
-}
+/**
+ * The lines of a bill as `readAmounts` reads them, each as `AmountRead` with its `label`; `label`
+ * and `text` are null when the row shows no such element.
+ */
+export const AmountLines = Schema.Array(
+  Schema.Struct({
+    label: Schema.NullOr(Schema.String),
+    amount: Schema.NullOr(Amount),
+    struck: Schema.Array(Amount),
+    text: Schema.NullOr(Schema.String),
+  }),
+);
+export type AmountLine = (typeof AmountLines.Type)[number];
 
 /**
  * Page code for a Kernel call body, pasted after `visibleTextCode` (./visible-text.ts), whose
