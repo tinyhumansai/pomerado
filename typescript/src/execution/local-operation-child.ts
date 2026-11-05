@@ -200,11 +200,13 @@ const publishJournal = atomically(
   journalState.pipe(Effect.flatMap((metadata) => send({ kind: "journal", ...metadata }))),
 ).pipe(Effect.orDie);
 type JournalState = Effect.Effect.Success<typeof journalState>;
+/** A commit step as the script enters it. The host works out whether a call was out then. */
+type EnteringCommit = Omit<EnteredCommit, "callOut">;
 /**
  * The journal update that enters a commit step, naming it with its report, and with whether a
  * call that can reach the site was still out then.
  */
-const enteredUpdate = (metadata: JournalState, entered: EnteredCommit) => ({
+const enteredUpdate = (metadata: JournalState, entered: EnteringCommit) => ({
   kind: "journal",
   ...metadata,
   entered: siteCallsOut === 0 ? entered : { ...entered, outstanding: true },
@@ -213,7 +215,7 @@ const enteredUpdate = (metadata: JournalState, entered: EnteredCommit) => ({
  * The journal once a commit step was entered. It goes out before the script's next call, so the
  * host holds that call when its commit hook must accept the step first.
  */
-const publishEntered = (entered: EnteredCommit) =>
+const publishEntered = (entered: EnteringCommit) =>
   journalState.pipe(
     Effect.flatMap((metadata) => send(enteredUpdate(metadata, entered))),
     Effect.orDie,

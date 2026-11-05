@@ -135,8 +135,8 @@ test("a write's click waits for the host's commit hook, which hears the checkout
     expect(started).toEqual([0]);
     const report = { button: "Pay ₹204 on delivery", total: "Total ₹204" };
     expect(entered).toEqual([
-      { mark: { name: "place-order", report }, posts: 0 },
-      { mark: { name: "place-order", report }, posts: 0 },
+      { mark: { name: "place-order", report, callOut: false }, posts: 0 },
+      { mark: { name: "place-order", report, callOut: false }, posts: 0 },
     ]);
     expect(posts()).toBe(1);
     // One fingerprint after each of the script's two calls, and the click changed the page.

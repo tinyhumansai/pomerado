@@ -4,8 +4,9 @@
 // earlier answer, a held call that runs once the run's deadline, the child's error or its return
 // decided it, a held step that reads sent after the run stopped, a later step that reads sent
 // although its calls were held, a refusal missed because the script returned right after
-// entering, a commit hook that throws as it is called or ends interrupted, and a child that marks
-// a step, or passes a report, without the host's check.
+// entering, a commit hook that throws as it is called or ends interrupted, a child that marks a
+// step, or passes a report, without the host's check, and a commit hook that can't tell whether a
+// call was out as the script entered its step.
 import { Effect } from "effect";
 import { expect, it } from "vitest";
 import { runLocalOperation } from "../../src/execution/local-operation.js";
@@ -78,6 +79,13 @@ const run = (source: string, browser: object, hooks?: OperationHooks, timeoutMs?
 const refused = (reason: string) => Effect.fail(new Error(reason));
 const refuseAll: OperationHooks = { commit: () => refused("The cart changed") };
 
+/** A commit hook that records each step it hears, and accepts it. */
+const hearing = () => {
+  const asked: EnteredCommit[] = [];
+  const hooks: OperationHooks = { commit: (mark) => Effect.sync(() => asked.push(mark)) };
+  return { asked, hooks };
+};
+
 /** A child that sends the host a journal update its runtime never would. */
 const forged = (fields: object) => `    process.send(${JSON.stringify({
   kind: "journal",
@@ -128,6 +136,102 @@ it("keeps a refused step sent when the host answered its click before hearing of
   });
   expect(site.calls).toEqual(["click"]);
 }, 30_000);
+
+it("tells the commit hook no call was out once the script's calls were answered", async () => {
+  const site = recordingBrowser(50);
+  const host = hearing();
+  const result = await run(
+    write(
+      `    await call("return 'look';");
+    enteringCommit("save-address");
+    await call("return 'save';");
+    enteringCommit("place-order", ${report});
+    await call("return 'click';");
+    verified();
+    return { placed: true };`,
+      ["save-address", "place-order"],
+    ),
+    site.browser,
+    host.hooks,
+  );
+  expect(result).toMatchObject({ _tag: "Right", right: { output: { placed: true } } });
+  expect(host.asked).toEqual([
+    { name: "save-address", callOut: false },
+    { name: "place-order", report: JSON.parse(report), callOut: false },
+  ]);
+  expect(site.calls).toEqual(["look", "save", "click"]);
+}, 30_000);
+
+it("tells the commit hook a call was out as the script entered its step", async () => {
+  const site = recordingBrowser(50);
+  const host = hearing();
+  const result = await run(
+    write(`    const clicked = call("return 'click';");
+    enteringCommit("place-order");
+    await clicked;
+    verified();
+    return { placed: true };`),
+    site.browser,
+    host.hooks,
+  );
+  expect(result).toMatchObject({ _tag: "Right", right: { output: { placed: true } } });
+  expect(host.asked).toEqual([{ name: "place-order", callOut: true }]);
+}, 30_000);
+
+it("tells the commit hook a call was out when only the child still awaited its answer", async () => {
+  const site = recordingBrowser();
+  const host = hearing();
+  const result = await run(
+    write(`    const clicked = call("return 'click';");
+    // The host answers the click while the child is busy, so only the child knows it was out.
+    const until = Date.now() + 500;
+    while (Date.now() < until) {}
+    enteringCommit("place-order", ${report});
+    await clicked;
+    verified();
+    return { placed: true };`),
+    site.browser,
+    host.hooks,
+  );
+  expect(result).toMatchObject({ _tag: "Right", right: { output: { placed: true } } });
+  expect(host.asked).toEqual([{ name: "place-order", report: JSON.parse(report), callOut: true }]);
+}, 30_000);
+
+it("gives a refusing commit hook the flag before the run's journal says the same", async () => {
+  const cases = [
+    {
+      body: `    await call("return 'look';");
+    enteringCommit("place-order", ${report});`,
+      callOut: false,
+      state: "not_sent",
+    },
+    {
+      body: `    const clicked = call("return 'click';");
+    enteringCommit("place-order", ${report});
+    await clicked;`,
+      callOut: true,
+      state: "sent",
+    },
+  ];
+  for (const { body, callOut, state } of cases) {
+    const site = recordingBrowser(50);
+    const asked: EnteredCommit[] = [];
+    const result = await run(
+      write(`${body}
+    return { placed: true };`),
+      site.browser,
+      {
+        commit: (mark) =>
+          Effect.sync(() => asked.push(mark)).pipe(Effect.zipRight(refused("The cart changed"))),
+      },
+    );
+    expect(asked, state).toEqual([{ name: "place-order", report: JSON.parse(report), callOut }]);
+    expect(result, state).toMatchObject({
+      _tag: "Left",
+      left: { code: "CommitRefused", journal: { commits: [{ name: "place-order", state }] } },
+    });
+  }
+}, 60_000);
 
 it("refuses a call held on an earlier step's yes once a later step was refused", async () => {
   const site = recordingBrowser();
