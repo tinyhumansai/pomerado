@@ -1,11 +1,12 @@
 import { Effect } from "effect";
 import type { YieldableError } from "effect/Cause";
-import type {
-  AutofillField,
-  AutofillStep,
-  AutofillStepRequest,
-  FillSlot,
-  IdentifierKind,
+import {
+  type AutofillField,
+  type AutofillStep,
+  type AutofillStepRequest,
+  type FillSlot,
+  identifierPreference,
+  type IdentifierKind,
 } from "../destinations/autofill-step.js";
 import {
   callingCode,
@@ -14,7 +15,7 @@ import {
 } from "../destinations/login-field-formats.js";
 import type { WebsiteCredentials } from "./authentication.js";
 import { correctionTriesLeft } from "./credential-prompts.js";
-import { type InputAsker, unmarkedNumber } from "./input-request.js";
+import { type InputAsker, unmarkedNumber, writtenAsNumber } from "./input-request.js";
 import {
   chosenKind,
   heldField,
@@ -205,17 +206,23 @@ const boxedCode = (found: Found, boxes: number): Found => {
     : new Unanswered(codeDoesNotFit);
 };
 
+/** Whether a field takes an identifier, any of which may be a number. */
+const takesIdentifier = (slot: FillSlot) =>
+  (identifierPreference as readonly FillSlot[]).includes(slot);
+
 /**
- * The values with each phone field's number without the invisible marks it may have been pasted
- * with (`unmarkedNumber`), each `national` field's written without its calling code, and each
- * `calling_code` picker's as that code alone, or nothing for a number that does not say it, which
- * the fill refuses before it types anything (`calling_code_missing`).
+ * The values with each identifier field's number without the invisible marks it may have been
+ * pasted with (`unmarkedNumber`), each `national` field's written without its calling code, and
+ * each `calling_code` picker's as that code alone, or nothing for a number that does not say it,
+ * which the fill refuses before it types anything (`calling_code_missing`). An identifier not
+ * written as a number keeps its marks, as a joiner may be a letter's own.
  */
 const localValues = (step: Pick<AutofillStep<FillSlot>, "fields">, values: readonly string[]) =>
-  step.fields.some((field) => field.slot === "phone")
+  step.fields.some((field) => takesIdentifier(field.slot))
     ? values.map((value, index) => {
         const field = step.fields[index];
-        if (field?.slot !== "phone") return value;
+        if (field === undefined || !takesIdentifier(field.slot)) return value;
+        if (field.slot !== "phone") return writtenAsNumber(value) ? unmarkedNumber(value) : value;
         const number = unmarkedNumber(value);
         if (field.format === "national") return nationalDigits(number) ?? number;
         return field.format === "calling_code" ? (callingCode(number) ?? "") : number;

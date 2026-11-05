@@ -93,6 +93,24 @@ describe("typedValues", () => {
     },
   );
 
+  it.each(["username", "account_number", "private_identifier"] as const)(
+    "types a number in a %s field without the marks it was pasted with",
+    (slot) => {
+      const box: Pick<AutofillStep, "fields"> = { fields: [{ selector: "#login", slot }] };
+      expect(typedValues(box, ["\u202a+91 98765 43210\u202c"])).toEqual(["+91 98765 43210"]);
+    },
+  );
+
+  // A joiner may be a letter's own, in a name or an address: it is no mark pasted with a number.
+  it.each([
+    ["username", "ada\u200downer"],
+    ["email", "ada\u200d@shop.example"],
+    ["password", "1234\u200b5678"],
+  ] as const)("leaves the marks of a %s that isn't a number's", (slot, value) => {
+    const box: Pick<AutofillStep, "fields"> = { fields: [{ selector: "#login", slot }] };
+    expect(typedValues(box, [value])).toEqual([value]);
+  });
+
   it("types a phone number without the invisible marks it was pasted with", () => {
     const box: Pick<AutofillStep, "fields"> = { fields: [{ selector: "#phone", slot: "phone" }] };
     expect(typedValues(box, ["\u202a+91 98765\u200b43210\u202c"])).toEqual(["+91 9876543210"]);
