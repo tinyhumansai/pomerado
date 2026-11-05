@@ -1360,6 +1360,13 @@ export const liveTestsEvidence = (options: {
  * holds no case: a case's input, purpose and result may quote what a page returned, so those stay
  * with the review. `signedIn` says only cases run signed in count, so a `not_run` case is no gap;
  * `outOfTime` and `noRunsLeft` say no further batch could run.
+ *
+ * `pass` means only that the tool answered what the minter's own case expected: the minter writes
+ * the cases, and may delete one that fails. `retired` counts what the cases file no longer shows,
+ * by version, when there is any: `total` cases the minter deleted, changed after they failed or
+ * that proved flaky, `lastFailed` of those whose last result failed, and `stillCounting` of those
+ * failures the host has not excused. `casesFileProblem` says the host could not read the cases
+ * file, so the counts cover none of its cases; the problem's own words stay with the review.
  */
 export const LiveTestsReport = Schema.Struct({
   versions: Schema.Array(
@@ -1375,25 +1382,49 @@ export const LiveTestsReport = Schema.Struct({
         not_run: Schema.optionalWith(Schema.NonNegativeInt, { exact: true }),
       }),
       coldPasses: Schema.NonNegativeInt,
+      retired: Schema.optionalWith(
+        Schema.Struct({
+          total: Schema.NonNegativeInt,
+          lastFailed: Schema.NonNegativeInt,
+          stillCounting: Schema.NonNegativeInt,
+        }),
+        { exact: true },
+      ),
     }),
   ),
   signedIn: Schema.optionalWith(Schema.Literal(true), { exact: true }),
   outOfTime: Schema.optionalWith(Schema.Literal(true), { exact: true }),
   noRunsLeft: Schema.optionalWith(Schema.Literal(true), { exact: true }),
+  casesFileProblem: Schema.optionalWith(Schema.Literal(true), { exact: true }),
 });
 export type LiveTestsReport = typeof LiveTestsReport.Type;
 
 /** A publication record as the build's outcome reports it (`LiveTestsReport`). */
 export const liveTestsReport = (record: {
   readonly versions: LiveTestsReport["versions"];
+  readonly retired: readonly { readonly version: string; readonly lastVerdict: string }[];
   readonly signedIn?: boolean;
   readonly outOfTime?: boolean;
   readonly noRunsLeft?: boolean;
+  readonly casesFileProblem?: string;
 }): LiveTestsReport => ({
-  versions: record.versions,
+  versions: record.versions.map((entry) => {
+    const retired = record.retired.filter((view) => view.version === entry.version);
+    return retired.length === 0
+      ? entry
+      : {
+          ...entry,
+          retired: {
+            total: retired.length,
+            lastFailed: retired.filter((view) => view.lastVerdict === "fail").length,
+            stillCounting: retired.filter((view) => "clearedBy" in view).length,
+          },
+        };
+  }),
   ...(record.signedIn === true ? { signedIn: true } : {}),
   ...(record.outOfTime === true ? { outOfTime: true } : {}),
   ...(record.noRunsLeft === true ? { noRunsLeft: true } : {}),
+  ...(record.casesFileProblem === undefined ? {} : { casesFileProblem: true }),
 });
 
 /**

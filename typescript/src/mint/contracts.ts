@@ -1752,7 +1752,8 @@ export type MintOutcome = {
    * (`LiveTestsReport`). Absent on a write, which runs none, on a host with no live tests, on a
    * signed-in read no case ran signed in for, and on a publication a takeover rejoined. Unlike
    * `summary`, whose line of these counts comes after the minter's own words, the minter never
-   * writes it.
+   * writes it, but it writes the cases: `pass` says only that the tool answered what the minter's
+   * own case expected, so read it with each version's `retired` and `casesFileProblem`.
    */
   readonly liveTests?: LiveTestsReport;
   /**

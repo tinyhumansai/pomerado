@@ -1018,12 +1018,18 @@ it("keeps a failing case in the publication record after the minter deletes or c
   );
   root = (f.workspace as unknown as { root: string }).root;
   await writeWorkspace(root, { "src/tool.ts": toolSource, "test/cases.json": JSON.stringify(cases) });
-  await f.run();
+  const outcome = await f.run();
   expect(batches).toHaveLength(2);
   const record = published.seen[0]?.liveTests as {
     cases: { id: string }[];
     retired: Record<string, unknown>[];
   };
+  // The host reads the failures the minter dropped, not only the clean count they left.
+  expect(outcome.liveTests?.versions[0]?.retired).toEqual({
+    total: 2,
+    lastFailed: 2,
+    stillCounting: 2,
+  });
   expect(record.cases.map((testCase) => testCase.id)).not.toContain("sort-price");
   expect(record.retired).toEqual(
     expect.arrayContaining([

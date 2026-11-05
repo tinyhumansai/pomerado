@@ -1,4 +1,4 @@
-import { Either } from "effect";
+import { Either, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import {
   caseDigest,
@@ -9,6 +9,8 @@ import {
   judgeCase,
   liveTestsEvidence,
   liveTestsEvidenceProblem,
+  liveTestsReport,
+  LiveTestsReport,
   primaryListOf,
   signedInTestInputRefusal,
   testInputKey,
@@ -461,5 +463,94 @@ describe("failingLiveTestCases", () => {
     expect(failingCasesRefusal({ version: "playwright", ids: ["a", "b", "c"] })).toContain(
       "live test cases a, b and c fail on this source,",
     );
+  });
+});
+
+// A host keeps a build by the report alone: a minter that deletes its failing cases must not
+// leave it a clean count, and neither must a cases file the host could not read.
+describe("liveTestsReport", () => {
+  const made = (id: string) => ({
+    id,
+    purpose: `Case ${id}`,
+    input: { query: id },
+    expect: "result" as const,
+  });
+  const result = (testCase: ReturnType<typeof made>, verdict: "pass" | "fail") => ({
+    id: testCase.id,
+    caseDigest: caseDigest(testCase),
+    sourceDigest: "published",
+    entrypoint: "src/tool.ts",
+    verdict,
+    input: testCase.input,
+    expect: testCase.expect,
+    got: verdict === "pass" ? "1 row" : "0 rows",
+    start: "warm" as const,
+    ranAt: 1,
+    durationMs: 1,
+  });
+  const [kept, deleted, excused] = [made("kept"), made("deleted"), made("excused")];
+  const records = new Map([
+    [kept.id, result(kept, "pass")],
+    [deleted.id, result(deleted, "fail")],
+    [excused.id, { ...result(excused, "fail"), sourceDigest: "earlier", input: kept.input }],
+  ]);
+  const version = { version: "playwright" as const, sourceDigest: "published", records };
+  const emptied = liveTestsEvidence({ file: { cases: [kept] }, versions: [version] });
+
+  it("counts the failures a minter deleted from the cases file, by version", () => {
+    expect(liveTestsReport(emptied.record).versions).toEqual([
+      {
+        version: "playwright",
+        sourceDigest: "published",
+        counts: { pass: 1, fail: 0, inconclusive: 0 },
+        coldPasses: 0,
+        retired: { total: 2, lastFailed: 2, stillCounting: 1 },
+      },
+    ]);
+  });
+
+  it("gives each version only its own retired cases", () => {
+    const http = { ...version, version: "http" as const, records: new Map([[kept.id, records.get(kept.id)!]]) };
+    const report = liveTestsReport(
+      liveTestsEvidence({ file: { cases: [kept] }, versions: [version, http] }).record,
+    );
+    expect(report.versions.map((entry) => entry.retired)).toEqual([
+      { total: 2, lastFailed: 2, stillCounting: 1 },
+      undefined,
+    ]);
+  });
+
+  it("says nothing of retired cases a build has none of, and holds no case", () => {
+    const clean = liveTestsEvidence({
+      file: { cases: [kept] },
+      versions: [{ ...version, records: new Map([[kept.id, records.get(kept.id)!]]) }],
+    });
+    expect(liveTestsReport(clean.record).versions[0]).not.toHaveProperty("retired");
+    expect(liveTestsReport(clean.record)).not.toHaveProperty("casesFileProblem");
+    expect(JSON.stringify(liveTestsReport(emptied.record))).not.toContain("deleted");
+  });
+
+  it("flags a cases file the host could not read, without its text", () => {
+    const report = liveTestsReport(
+      liveTestsEvidence({
+        file: { cases: [] },
+        fileProblem: "test/cases.json holds lamp, which is no cases file",
+        versions: [version],
+      }).record,
+    );
+    expect(report.casesFileProblem).toBe(true);
+    expect(JSON.stringify(report)).not.toContain("lamp");
+  });
+
+  it("keeps both through the checkpoint's schema, and reads a checkpoint with neither", () => {
+    const report = {
+      ...liveTestsReport(
+        liveTestsEvidence({ file: { cases: [] }, fileProblem: "unread", versions: [version] }).record,
+      ),
+    };
+    const decode = Schema.decodeUnknownSync(LiveTestsReport);
+    expect(decode(report)).toEqual(report);
+    const [{ retired: _retired, ...older }] = report.versions as [(typeof report.versions)[number]];
+    expect(decode({ versions: [older] })).toEqual({ versions: [older] });
   });
 });
