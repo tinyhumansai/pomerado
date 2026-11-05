@@ -197,6 +197,17 @@ const waitSiteDomain = (host) => {
     /^(?:ac|co|com|edu|gen|go|gob|gov|gv|in|ind|info|int|lg|ltd|me|mil|ne|net|nhs|nic|nom|or|org|plc|sch|web)$/.test(labels.at(-2));
   return labels.slice(shared ? -3 : -2).join(".");
 };
+// Whether a request's address is on the site: siteDomain, else that guess from the page's host. An
+// address that can't be read is none of the site's.
+const waitSameSite = (url, siteDomain) => {
+  try {
+    const host = new URL(url).hostname;
+    const domain = siteDomain ?? waitSiteDomain(new URL(page.url()).hostname);
+    return domain !== "" && (host === domain || host.endsWith("." + domain));
+  } catch {
+    return false;
+  }
+};
 // What makes two requests the same one again: method, path, query and body, with every number
 // (counters, timestamps, cache busters) read as the same.
 const waitRequestKey = (request) => {
@@ -223,15 +234,7 @@ const waitProgress = (options = {}) => {
     sign.last = at - started;
     if (at > lastProgress) lastProgress = at;
   };
-  const sameSite = (url) => {
-    try {
-      const host = new URL(url).hostname;
-      const domain = options.siteDomain ?? waitSiteDomain(new URL(page.url()).hostname);
-      return domain !== "" && (host === domain || host.endsWith("." + domain));
-    } catch {
-      return false;
-    }
-  };
+  const sameSite = (url) => waitSameSite(url, options.siteDomain);
   // The site's requests in flight, by request: when each started and what makes it the same again.
   const pending = new Map();
   const starts = new Map();

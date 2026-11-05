@@ -20,7 +20,7 @@ export type QuantityOutcome = QuantitySet | QuantityLimited;
 
 /**
  * Page code for a Kernel call body, pasted after `waitCode` (./wait.ts), whose `waitForReady`,
- * `waitProgress`, `waitLimits`, `waitSleep`, `waitBounded`, `waitContextLost`, `waitSiteDomain` and
+ * `waitProgress`, `waitLimits`, `waitSleep`, `waitBounded`, `waitContextLost`, `waitSameSite` and
  * `waitInflightMs` it uses. It declares `setQuantity`, which sets a line's quantity with the site's
  * own stepper, as a person does: one press at a time, each answered before the next. Many sites
  * cover the stepper with a loader after each press and drop a press made under it, or post each
@@ -333,14 +333,8 @@ const setQuantity = async (stepper, quantity, options = {}) => {
   const flying = new Map();
   let flyingEnded = -Infinity;
   const flyingStarts = (request) => {
-    if (!["document", "xhr", "fetch"].includes(request.resourceType())) return;
-    try {
-      const host = new URL(request.url()).hostname;
-      const domain = options.siteDomain ?? waitSiteDomain(new URL(page.url()).hostname);
-      if (domain !== "" && (host === domain || host.endsWith("." + domain))) flying.set(request, Date.now());
-    } catch {
-      // A request whose address can't be read is none of the site's.
-    }
+    if (["document", "xhr", "fetch"].includes(request.resourceType()) && waitSameSite(request.url(), options.siteDomain))
+      flying.set(request, Date.now());
   };
   const flyingEnds = (request) => {
     if (flying.delete(request)) flyingEnded = Date.now();
