@@ -533,11 +533,11 @@ const noticeCoverCode = `(element, own, scroll) => {
  * Page code, as statements for a function to open with: `parentOf`, `ancestry` and `clickReach`,
  * every element a click of `element` may reach (`dismissCode`, `resendChecksCode`). A selector may
  * name what a control holds or a label for it, so the element alone says too little: a click at
- * its centre lands on whatever it holds there and bubbles along the path a click takes, through a
- * slot it is assigned to, and a label among them clicks its control, which bubbles in turn. An
- * image counts the areas of its map, since one of them takes the click. A label that holds both a
- * box and the element counts the box, though a browser skips a label's click from a button inside
- * it: refusing is the safe side.
+ * its centre lands on whatever it holds there, what a slot among them is assigned included, and
+ * bubbles along the path a click takes, through a slot it is assigned to, and a label among them
+ * clicks its control, which bubbles in turn. An image counts the areas of its map, since one of
+ * them takes the click. A label that holds both a box and the element counts the box, though a
+ * browser skips a label's click from a button inside it: refusing is the safe side.
  */
 const clickReachCode = `// Open shadow roots count as part of their host: a host holds what its root holds, and a slot what
   // is assigned to it.
@@ -551,7 +551,8 @@ const clickReachCode = `// Open shadow roots count as part of their host: a host
   const within = (root) => {
     const found = [];
     const walk = (scope) => {
-      for (const child of scope.children) {
+      const assigned = scope instanceof HTMLSlotElement ? scope.assignedElements({ flatten: true }) : [];
+      for (const child of [...assigned, ...scope.children]) {
         found.push(child);
         if (child.shadowRoot !== null) walk(child.shadowRoot);
         walk(child);

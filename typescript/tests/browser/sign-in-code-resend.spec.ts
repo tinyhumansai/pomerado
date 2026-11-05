@@ -500,6 +500,8 @@ const svgLink = (to: string) =>
   `<svg width="200" height="40"><a xlink:href="${to}"><text id="press" x="0" y="20">Resend code</text></a></svg>`;
 const imageMap = (to: string) =>
   `<img id="press" alt="Resend code" width="120" height="40" usemap="#resend" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw=="><map name="resend"><area shape="rect" coords="0,0,120,40" href="${to}"></map>`;
+const slotHolder = (control: string) => `<div id="shadow">${control}</div>
+<script>document.getElementById("shadow").attachShadow({ mode: "open" }).innerHTML = '<div id="press" style="width: max-content"><slot></slot></div>';</script>`;
 const offSiteForm =
   '<form id="off" action="https://elsewhere.example.org/take" method="post"><input type="hidden" name="phone" value="+15555550123"></form>';
 for (const [name, control] of [
@@ -522,6 +524,14 @@ for (const [name, control] of [
   ["a span slotted into an off-site link", slotted("https://elsewhere.example.org/resend")],
   ["an off-site SVG link", svgLink("https://elsewhere.example.org/resend")],
   ["an image whose map holds an off-site area", imageMap("https://elsewhere.example.org/resend")],
+  [
+    "an element whose slot holds an off-site link",
+    slotHolder('<a href="https://elsewhere.example.org/resend">Resend code</a>'),
+  ],
+  [
+    "an element whose slot holds the button of an off-site form",
+    `${offSiteForm}${slotHolder('<button form="off">Resend code</button>')}`,
+  ],
   [
     "a span the button of an off-site form holds",
     `${offSiteForm}<button form="off"><span id="press">Resend code</span></button>`,
@@ -586,6 +596,7 @@ for (const [name, control] of [
   ["a span slotted into a link on the same site", slotted("/resend")],
   ["an SVG link on the same site", svgLink("/resend")],
   ["an image whose map holds an area on the same site", imageMap("/resend")],
+  ["an element whose slot holds a link on the same site", slotHolder('<a href="/resend">Resend code</a>')],
 ] as const)
   test(`a press goes out through ${name}`, async ({ page }) => {
     const opened: string[] = [];
@@ -599,6 +610,18 @@ for (const [name, control] of [
     expect(pressed).toBe(true);
     expect(opened).toContain("/resend");
   });
+
+test("a press goes out through an element whose slot holds the button of a form on the same site", async ({
+  page,
+}) => {
+  const { pressed, posts } = await pressOn(
+    page,
+    `${codeForm}<form id="own" action="/resend" method="post"></form>${slotHolder('<button form="own">Resend code</button>')}`,
+    { ...codeOnly, resend: "#press" },
+  );
+  expect(pressed).toBe(true);
+  expect(posts).toEqual([{ path: "/resend", form: {} }]);
+});
 
 test("a press goes out through a link whose address is a script that does nothing", async ({
   page,
