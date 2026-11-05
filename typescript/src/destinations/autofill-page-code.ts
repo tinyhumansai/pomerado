@@ -193,6 +193,11 @@ export type AutofillFillCall =
        * types the fresh code.
        */
       readonly emptyBoxes?: readonly number[];
+      /**
+       * Marks the document the field sits in, under the fill's id (`typedAt`), so a later `bind`
+       * call can tell that very document from any other, whatever its place or origin reads as.
+       */
+      readonly markDocument?: true;
     }
   | {
       readonly kind: "date";
@@ -216,6 +221,19 @@ export type AutofillFillCall =
        * screen's resend, so nothing typed goes out with it. Lengths only, never a value.
        */
       readonly kind: "empty";
+    }
+  | {
+      /**
+       * Binds a field for the host's read-back over its own socket, as a focus call binds one, with
+       * no focus and nothing emptied, and reads any calling-code picker beside it
+       * (`pickerBesideCode`) against `code`, a phone number's calling code when it says one. It
+       * binds and reads nothing in any other document than the one the focus call marked
+       * (`markDocument`). This call's code holds that code alone, never the number.
+       */
+      readonly kind: "bind";
+      readonly index: number;
+      readonly bindingKey: string;
+      readonly code: string | null;
     }
   | {
       readonly kind: "submit";
@@ -327,7 +345,7 @@ const readsOnly = ${JSON.stringify(call.kind === "submit")} && fields.length > 0
 // emptied every box itself.
 const looking = ${JSON.stringify(call.kind === "submit" && call.look === true)};
 const codeLook = looking && ${JSON.stringify(call.kind === "submit" && call.pressCovered !== true)} && fields.length > 0 && codeSlots.every(Boolean);
-${call.kind === "submit" ? pageSentCode : call.kind === "dismiss" || call.kind === "empty" ? "" : "await keep(typedAt, primary.url());"}
+${call.kind === "submit" ? pageSentCode : call.kind === "dismiss" || call.kind === "empty" || call.kind === "bind" ? "" : "await keep(typedAt, primary.url());"}
 for (const check of ${JSON.stringify(check)}) {
   // Its length only, never its value.
   const holding = fields[check].locator.evaluate(
@@ -739,6 +757,62 @@ const chooseCallingCode = async (control, code) => {
 };
 `;
 
+/**
+ * Page code, on a phone box: what any calling-code picker beside it shows, against `code`, the
+ * number's own calling code, or null. The pickers it reads are the visible selects and dropdowns
+ * in the box's form, or, for a box in no form, in the nearest of its next four ancestors that
+ * holds one, never the box itself. A control whose chosen option, words, `aria-label` or `title`
+ * name a calling code (`shownCallingCodes`, or a value that is one) is a picker: `matches` when it
+ * names `code`, else `other`. One that names none but whose name, id, `aria-label`,
+ * `autocomplete` or `title` says country, dial or calling code, is `unreadable`, since it may be
+ * set to another country. Any other control is no picker: with none, `none`. A control's own list
+ * of options, when it sits inside it, says nothing of its choice.
+ */
+const pickerBesideCode = `(element, code) => {
+  const shownCallingCodes = ${String(shownCallingCodes)};
+  const shows = (control) =>
+    control.getClientRects().length > 0 && getComputedStyle(control).visibility !== "hidden";
+  const selector = 'select, [role="combobox"], [aria-haspopup="listbox"], [aria-haspopup="true"], [aria-haspopup="menu"]';
+  const within = (root) =>
+    Array.from(root.querySelectorAll(selector)).filter(
+      (control) => control !== element && !control.contains(element) && !element.contains(control) && shows(control),
+    );
+  let near = [];
+  const form = "form" in element && element.form instanceof HTMLFormElement ? element.form : element.closest("form");
+  if (form !== null) near = within(form);
+  else
+    for (let up = element.parentElement, level = 0; up !== null && level < 4 && near.length === 0; up = up.parentElement, level++)
+      near = within(up);
+  const words = (control) => {
+    if (control instanceof HTMLSelectElement) {
+      const option = control.selectedOptions[0];
+      return option === undefined ? [] : [option.label || option.textContent || "", option.value];
+    }
+    const own = control.cloneNode(true);
+    for (const list of own.querySelectorAll('[role="listbox"]')) list.remove();
+    return [
+      control instanceof HTMLInputElement ? control.value : (own.textContent ?? ""),
+      control.getAttribute("aria-label") ?? "",
+      control.getAttribute("title") ?? "",
+    ];
+  };
+  let matched = false;
+  let unreadable = false;
+  for (const control of near) {
+    const codes = words(control).flatMap(shownCallingCodes);
+    if (codes.length > 0) {
+      if (code === null || !codes.includes(code)) return "other";
+      matched = true;
+      continue;
+    }
+    const named = ["name", "id", "aria-label", "autocomplete", "title"]
+      .map((attribute) => control.getAttribute(attribute) ?? "")
+      .join(" ");
+    if (/country|dial|calling|tel-country-code/i.test(named)) unreadable = true;
+  }
+  return unreadable ? "unreadable" : matched ? "matches" : "none";
+}`;
+
 /** What a calling-code call answers when it threw: a reason `chooseCallingCode` gives, else `failed`. */
 const callingCodeFailures = [
   "option_missing",
@@ -754,9 +828,29 @@ export const CallingCodeAnswer = Schema.Struct({
   url: Schema.String,
   document: Schema.optional(Schema.Number),
 });
+/**
+ * A bind call's answer: the field bound, and what any picker beside it shows; `bound` false for a
+ * field in any other document than the one the host typed in.
+ */
+export const BoundFieldAnswer = Schema.Struct({
+  bound: Schema.Boolean,
+  picker: Schema.Literal("none", "matches", "other", "unreadable"),
+  url: Schema.String,
+});
 
 const fillCallBody = (call: AutofillFillCall) => {
   if (call.kind === "dismiss") return dismissCode(call.selector);
+  if (call.kind === "bind")
+    return `const picker = await fields[${call.index}].locator.evaluate((element, [key, code, typedIn]) => {
+  // Only the very document the host typed in: a frame's may read as the same place and origin.
+  if (element.ownerDocument[typedIn] !== true) return null;
+  // Keep this binding in Patchright's isolated world, inaccessible to page code, as a focus call's.
+  const binding = { document: element.ownerDocument, frame: element.ownerDocument.defaultView };
+  Object.defineProperty(element, key, { value: binding, configurable: true });
+  element.setAttribute(key, "");
+  return (${pickerBesideCode})(element, code);
+}, [${JSON.stringify(call.bindingKey)}, ${JSON.stringify(call.code)}, typedAt], { timeout: ${elementReadMs} }, true);
+return { bound: picker !== null, picker: picker ?? "none", url: primary.url() };`;
   if (call.kind === "empty")
     return `let cleared = 0;
 for (const { locator } of [...fields].reverse()) {
@@ -799,7 +893,7 @@ try {
   // Keep this original-node binding in Patchright's isolated world, inaccessible to page code.
   // The tag of the element that holds the focus instead, if another does: the deepest one, read
   // through open shadow roots; a closed root shows only its host.
-  const activeTag = await field.evaluate((element, [key, questionRequired]) => {
+  const activeTag = await field.evaluate((element, [key, questionRequired, documentMark]) => {
     const holdsFocus = ${holdsFocusCode};
     if (!holdsFocus(element)) {
       let active = element.ownerDocument.activeElement;
@@ -810,9 +904,10 @@ try {
     Object.defineProperty(element, key, { value: binding, configurable: true });
     // Transfer the guard through this frame's isolated world; no value is involved.
     if (questionRequired) Object.defineProperty(element.ownerDocument.defaultView, key, { value: binding, configurable: true });
+    if (documentMark !== null) Object.defineProperty(element.ownerDocument, documentMark, { value: true, configurable: true });
     element.setAttribute(key, "");
     return null;
-  }, [${JSON.stringify(call.bindingKey)}, question !== undefined], { timeout: ${elementReadMs} }, true);
+  }, [${JSON.stringify(call.bindingKey)}, question !== undefined, ${call.markDocument === true ? "typedAt" : "null"}], { timeout: ${elementReadMs} }, true);
   if (activeTag === null && question !== undefined) {
     await question.locator.evaluate((element, { key, text }) => {
       const scope = element.ownerDocument.defaultView;

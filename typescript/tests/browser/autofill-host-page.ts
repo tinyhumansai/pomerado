@@ -227,6 +227,7 @@ export const hostKeyboard = async (
     engine.syntheticKeypress,
   );
   const keyboard: typeof native = {
+    ...native,
     insertText: (target, text, options) =>
       Effect.suspend(() => {
         const values = typed.get(page) ?? new Set<string>();

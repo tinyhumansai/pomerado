@@ -187,7 +187,9 @@ attribute.
     (its select, or the control that opens its list, never an option). The host picks the option
     for the number's own calling code, checks it stuck, then types the national number. It types
     nothing for a number that doesn't say its calling code, or a picker with no option, or several,
-    for it.
+    for it. A box that a page replaces with a phone box once digits are typed is the box the page
+    shows first: name that one, with the kinds it accepts, and the host follows the phone box by
+    itself, reading back that it holds the number before it clicks the submit.
   - `slot: "password"` for the password.
   - `slot: "code"` for a one-time or authenticator code. A saved authenticator seed answers it;
     otherwise the host asks the caller for the code. Never ask for a code yourself. A code split

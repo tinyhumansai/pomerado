@@ -83,3 +83,16 @@ export const shownCallingCodes = (text: string): readonly string[] =>
  */
 export const namesCallingCode = (text: string, code: string): boolean =>
   shownCallingCodes(text).includes(code);
+
+/**
+ * The digits a phone box may hold for `number` when the page, not the host, wrote it there, each
+ * whole: a number that says its calling code as its national digits alone (`nationalDigits`),
+ * after a trunk 0, or after its calling code; any other number as its own digits.
+ */
+export const heldPhoneDigits = (number: string): readonly string[] => {
+  const code = callingCode(number);
+  const national = nationalDigits(number);
+  return code === undefined || national === undefined
+    ? [number.replaceAll(/[^0-9]/gu, "")]
+    : [national, `0${national}`, `${code}${national}`];
+};
