@@ -339,6 +339,49 @@ describe("a phone number", () => {
     expect(secrets.redact("+1234567 234567 1234567")).toBe("[private] 234567 1234567");
   });
 
+  // Digits a `national` field typed, or any short login of digits: inside a longer run they say
+  // nothing, so they count only as a whole token, as they do in source.
+  it("masks short digits only where no digit adjoins them", () => {
+    const secrets = phone("1234");
+    for (const text of ["order 912345", "91234", "12345"]) {
+      expect(secrets.redact(text)).toBe(text);
+      expect(refused(secrets, text)).toBe(false);
+    }
+    expect(secrets.redact("Code 1234.")).toBe("Code [private].");
+    expect(secrets.redact("?to=%201234")).toBe("?to=%20[private]");
+    expect(refused(secrets, 'const code = "1234";')).toBe(true);
+    expect(Effect.runSync(secrets.json({ code: 1234, order: 912345 }))).toEqual({
+      code: "[private]",
+      order: 912345,
+    });
+  });
+
+  it("keeps the encoded forms of short digits", () => {
+    expect(phone("1234").redact(Buffer.from("1234").toString("base64"))).toBe("[private]");
+  });
+
+  it("drops what a cut left of short digits, unless more digits stand before it", () => {
+    const secrets = phone("1234");
+    expect(secrets.redactCut("Sent to 12")).toBe("Sent to ");
+    expect(secrets.redactCut("Order 9912")).toBe("Order 9912");
+  });
+
+  it("masks a whole number before the short digits of it that were registered first", () => {
+    const secrets = phone("555012");
+    secrets.register("+298 555012", "phone");
+    expect(secrets.redact("Sent to +298 555012.")).toBe("Sent to [private].");
+    expect(secrets.redactCut("Sent to +298 55501")).toBe("Sent to ");
+  });
+
+  it.each([
+    ["before", ["phone", undefined]],
+    ["after", [undefined, "phone"]],
+  ] as const)("masks digits anywhere when another secret holds them, %s", (_name, kinds) => {
+    const secrets = makeRunSecrets();
+    for (const kind of kinds) secrets.register("1234", kind);
+    expect(secrets.redact("912345")).toBe("9[private]5");
+  });
+
   it("masks a JSON number that holds it", () => {
     const secrets = phone("+919876543210");
     expect(

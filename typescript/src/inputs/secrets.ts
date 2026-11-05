@@ -14,7 +14,8 @@ import { writtenAsNumber } from "../runtime/input-request.js";
  * submission guard finds a code: an all-digit form where no digit adjoins it, any other where no
  * letter, mark or digit adjoins it on a side whose own edge is one. A short value, such as a
  * favorite color or a six-digit code, turns up inside a longer word or a timestamp by chance.
- * Redaction, which feeds what a model sees, still masks every form wherever it appears.
+ * Redaction, which feeds what a model sees, still masks every form wherever it appears, but for a
+ * phone number's short digits (`digitToken`).
  */
 const wordClass = "[\\p{L}\\p{M}\\p{N}]";
 /** `form` as a pattern that matches it literally. */
@@ -50,12 +51,11 @@ const phoneLocalLeast = 7;
 const phoneLocalFewest = 4;
 /** A pattern for `digits` with `phoneGap` between each. */
 const gapped = (digits: string) => [...digits].join(phoneGap);
-/** A pattern for `digits` that a cut may end after any of them. */
-const cutGapped = (digits: string) =>
-  [...digits].reduceRight(
-    (rest, digit) => (rest === "" ? digit : `${digit}(?:${phoneGap}${rest})?`),
-    "",
-  );
+/** A pattern for `digits`, `gap` between each, that a cut may end after any of them. */
+const cutGapped = (digits: string, gap = phoneGap) =>
+  [...digits].reduceRight((rest, digit) => (rest === "" ? digit : `${digit}(?:${gap}${rest})?`), "");
+/** Where a number may start: no digit before it, though a percent escape may stand right there. */
+const numberEdge = "(?:(?<![0-9])|(?<=%[0-9A-Fa-f]{2}))";
 
 /**
  * The forms of a phone number beyond the value as given, as a site writes it back in its own way:
@@ -77,9 +77,8 @@ const phoneForms = (given: string) => {
   const local = (nationalDigits(number) ?? number.replaceAll(/[^0-9]/gu, "")).replace(/^0+/u, "");
   const short = local.length < phoneLocalLeast;
   if (local.length < phoneLocalFewest || (short && code === "")) return undefined;
-  const edge = "(?:(?<![0-9])|(?<=%[0-9A-Fa-f]{2}))";
   // A gap only after a lead the pattern needs: an optional one would take in what stands before.
-  const lead = `${edge}${short ? `(?:\\+|%2[Bb]|00)${phoneGap}` : "[+(]?"}`;
+  const lead = `${numberEdge}${short ? `(?:\\+|%2[Bb]|00)${phoneGap}` : "[+(]?"}`;
   const trunk = `(?:0${phoneGap})?`;
   const calling = code === "" ? "" : `(?:${gapped(code)}${phoneGap})${short ? "" : "?"}`;
   const cuts = [
@@ -94,24 +93,41 @@ const phoneForms = (given: string) => {
   };
 };
 
+/**
+ * The patterns of `digits` too short to be a number alone (`phoneForms`), as a `national` field
+ * types a short number's or a short login holds them: only as a whole token, in what a model sees
+ * as in source, since inside a longer run of digits they are another number's.
+ */
+const digitToken = (digits: string) => ({
+  run: new RegExp(`${numberEdge}${digits}(?![0-9])`, "gu"),
+  cut: new RegExp(`${numberEdge}${cutGapped(digits, "")}$`, "u"),
+});
+
 /** Explicit caller secrets live only for this run. This does not detect or classify page data. */
 export const makeRunSecrets = () => {
   /** Each registered form, with the pattern source screening counts it by when it is short. */
   const values = new Map<string, RegExp | undefined>();
-  /** Each phone number's patterns (`phoneForms`), masked and checked in source alike. */
+  /** Each phone number's patterns (`phoneForms`, `digitToken`), masked and checked alike. */
   const phoneRuns = new Map<string, { readonly run: RegExp; readonly cut: RegExp }>();
+  /** The phone patterns, a whole number's before the short digits that may be a part of it. */
+  const orderedPhones = () =>
+    [...phoneRuns.values()].sort((left, right) => right.run.source.length - left.run.source.length);
   /**
    * Registers each form a page or URL can show the value in (`shownForms`). For a value that may
    * be a `phone` number, its digits and their usual groupings count too (`phoneForms`), when it
    * is written as a number, since a site writes the number back in its own format and a `national`
-   * field takes it without its calling code.
+   * field takes it without its calling code. Digits too short to be a number count as a whole
+   * token (`digitToken`), and their other forms as any short form does.
    */
   const register = (value: string, kind?: "phone") => {
-    const phone = kind === "phone" ? phoneForms(value) : undefined;
+    const number = kind === "phone" ? phoneForms(value) : undefined;
+    const token = kind === "phone" && number === undefined && /^[0-9]+$/u.test(value);
+    const phone = token ? digitToken(value) : number;
     if (phone !== undefined) phoneRuns.set(phone.run.source, phone);
-    for (const form of [value, ...(phone?.digits ?? [])])
+    for (const form of [value, ...(number?.digits ?? [])])
       for (const [shownForm, short] of shownForms(form))
-        if (!short) values.set(shownForm, undefined);
+        if (token && shownForm === value) continue;
+        else if (!short) values.set(shownForm, undefined);
         else if (!values.has(shownForm)) values.set(shownForm, tokenPattern(shownForm));
   };
   /** Whether `text` holds a registered phone number's digits (`phoneForms`). */
@@ -140,10 +156,7 @@ export const makeRunSecrets = () => {
       ordered().reduce(
         (result, [secret]) => result.split(secret).join("[private]"),
         // Before the values, which would leave a calling code that stands beside the digits.
-        [...phoneRuns.values()].reduce(
-          (result, { run }) => result.replace(run, "[private]"),
-          text,
-        ),
+        orderedPhones().reduce((result, { run }) => result.replace(run, "[private]"), text),
       ),
     );
   /** The longest proper prefix of a registered form that `text` ends with, as a length. */
@@ -159,7 +172,7 @@ export const makeRunSecrets = () => {
    */
   const redactCut = (text: string) => {
     const redacted = redact(text.replace(/\uFFFD+$/u, ""));
-    return [...phoneRuns.values()].reduce(
+    return orderedPhones().reduce(
       (result, { cut }) => result.replace(cut, ""),
       redacted.slice(0, redacted.length - splitPrefix(redacted)),
     );

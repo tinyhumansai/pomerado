@@ -284,7 +284,8 @@ const revealedValues = (
       if (field?.slot === "phone" && !phoneShaped(revealed))
         return { refused: "reveal_refused", target: index };
       // Each field's own form, as one handle may fill fields that take it differently.
-      for (const form of revealedForms(field, revealed)) secrets.register(form);
+      const kind = field?.slot === "phone" ? "phone" : undefined;
+      for (const form of revealedForms(field, revealed)) secrets.register(form, kind);
       if (field !== undefined && isIdentifier(field.slot)) secrets.register(revealed, "phone");
       values.push(revealed);
       revealedFor.push(origin);
