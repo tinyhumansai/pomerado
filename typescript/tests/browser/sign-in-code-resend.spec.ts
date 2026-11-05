@@ -450,6 +450,7 @@ for (const [name, field, sent] of [
   ],
   ["a disabled box", '<input name="phone" value="+15555550123" disabled>', { code: "" }],
   ["a box left empty", '<input name="phone" type="tel">', { phone: "", code: "" }],
+  ["a box with no name, which posts nothing", '<input id="filter" value="+15555550123">', { code: "" }],
   ["a choice", '<input name="remember" type="checkbox" value="yes" checked>', { remember: "yes", code: "" }],
 ] as const)
   test(`a press goes out from a form that holds ${name}`, async ({ page }) => {

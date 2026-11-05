@@ -961,9 +961,11 @@ const passwordHeld = await resendControl
   })
   .catch(() => true);
 if (passwordHeld) return { resendRefused: "password_held", url: primary.url() };
-// What the click's own post would send: a value in a text field of each form a control it may
-// reach submits, as an earlier screen may leave one typed there. A hidden, read-only or disabled
-// field holds what the site wrote, and a click that reaches no such control posts none of it.
+// What the click's own post would send: a value in a named text field of each form a control it
+// may reach submits, as an earlier screen may leave one typed there. A hidden, read-only or
+// disabled field holds what the site wrote, a box with no name posts nothing, and a click that
+// reaches no such control posts none of it. A box the site itself filled, or a hidden captcha's
+// textarea, reads the same as one a person typed, so it refuses too: refusing is the safe side.
 const valueHeld = await resendControl
   .evaluate((element) => {
     ${clickReachCode}
@@ -979,6 +981,7 @@ const valueHeld = await resendControl
           (field) =>
             (field instanceof HTMLTextAreaElement ||
               (field instanceof HTMLInputElement && !notText.includes(field.type))) &&
+            field.name !== "" &&
             field.value.length > 0 &&
             !field.readOnly &&
             !field.matches(":disabled"),
