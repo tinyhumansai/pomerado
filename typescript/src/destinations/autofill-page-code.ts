@@ -530,22 +530,23 @@ const noticeCoverCode = `(element, own, scroll) => {
 }`;
 
 /**
- * Page code, as statements for a function to open with: `parentOf`, `ancestry` and `clickReach`,
- * every element a click of `element` may reach (`dismissCode`, `resendChecksCode`). A selector may
- * name what a control holds or a label for it, so the element alone says too little: a click at
- * its centre lands on whatever it holds there, what a slot among them is assigned included, and
- * bubbles along the path a click takes, through a slot it is assigned to, and a label among them
- * clicks its control, which bubbles in turn. An image counts the areas of its map, since one of
- * them takes the click. A label that holds both a box and the element counts the box, though a
- * browser skips a label's click from a button inside it: refusing is the safe side.
+ * Page code, as statements for a function to open with: `pageParent`, `parentOf`, `ancestry` and
+ * `clickReach`, every element a click of `element` may reach (`dismissCode`, `resendChecksCode`).
+ * A selector may name what a control holds or a label for it, so the element alone says too
+ * little: a click at its centre lands on whatever it holds there, what a slot among them is
+ * assigned included, and bubbles along the path a click takes, through a slot it is assigned to,
+ * and a label among them clicks its control, which bubbles in turn. An image counts the areas of
+ * its map, since one of them takes the click. A label that holds both a box and the element counts
+ * the box, though a browser skips a label's click from a button inside it: refusing is the safe
+ * side.
  */
 const clickReachCode = `// Open shadow roots count as part of their host: a host holds what its root holds, and a slot what
   // is assigned to it.
-  const parentOf = (node) =>
-    node.assignedSlot ?? (node.parentNode instanceof ShadowRoot ? node.parentNode.host : node.parentNode);
-  const ancestry = (node) => {
+  const pageParent = (node) => (node.parentNode instanceof ShadowRoot ? node.parentNode.host : node.parentNode);
+  const parentOf = (node) => node.assignedSlot ?? pageParent(node);
+  const ancestry = (node, parent = parentOf) => {
     const chain = [];
-    for (let at = node; at instanceof Element; at = parentOf(at)) chain.push(at);
+    for (let at = node; at instanceof Element; at = parent(at)) chain.push(at);
     return chain;
   };
   const within = (root) => {
@@ -617,10 +618,11 @@ const verdict = await notice.locator.evaluate((element, own) => {
     for (let node = inner; node !== null; node = parentOf(node)) if (node === outer) return true;
     return false;
   };
+  // By the page's own parents: a browser ties a control to no form it is only slotted into.
   const formOf = (control) =>
     "form" in control && control.form instanceof HTMLFormElement
       ? control.form
-      : (ancestry(control).find((node) => node instanceof HTMLFormElement) ?? null);
+      : (ancestry(control, pageParent).find((node) => node instanceof HTMLFormElement) ?? null);
   if (own.some((control) => holds(control, element) || holds(element, control)))
     return { part: "sign_in_control", cancel: null };
   // The covering notice that holds it, read only for a control in the sign-in's form or one that

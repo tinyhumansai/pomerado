@@ -46,6 +46,7 @@ export default defineConfig({
         "**/autofill-phone-read-back.spec.ts",
         "**/autofill-calling-code.spec.ts",
         "**/autofill-phone-swap.spec.ts",
+        "**/autofill-dismiss-slots.spec.ts",
         "**/autofill-code-boxes.spec.ts",
         "**/sign-in-code-boxes.spec.ts",
         "**/sign-in-code-sends-itself.spec.ts",
