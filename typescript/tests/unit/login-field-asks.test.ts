@@ -6,7 +6,9 @@ import {
   type InputRequest,
 } from "../../src/runtime/input-request.js";
 import type { AnsweredLoginFields } from "../../src/runtime/login-values.js";
+import { makeRunSecrets } from "../../src/inputs/secrets.js";
 import { makeLoginFieldAsk, Unanswered } from "../../src/runtime/login-field-asks.js";
+import { localSecretBroker } from "../../src/runtime/sign-in-replay.js";
 
 class UnavailableField extends Data.TaggedError("UnavailableField")<{
   readonly operation: string;
@@ -184,4 +186,36 @@ it("fails the ask after three answers the field cannot take", async () => {
   expect(answering.requests).toHaveLength(3);
   expect(ask.registered).toEqual([]);
   expect(ask.given.current).toEqual({});
+});
+
+it("masks a phone number the owner gives in place in each form a page writes it", async () => {
+  const secrets = makeRunSecrets();
+  const ask = makeLoginFieldAsk({
+    broker: localSecretBroker(secrets),
+    unavailable: (operation) => new UnavailableField({ operation }),
+    site: "example.com",
+    given: { current: {} },
+  });
+  const answering = owner(["+91 98765 43210"], "text");
+  expect(await Effect.runPromise(ask.ask(answering.asker, ["phone"]))).toEqual({
+    slot: "phone",
+    value: "+91 98765 43210",
+  });
+  expect(secrets.redact("+919876543210, 9876543210, (987) 654-3210, 98765 43210")).toBe(
+    "[private], [private], [private], [private]",
+  );
+});
+
+it("masks a number the owner gives in place for any identifier, and leaves other values as given", async () => {
+  const secrets = makeRunSecrets();
+  const ask = makeLoginFieldAsk({
+    broker: localSecretBroker(secrets),
+    unavailable: (operation) => new UnavailableField({ operation }),
+    site: "example.com",
+    given: { current: {} },
+  });
+  await Effect.runPromise(ask.ask(owner(["5551234567"], "text").asker, ["account_number"]));
+  expect(secrets.redact("Account 555-123-4567")).toBe("Account [private]");
+  await Effect.runPromise(ask.ask(owner(["12345678"], "secret").asker, "recovery_code"));
+  expect(secrets.redact("Code 1234-5678")).toBe("Code 1234-5678");
 });

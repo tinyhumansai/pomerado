@@ -1752,7 +1752,8 @@ export type MintOutcome = {
    * (`LiveTestsReport`). Absent on a write, which runs none, on a host with no live tests, on a
    * signed-in read no case ran signed in for, and on a publication a takeover rejoined. Unlike
    * `summary`, whose line of these counts comes after the minter's own words, the minter never
-   * writes it.
+   * writes it, but it writes the cases: `pass` says only that the tool answered what the minter's
+   * own case expected, so read it with each version's `retired` and `casesFileProblem`.
    */
   readonly liveTests?: LiveTestsReport;
   /**
@@ -2120,6 +2121,8 @@ export interface MintHarnessSnapshot {
    * keeps no HTTP results, drops them rather than restoring them as the Playwright version's.
    */
   readonly liveTestsHttp?: readonly LiveTestRecord[];
+  /** Retired failures each version dropped past the ones it keeps, when any did. */
+  readonly liveTestsDropped?: { readonly playwright: number; readonly http: number };
   /**
    * Whether the attempt ran out of time for live tests: a batch refused for time, or a case
    * stopped by a batch deadline the attempt's end set.
@@ -2392,6 +2395,10 @@ export const MintHarnessSnapshot: Schema.Schema<MintHarnessSnapshot> = Schema.St
   executions: Schema.Array(ExecutionEvidence),
   liveTests: Schema.optionalWith(Schema.Array(LiveTestRecord), { exact: true }),
   liveTestsHttp: Schema.optionalWith(Schema.Array(LiveTestRecord), { exact: true }),
+  liveTestsDropped: Schema.optionalWith(
+    Schema.Struct({ playwright: Schema.NonNegativeInt, http: Schema.NonNegativeInt }),
+    { exact: true },
+  ),
   liveTestsOutOfTime: Schema.optionalWith(Schema.Boolean, { exact: true }),
   signedInTestInputs: Schema.optionalWith(Schema.Array(Schema.String), { exact: true }),
   outcomeWrites: Schema.optionalWith(Schema.Array(OutcomeWrite), { exact: true }),
@@ -2928,6 +2935,14 @@ export interface MintDependencies {
   readonly canPublishRepair?: (executionId: string) => boolean;
   /** Host-created SDK workspace, no credentials, no external grants. Host owns cleanup. */
   readonly workspace: SandboxSession;
+  /**
+   * The paths of the workspace's files as they are now, for a host that can list them. A live
+   * test's source digest then counts all of `src/` for a module whose imports cannot be resolved
+   * statically, as a computed import's, so such a test goes stale when a file it may load changes.
+   * Absent, the digest reads the entrypoint's static imports alone. The digest that tells one
+   * write's step from another reads those in any case.
+   */
+  readonly workspaceFiles?: Effect.Effect<readonly string[], unknown>;
   /** Same-attempt artifacts already screened and published by the host collector.
    * Generated source cannot populate this read-only view. */
   readonly readPublishedCapture?: (path: string) => Effect.Effect<string | undefined, MintFailure>;

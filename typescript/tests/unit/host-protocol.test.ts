@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { hostProtocolFindings } from "../../../tools/check-host-protocol.js";
 
@@ -39,5 +40,13 @@ describe("the host protocol check", () => {
     expect(
       hostProtocolFindings(current, { ...previous, pomerado: { hostProtocol: 2 } }),
     ).toEqual([expect.stringContaining("hostProtocol 1 is lower than 2")]);
+  });
+
+  // The check sees removed exports only: an export that changed incompatibly raises it by hand.
+  it("stands at 2, for the object `reviewPublication` returns in place of a review's ID", () => {
+    const manifest = JSON.parse(readFileSync("package.json", "utf8")) as {
+      readonly pomerado: { readonly hostProtocol: number };
+    };
+    expect(manifest.pomerado.hostProtocol).toBe(2);
   });
 });

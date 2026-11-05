@@ -222,7 +222,7 @@ export const repeatedLoginFailure = (field: CredentialRejectedField) =>
  */
 export const localSignInLogin = (options: {
   readonly ask: InputAsker;
-  readonly register: (value: string) => void;
+  readonly register: (value: string, kind?: "phone") => void;
   readonly siteOrigin: string;
   /**
    * What the login needs when the sign-in types no password (`recipeLoginStep` for a run, the
@@ -274,7 +274,8 @@ export const localSignInLogin = (options: {
         return yield* new MintFailure({ code: "Unavailable", loginDeclined: answer.value.declined });
       if (answer?.type !== "credential" || answer.value.username === undefined)
         return yield* loginFailure(new Error("The login answer holds no username"));
-      options.register(answer.value.username);
+      // Any login's identifier may be a number a site writes back in its own format.
+      options.register(answer.value.username, "phone");
       // A sign-in that types no password holds none; any other needs one. The kind the question
       // offered, or the one the owner picked, is the login's own, as a saved login's record says:
       // its field fills the screens that accept it.

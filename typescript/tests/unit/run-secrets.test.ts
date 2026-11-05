@@ -117,9 +117,104 @@ describe("makeRunSecrets", () => {
     expect(secrets.redactCut("page text fixture-priv")).toBe("page text ");
     expect(secrets.redactCut("page fixture-private-value tail")).toBe("page [private] tail");
     expect(secrets.redactCut("ends fixture-private-value")).toBe("ends [private]");
+    // A cut through a character of several bytes reads back as one replacement character.
+    expect(secrets.redactCut("page text fixture-priv\uFFFD")).toBe("page text ");
     // A collapsed form split by the cut leaves nothing of itself either.
     expect(
       registered("correct  horse  battery").redactCut('textbox "Code": correct horse ba'),
     ).toBe('textbox "Code": ');
+  });
+});
+
+describe("a phone number", () => {
+  const phone = (number: string) => {
+    const secrets = makeRunSecrets();
+    secrets.register(number, "phone");
+    return secrets;
+  };
+  const refused = (secrets: ReturnType<typeof phone>, text: string) =>
+    Either.isLeft(Effect.runSync(Effect.either(secrets.assertAbsent(text))));
+
+  it.each([
+    ["+919876543210", "+919876543210"],
+    ["+919876543210", "+91 98765 43210"],
+    ["+919876543210", "+91-98765-43210"],
+    ["+919876543210", "919876543210"],
+    ["+919876543210", "9876543210"],
+    ["+919876543210", "98765 43210"],
+    ["+919876543210", "09876543210"],
+    ["+919876543210", "+91 (0) 98765 43210"],
+    ["+15555550123", "+1 (555) 555-0123"],
+    ["+15555550123", "(555) 555-0123"],
+    ["+15555550123", "555.555.0123"],
+    ["+15555550123", "1-555-555-0123"],
+    ["+15555550123", "+1\u00a0555\u00a0555\u20110123"],
+    ["+15555550123", "%2B1%20(555)%20555-0123"],
+    ["+15555550123", "?phone=%28555%29%20555-0123"],
+    ["+15555550123", "?msg=sent%20to%20555-555-0123"],
+    ["+15555550123", "?msg=sent%20to%201%20555%20555%200123"],
+    ["00447700900123", "+44 7700 900123"],
+    ["+44 7700 900123", "07700 900123"],
+    ["07700 900123", "+44 7700 900123"],
+    ["9876543210", "(987) 654-3210"],
+    ["9876543210", "+91 98765 43210"],
+  ])("masks and refuses %s as a page writes it: %s", (number, shown) => {
+    const secrets = phone(number);
+    const masked = secrets.redact(`Sent to ${shown}.`);
+    expect(masked).toContain("[private]");
+    expect(masked).not.toMatch(/[0-9]{3}/u);
+    expect(refused(secrets, `const shown = "${shown}";`)).toBe(true);
+  });
+
+  it("leaves another number and a longer run of digits as they are", () => {
+    const secrets = phone("+15555550123");
+    for (const text of ["+1 (555) 555-0124", "1-555-555-01234", "555-0123", "order 555 01"]) {
+      expect(secrets.redact(text)).toBe(text);
+      expect(refused(secrets, text)).toBe(false);
+    }
+  });
+
+  it("registers a value of no phone shape only as given, as a host's handle is", () => {
+    const secrets = phone("sec_1234567890");
+    expect(secrets.redact("sec_1234567890 1234567890")).toBe("[private] 1234567890");
+  });
+
+  it("registers no digits a number has too few of to tell it from any other", () => {
+    const secrets = phone("+1234567");
+    expect(secrets.redact("+1234567 234567 1234567")).toBe("[private] 234567 1234567");
+  });
+
+  it("masks a JSON number that holds it", () => {
+    const secrets = phone("+919876543210");
+    expect(
+      Effect.runSync(secrets.json({ phone: 919876543210, national: 9876543210, count: 3 })),
+    ).toEqual({ phone: "[private]", national: "[private]", count: 3 });
+  });
+
+  it("drops what a cut left of it, in any form", () => {
+    const secrets = phone("+919876543210");
+    expect(secrets.redactCut("Sent to +91 98765 43")).toBe("Sent to ");
+    expect(secrets.redactCut("Sent to 98765 4")).toBe("Sent to ");
+    expect(secrets.redactCut("Sent to +91 ")).toBe("Sent to ");
+    expect(secrets.redactCut("Sent to +91 98765 43210 today")).toBe("Sent to [private] today");
+    expect(secrets.redactCut("Sent to 12")).toBe("Sent to 12");
+    expect(secrets.redactCut("?msg=sent%20to%2098765%2043")).toBe("?msg=sent%20to%20");
+  });
+
+  it("drops what a cut left of it before a character the cut broke", () => {
+    expect(phone("+919876543210").redactCut("Sent to 98765\uFFFD")).toBe("Sent to ");
+  });
+
+  it("forgets its digits with every other value", () => {
+    const secrets = phone("+15555550123");
+    secrets.clear();
+    expect(secrets.redact("+1 (555) 555-0123")).toBe("+1 (555) 555-0123");
+    expect(refused(secrets, "+1 (555) 555-0123")).toBe(false);
+  });
+
+  it("registers no digits for a value that is not named a phone number", () => {
+    const secrets = makeRunSecrets();
+    secrets.register("+15555550123");
+    expect(secrets.redact("+1 (555) 555-0123")).toBe("+1 (555) 555-0123");
   });
 });

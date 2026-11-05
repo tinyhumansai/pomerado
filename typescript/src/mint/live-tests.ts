@@ -1059,8 +1059,8 @@ const clearedBy = (
 
 /**
  * Results the cases file no longer shows: a case the minter deleted, with its last result, and
- * a failing result the minter replaced by changing the case. `inputSchema` is the version's
- * published input schema, when the host could read it.
+ * a failing result the minter replaced by changing the case, whether or not the changed case ran
+ * since. `inputSchema` is the version's published input schema, when the host could read it.
  */
 const retiredViews = (
   file: LiveTestCasesFile,
@@ -1073,6 +1073,12 @@ const retiredViews = (
   const deleted = [...records.values()].filter((record) => !current.has(record.id));
   const changed = replaced.filter(
     (record) => record.flaky === true || current.get(record.id) !== record.caseDigest,
+  );
+  const changedUnrun = [...records.values()].filter(
+    (record) =>
+      record.verdict === "fail" &&
+      current.has(record.id) &&
+      current.get(record.id) !== record.caseDigest,
   );
   const outside = publishedInputCheck(inputSchema);
   // What a current case runs and expects, for the cases that pass on the published source.
@@ -1134,6 +1140,9 @@ const retiredViews = (
               : "changed after it failed, then deleted",
         ] as const,
     ),
+    ...changedUnrun.map(
+      (record) => [record, "changed after it failed, and not run since"] as const,
+    ),
   ].map(([record, because]) => {
     const failed = record.verdict === "fail";
     const bound =
@@ -1187,6 +1196,8 @@ export interface LiveTestVersionResults {
   readonly entrypoint?: string;
   /** That entrypoint's current source digest; undefined leaves every result stale or not run. */
   readonly sourceDigest: string | undefined;
+  /** Retired failures the host dropped past the ones it keeps for this version, if any. */
+  readonly retiredDropped?: number;
   /** This version's latest result for each case, by case id. */
   readonly records: ReadonlyMap<string, LiveTestRecord>;
   /** This version's failing results the minter replaced by changing their case. */
@@ -1299,6 +1310,7 @@ export const liveTestsEvidence = (options: {
         entry.records.get(testCase.id)?.start === "cold" &&
         caseStatus(testCase, entry.records.get(testCase.id), entry.sourceDigest) === "pass",
     ).length,
+    ...(entry.retiredDropped === undefined ? {} : { retiredDropped: entry.retiredDropped }),
   }));
   const retiredFailures = retired.filter((entry) => entry.lastVerdict === "fail").length;
   const stillCounting = retired.filter((entry) => "clearedBy" in entry).length;
@@ -1343,6 +1355,12 @@ export const liveTestsEvidence = (options: {
           }
         : {}),
       ...(options.fileProblem === undefined ? {} : { casesFileProblem: options.fileProblem }),
+      ...(versions.some((entry) => entry.retiredDropped !== undefined)
+        ? {
+            retiredDroppedNote:
+              "retiredDropped on a version counts retired failures the host no longer holds: it keeps the latest for each version, so retired lists no more than those.",
+          }
+        : {}),
       versions: versionViews,
       cases,
       notTested,
@@ -1360,6 +1378,15 @@ export const liveTestsEvidence = (options: {
  * holds no case: a case's input, purpose and result may quote what a page returned, so those stay
  * with the review. `signedIn` says only cases run signed in count, so a `not_run` case is no gap;
  * `outOfTime` and `noRunsLeft` say no further batch could run.
+ *
+ * `pass` means only that the tool answered what the minter's own case expected: the minter writes
+ * the cases, and may delete one that fails. `retired` counts what the cases file no longer shows,
+ * by version, when there is any: `total` cases the minter deleted, changed after they failed or
+ * that proved flaky, `lastFailed` of those whose last result failed, and `stillCounting` of those
+ * failures the host has not excused. `retiredDropped` counts the retired failures the host no
+ * longer holds, past the latest it keeps for each version. `casesFileProblem` says the host could
+ * not read the cases file, so the counts cover none of its cases, and `recordProblem` that it
+ * could not build the record, so no version shows; each problem's own words stay with the review.
  */
 export const LiveTestsReport = Schema.Struct({
   versions: Schema.Array(
@@ -1375,25 +1402,53 @@ export const LiveTestsReport = Schema.Struct({
         not_run: Schema.optionalWith(Schema.NonNegativeInt, { exact: true }),
       }),
       coldPasses: Schema.NonNegativeInt,
+      retired: Schema.optionalWith(
+        Schema.Struct({
+          total: Schema.NonNegativeInt,
+          lastFailed: Schema.NonNegativeInt,
+          stillCounting: Schema.NonNegativeInt,
+        }),
+        { exact: true },
+      ),
+      retiredDropped: Schema.optionalWith(Schema.NonNegativeInt, { exact: true }),
     }),
   ),
   signedIn: Schema.optionalWith(Schema.Literal(true), { exact: true }),
   outOfTime: Schema.optionalWith(Schema.Literal(true), { exact: true }),
   noRunsLeft: Schema.optionalWith(Schema.Literal(true), { exact: true }),
+  casesFileProblem: Schema.optionalWith(Schema.Literal(true), { exact: true }),
+  recordProblem: Schema.optionalWith(Schema.Literal(true), { exact: true }),
 });
 export type LiveTestsReport = typeof LiveTestsReport.Type;
 
 /** A publication record as the build's outcome reports it (`LiveTestsReport`). */
 export const liveTestsReport = (record: {
   readonly versions: LiveTestsReport["versions"];
+  readonly retired: readonly { readonly version: string; readonly lastVerdict: string }[];
   readonly signedIn?: boolean;
   readonly outOfTime?: boolean;
   readonly noRunsLeft?: boolean;
+  readonly casesFileProblem?: string;
+  readonly problem?: string;
 }): LiveTestsReport => ({
-  versions: record.versions,
+  versions: record.versions.map((entry) => {
+    const retired = record.retired.filter((view) => view.version === entry.version);
+    return retired.length === 0
+      ? entry
+      : {
+          ...entry,
+          retired: {
+            total: retired.length,
+            lastFailed: retired.filter((view) => view.lastVerdict === "fail").length,
+            stillCounting: retired.filter((view) => "clearedBy" in view).length,
+          },
+        };
+  }),
   ...(record.signedIn === true ? { signedIn: true } : {}),
   ...(record.outOfTime === true ? { outOfTime: true } : {}),
   ...(record.noRunsLeft === true ? { noRunsLeft: true } : {}),
+  ...(record.casesFileProblem === undefined ? {} : { casesFileProblem: true }),
+  ...(record.problem === undefined ? {} : { recordProblem: true }),
 });
 
 /**
