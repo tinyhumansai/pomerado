@@ -35,7 +35,10 @@ const tokenPattern = (form: string) => {
  * another script, digits a page's markup or entities split, and a URL encoded twice aren't matched.
  */
 const phoneGap = "(?:[\\s\\p{Pd}\\p{Cf}().+/]|%[0-9A-Fa-f]{2}){0,3}";
-/** Fewer digits than this after the calling code say too little to mask on their own. */
+/**
+ * Fewer digits than this after the calling code say too little to mask on their own: such a number
+ * counts only behind its calling code, written in international form.
+ */
 const phoneLocalLeast = 7;
 /** A pattern for `digits` with `phoneGap` between each. */
 const gapped = (digits: string) => [...digits].join(phoneGap);
@@ -51,23 +54,28 @@ const cutGapped = (digits: string) =>
  * its digits, with and without its calling code (`digits`); a global pattern for those digits
  * with `phoneGap` between each, with a trunk 0 or none and no digit adjoining them, though a percent
  * escape may stand right before them (`run`); and one for the start of the run where a cut ended
- * the text (`cut`). Undefined for a value not written as a number, such as a host's handle, or with
- * too few digits after its calling code (`phoneLocalLeast`). Any marks may group its digits, as
- * a saved login or a login of another kind never met the shape a phone answer must have.
+ * the text (`cut`). A number with too few digits after its calling code (`phoneLocalLeast`) has no
+ * `digits`, and its patterns match only with that code, after a `+` or `00`. Undefined for a value
+ * not written as a number, such as a host's handle, or too short to say its calling code. Any marks
+ * may group its digits, as a saved login or a login of another kind never met the shape a phone
+ * answer must have.
  */
 const phoneForms = (number: string) => {
   if (!writtenAsNumber(number)) return undefined;
   const code = callingCode(number) ?? "";
   const local = (nationalDigits(number) ?? number.replaceAll(/[^0-9]/gu, "")).replace(/^0+/u, "");
-  if (local.length < phoneLocalLeast) return undefined;
-  const lead = "(?:(?<![0-9])|(?<=%[0-9A-Fa-f]{2}))[+(]?";
+  const short = local.length < phoneLocalLeast;
+  if (short && code === "") return undefined;
+  const edge = "(?:(?<![0-9])|(?<=%[0-9A-Fa-f]{2}))";
+  const lead = `${edge}${short ? "(?:\\+|%2[Bb]|00)" : "[+(]?"}`;
   const trunk = `(?:0${phoneGap})?`;
-  const calling = code === "" ? "" : `(?:${gapped(code)}${phoneGap})?`;
+  const calling = code === "" ? "" : `(?:${gapped(code)}${phoneGap})${short ? "" : "?"}`;
+  const whole = cutGapped(`${code}${local}`);
   return {
-    digits: [local, `${code}${local}`],
+    digits: short ? [] : [local, `${code}${local}`],
     run: new RegExp(`${lead}${calling}${trunk}${gapped(local)}(?![0-9])`, "gu"),
     cut: new RegExp(
-      `${lead}(?:${cutGapped(`${code}${local}`)}|${trunk}${cutGapped(local)})${phoneGap}$`,
+      `${lead}(?:${short ? whole : `${whole}|${trunk}${cutGapped(local)}`})${phoneGap}$`,
       "u",
     ),
   };

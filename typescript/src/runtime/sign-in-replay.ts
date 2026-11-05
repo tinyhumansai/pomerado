@@ -37,7 +37,7 @@ import {
   type RegisteredEntity,
   type SecretBroker,
 } from "./autofill-state.js";
-import { typedValues } from "./autofill-values.js";
+import { nationalValues, typedValues } from "./autofill-values.js";
 import { logicalRejectedField } from "./autofill-rejection.js";
 import type { InputAsker } from "./input-request.js";
 import { bareCode, codeDoesNotFit, fitsCodeBoxes } from "./login-field-asks.js";
@@ -172,6 +172,19 @@ export interface RunSignInSecrets {
   readonly register: (value: string, kind?: "phone") => void;
   readonly assertAbsent: (text: string) => Effect.Effect<void, unknown>;
 }
+
+/**
+ * The values a screen's fill types (`typedValues`), each `national` field's digits masked as they
+ * are typed: a short number's say too little to mask in any other grouping.
+ */
+export const maskedTypedValues = (
+  secrets: RunSignInSecrets,
+  step: Parameters<typeof typedValues>[0],
+  values: readonly string[],
+) => {
+  for (const digits of nationalValues(step, values)) secrets.register(digits, "phone");
+  return typedValues(step, values);
+};
 
 /**
  * A host's own handles for a run's sign-in answers, such as a phone number or a code it keeps out
@@ -344,7 +357,12 @@ const replayHooks = <E>(
     // and the fill types it only in the origin it was revealed for.
     fill: (input) =>
       revealing === undefined
-        ? browser.fill({ ...input, values: typedValues(input.step, input.values) })
+        ? Effect.suspend(() =>
+            browser.fill({
+              ...input,
+              values: maskedTypedValues(secrets, input.step, input.values),
+            }),
+          )
         : Effect.suspend(() => {
             revealing.refused = undefined;
             return revealedValues(input, revealing.reveal, secrets);

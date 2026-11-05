@@ -224,6 +224,41 @@ describe("a phone number", () => {
     expect(secrets.redact(`${value} ${digits}`)).toBe(`[private] ${digits}`);
   });
 
+  // A number of few digits, as some countries' are, counts wherever its calling code stands with it.
+  it.each([
+    "+298 555012",
+    "+298 55 50 12",
+    "+298-555-012",
+    "(+298) 555012",
+    "00298 555012",
+    "+298 0555012",
+    "%2B298%20555012",
+    "?phone=%2B298555012",
+  ])("masks and refuses a short number with its calling code: %s", (shown) => {
+    const secrets = phone("+298 555012");
+    const masked = secrets.redact(`Sent to ${shown}.`);
+    expect(masked).toContain("[private]");
+    expect(masked).not.toMatch(/[0-9]{3}/u);
+    expect(refused(secrets, `const shown = "${shown}";`)).toBe(true);
+  });
+
+  it.each(["555012", "55 50 12", "298555012", "298 55 50 12", "+299 555012", "+298 555013"])(
+    "leaves what only looks like a short number as it is: %s",
+    (text) => {
+      const secrets = phone("+298 555012");
+      expect(secrets.redact(text)).toBe(text);
+      expect(refused(secrets, text)).toBe(false);
+    },
+  );
+
+  it("drops what a cut left of a short number only with its calling code", () => {
+    const secrets = phone("+298 555012");
+    expect(secrets.redactCut("Sent to +298 55 5")).toBe("Sent to ");
+    expect(secrets.redactCut("Sent to 00298 55")).toBe("Sent to ");
+    expect(secrets.redactCut("Sent to 555")).toBe("Sent to 555");
+    expect(secrets.redactCut("Sent to 298 55")).toBe("Sent to 298 55");
+  });
+
   it("registers no digits a number has too few of to tell it from any other", () => {
     const secrets = phone("+1234567");
     expect(secrets.redact("+1234567 234567 1234567")).toBe("[private] 234567 1234567");

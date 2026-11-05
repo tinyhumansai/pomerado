@@ -45,13 +45,14 @@ import {
   submitFilled,
   submittedLoginProof,
 } from "../runtime/autofill-state.js";
-import { makeAutofillValues, typedValues } from "../runtime/autofill-values.js";
+import { makeAutofillValues } from "../runtime/autofill-values.js";
 import { makeCodeResend, resendWaitMs } from "../runtime/code-resend.js";
 import { failureDetail, type FailureContextValue } from "../runtime/failure-detail.js";
 import type { InputAsker } from "../runtime/input-request.js";
 import { Unanswered } from "../runtime/login-field-asks.js";
 import {
   localSecretBroker,
+  maskedTypedValues,
   type RunSignInSecrets,
   type SignInReplayBrowser,
 } from "../runtime/sign-in-replay.js";
@@ -294,7 +295,12 @@ export const makeSignInRecorder = (input: {
     inspect: (step) => browser.inspect(step),
     // One-character code boxes take the code one character each, as the host types it.
     fill: (filling) =>
-      browser.fill({ ...filling, values: typedValues(filling.step, filling.values) }),
+      Effect.suspend(() =>
+        browser.fill({
+          ...filling,
+          values: maskedTypedValues(input.secrets, filling.step, filling.values),
+        }),
+      ),
     ...(browser.resubmit === undefined ? {} : { resubmit: browser.resubmit }),
     check: (indicator, screens, challengeScreens) =>
       browser.confirm(indicator, screens, challengeScreens ?? screens),

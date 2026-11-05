@@ -277,7 +277,7 @@ const signIn = (input: {
   readonly fake: ReturnType<typeof shop>;
   readonly recipe: SignInRecipe;
   readonly ask: InputAsker;
-  readonly reveal: RevealSignInValue;
+  readonly reveal?: RevealSignInValue;
   readonly secrets?: ReturnType<typeof makeRunSecrets>;
 }) => {
   const secrets = input.secrets ?? makeRunSecrets();
@@ -294,7 +294,7 @@ const signIn = (input: {
     }),
     ask: input.ask,
     secrets,
-    reveal: input.reveal,
+    ...(input.reveal === undefined ? {} : { reveal: input.reveal }),
     site,
     siteOrigin: www,
     markerSettle: { within: Duration.millis(20), interval: Duration.millis(5) },
@@ -537,6 +537,35 @@ describe("the forms of a revealed value the run masks", () => {
       "[private], [private], [private]",
     );
     expect(secrets.redact("India (+91)")).toBe("India (+91)");
+  });
+
+  it.each([
+    ["revealed", { reveal: host({ sec_phone: "+298 555012" }).reveal, answer: "sec_phone" }],
+    ["answered with no reveal", { answer: "+298 555012" }],
+  ])("masks a short number a picker's screen takes, %s, and not its code", async (_name, by) => {
+    const secrets = makeRunSecrets();
+    const picker = { selector: "#country", accepts: ["phone"], format: "calling_code" };
+    const options = { loginFields: [picker, national] };
+    const fake = shop(options);
+    const browser = { ...fake.browser, picksCallingCodes: true as const };
+    const recipe = { ...shopRecipe(options), version: 11 } as unknown as SignInRecipe;
+    const ask = makeInputAsker((request) =>
+      Effect.succeed(
+        Object.fromEntries(
+          request.questions.map((question) => [
+            question.id,
+            question.type === "credential"
+              ? { username: by.answer, saveLogin: false }
+              : code,
+          ]),
+        ) as InputAnswers,
+      ),
+    );
+    const run = signIn({ fake: { ...fake, browser }, recipe, ask, secrets, ...by });
+    expect(await Effect.runPromise(run)).toEqual({ alreadySignedIn: false });
+    expect(fake.fills[0]?.values).toEqual(["298", "555012"]);
+    expect(secrets.redact("+298 55 50 12, 555012")).toBe("[private], [private]");
+    expect(secrets.redact("Faroe Islands (+298)")).toBe("Faroe Islands (+298)");
   });
 
   it("masks a revealed date of birth in each whole-date layout a page may show it in", async () => {

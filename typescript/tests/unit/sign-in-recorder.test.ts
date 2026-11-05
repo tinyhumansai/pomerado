@@ -8,10 +8,12 @@ import type {
   AutofillStepReport,
 } from "../../src/destinations/autofill-step.js";
 import type { SignedOutSnapshot } from "../../src/destinations/signed-in-marker.js";
+import { makeRunSecrets } from "../../src/inputs/secrets.js";
 import { MintFailure, type SignInStep } from "../../src/mint/contracts.js";
 import { makeSignInRecorder } from "../../src/mint/sign-in-recorder.js";
 import type { WebsiteCredentials } from "../../src/runtime/authentication.js";
 import type { InputAsker, InputRequest } from "../../src/runtime/input-request.js";
+import type { RunSignInSecrets } from "../../src/runtime/sign-in-replay.js";
 import { makeSignInBrowser } from "../../src/standalone/authentication.js";
 
 const site = "example.test";
@@ -70,6 +72,8 @@ interface Options {
   readonly lateMarker?: number;
   /** The one-character code boxes the screen shows, by the code fields' order. */
   readonly codeBoxes?: number;
+  /** The build's masking; none by default. */
+  readonly secrets?: RunSignInSecrets;
 }
 
 /** A recorder over a synthetic site, with what it asked, filled, reviewed and checked. */
@@ -183,7 +187,7 @@ const harness = (options: Options = {}) => {
         }),
     },
     ask,
-    secrets: { register: () => {}, assertAbsent: () => Effect.void },
+    secrets: options.secrets ?? { register: () => {}, assertAbsent: () => Effect.void },
     review: (step) =>
       Effect.sync(() => {
         reviewed.push(step);
@@ -956,6 +960,20 @@ it("ends the sign-in as AccountLocked once the site visibly refused the account 
     ),
   );
   expect(host.logins).toEqual(["missing_credentials"]);
+});
+
+// A short number's digits alone say too little to mask in any grouping, so they are masked as the
+// national field types them.
+it("masks the digits a national field types", async () => {
+  const secrets = makeRunSecrets();
+  const host = harness({ held: { ...account, phone: "+298 555012" }, secrets });
+  const nationalScreen: SignInStep = {
+    fields: [{ selector: "#phone", accepts: ["phone"], format: "national" }],
+    submit: "#next",
+  };
+  await host.run((recorder) => recorder.step(nationalScreen, undefined, Effect.void));
+  expect(host.filled.map(({ values }) => values)).toEqual([["555012"]]);
+  expect(secrets.redact("Sent to 555012.")).toBe("Sent to [private].");
 });
 
 // A phone field the site's country picker preset to another country keeps other digits than the

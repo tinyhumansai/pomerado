@@ -221,6 +221,20 @@ const localValues = (step: Pick<AutofillStep<FillSlot>, "fields">, values: reado
     : values;
 
 /**
+ * The digits each `national` phone field of a screen takes (`localValues`), which it types and a
+ * page may then show alone.
+ */
+export const nationalValues = (
+  step: Pick<AutofillStep<FillSlot>, "fields">,
+  values: readonly string[],
+) =>
+  step.fields.flatMap((field, index) => {
+    const national = field.slot === "phone" && field.format === "national";
+    const digits = national ? nationalDigits(values[index] ?? "") : undefined;
+    return digits === undefined ? [] : [digits];
+  });
+
+/**
  * The values as the host types them: a screen with as many code fields as its code has characters,
  * one-digit boxes, takes one character in each, in order (`valuesInOrder` gives a screen of several
  * code fields no other code); any other screen takes its values as they are. Every code field's
