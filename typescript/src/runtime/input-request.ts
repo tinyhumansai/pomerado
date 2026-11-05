@@ -1,5 +1,4 @@
 import { Data, Either, Schema, type Effect } from "effect";
-import { unshapedPhone } from "./login-values.js";
 
 /**
  * One way for a running mint, maintenance or run to ask its caller. A
@@ -327,6 +326,24 @@ const ConfirmAnswer = Schema.Struct({
 export const LoginDecline = Schema.Literal("no_account", "public_only");
 export type LoginDecline = typeof LoginDecline.Type;
 
+/** Whether `value` has a phone number's shape. */
+export const phoneShaped = (value: string) =>
+  /^\+?[\d\s().-]+$/u.test(value.trim()) && value.replace(/\D/gu, "").length >= 7;
+/**
+ * Whether `value` is written as a number, whatever marks stand between its digits, and so is no
+ * host's handle, name or email address: it holds no letter, or starts with a `+` and a digit.
+ */
+export const writtenAsNumber = (value: string) =>
+  !/\p{L}/u.test(value) || /^\s*\+\s*\d/u.test(value);
+/**
+ * Whether a login's answer of the phone kind can't be used: it is written as a number
+ * (`writtenAsNumber`) but not as a phone (`phoneShaped`), such as digits grouped by slashes, a
+ * number with an extension or digits in another script. A field would take other digits than the
+ * number's. A value that isn't written as a number may be a host's handle, which only its reveal
+ * can tell, so it stands.
+ */
+export const unshapedPhone = (value: string) => writtenAsNumber(value) && !phoneShaped(value);
+
 export const CredentialAnswer = Schema.Struct({
   identifierKind: Schema.optional(Schema.Literal("username", "email", "phone", "account_number")),
   username: Schema.optional(
@@ -521,7 +538,8 @@ const validateOne = (
           return invalid("unoffered_option");
         if (identifierKinds.length === 0 && decoded.right.identifierKind !== undefined)
           return invalid("unexpected_answer");
-        if (kind === "phone" && unshapedPhone(decoded.right.username ?? ""))
+        const { username } = decoded.right;
+        if (kind === "phone" && username !== undefined && unshapedPhone(username))
           return invalid("phone_unshaped");
         if (password && decoded.right.password === undefined) return invalid("password_required");
         if (!password && decoded.right.password !== undefined) return invalid("unexpected_answer");

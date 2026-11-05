@@ -7,7 +7,7 @@ import {
 } from "../destinations/payment-frames.js";
 import { callingCode, nationalDigits } from "../destinations/login-field-formats.js";
 import { shownForms } from "../privacy/value-forms.js";
-import { writtenAsNumber } from "../runtime/login-values.js";
+import { writtenAsNumber } from "../runtime/input-request.js";
 
 /**
  * A short form of a secret (`shownForms`) counts in source only as a whole token, as the

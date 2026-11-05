@@ -15,6 +15,7 @@ import {
   identifierLabel,
   makeTerminalAsker,
 } from "../../src/inputs/terminal.js";
+import { getRuntimeSources } from "../../src/execution/runtime-sources.js";
 import { InputRequest, validateAnswer } from "../../src/runtime/input-request.js";
 import { makeMcpJobs, mcpFailureMessage } from "../../src/standalone/mcp-jobs.js";
 import { makePomeradoMcp } from "../../src/standalone/mcp-server.js";
@@ -190,12 +191,39 @@ describe("a login answer of the phone kind", () => {
     },
   );
 
+  it("leaves a password-only login of that kind alone, which holds no username to check", () => {
+    const request = Schema.decodeUnknownSync(InputRequest)({
+      id: randomUUID(),
+      source: "system",
+      questions: [
+        {
+          id: "login",
+          type: "credential",
+          prompt: "Sign in to the website so this request can continue.",
+          fields: "password",
+          reason: "invalid_credentials",
+          allowSave: false,
+          siteOrigin: "https://shop.example",
+          currentStep: { identifierKinds: ["phone"], password: true },
+        },
+      ],
+    });
+    const checked = validateAnswer(request, { login: { password: "synthetic", saveLogin: false } });
+    expect(Either.isRight(checked)).toBe(true);
+  });
+
   it("fails a host's answer, so nothing it holds reaches a screen", async () => {
     const ask = makeInputAsker(() =>
       Effect.succeed({ login: { identifierKind: "phone", username: "0170/5550100", saveLogin: false } }),
     );
     const failed = await Effect.runPromise(Effect.flip(ask(loginQuestion(["phone"]))));
     expect(failed).toMatchObject({ code: "Invalid", operation: "validateAnswer" });
+  });
+
+  it("is checked without the sign-in code, which a minted tool's runtime never loads", () => {
+    const loaded = getRuntimeSources().map(([path]) => path);
+    expect(loaded).toContain("runtime/input-request.js");
+    expect(loaded).not.toContain("runtime/login-values.js");
   });
 
   it("tells an MCP caller how to write the number, and keeps the question pending", async () => {

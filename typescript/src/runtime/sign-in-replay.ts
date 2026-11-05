@@ -39,9 +39,8 @@ import {
 } from "./autofill-state.js";
 import { nationalValues, typedValues } from "./autofill-values.js";
 import { logicalRejectedField } from "./autofill-rejection.js";
-import type { InputAsker } from "./input-request.js";
+import { type InputAsker, unshapedPhone } from "./input-request.js";
 import { bareCode, codeDoesNotFit, fitsCodeBoxes } from "./login-field-asks.js";
-import { unshapedPhone } from "./login-values.js";
 import { makeRunLogin } from "./run-login.js";
 import { trustedUrl } from "./sign-in-origins.js";
 import { entryNamesAddress, pinnedWorkspaceOrigin, workspaceRelation } from "./workspace-origin.js";

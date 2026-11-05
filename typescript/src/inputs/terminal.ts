@@ -1,9 +1,14 @@
 import { createInterface, emitKeypressEvents } from "node:readline";
 import { Effect } from "effect";
 import { makeInputAsker } from "./callback.js";
-import { InputRequestFailure, publicOptionLabel } from "../runtime/input-request.js";
+import {
+  InputRequestFailure,
+  phoneShaped,
+  publicOptionLabel,
+  unshapedPhone,
+} from "../runtime/input-request.js";
 import type { CurrentLoginStep, InputAnswers, Question } from "../runtime/input-request.js";
-import { emailShaped, phoneShaped, unshapedPhone } from "../runtime/login-values.js";
+import { emailShaped } from "../runtime/login-values.js";
 
 /**
  * The owner pressed Ctrl-C or Ctrl-D, or closed the input, at a question. It stays `NoResponse` for
@@ -225,7 +230,7 @@ const answerQuestion = (question: Question): Effect.Effect<unknown, InputRequest
             username === undefined || kinds.length === 0
               ? undefined
               : (identifierKindOf(username, kinds) ?? (yield* askKind(kinds)));
-          if (identifierKind === "phone" && unshapedPhone(username ?? "")) {
+          if (identifierKind === "phone" && username !== undefined && unshapedPhone(username)) {
             process.stderr.write(
               "Write the phone number with digits, spaces, dots, dashes or brackets alone.\n",
             );
