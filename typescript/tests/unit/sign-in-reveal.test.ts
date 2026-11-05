@@ -487,6 +487,28 @@ describe("the forms of a revealed value the run masks", () => {
     expect(secrets.redact(`${phone} 9812345678`)).toBe("[private] [private]");
   });
 
+  it("masks a number a calling-code picker's screen takes in each form a page writes it, and not its code", async () => {
+    const secrets = makeRunSecrets();
+    const picker = { selector: "#country", accepts: ["phone"], format: "calling_code" };
+    const options = { loginFields: [picker, national] };
+    const fake = shop(options);
+    const browser = { ...fake.browser, picksCallingCodes: true as const };
+    const recipe = { ...shopRecipe(options), version: 11 } as unknown as SignInRecipe;
+    const run = signIn({
+      fake: { ...fake, browser },
+      recipe,
+      ask: owner().ask,
+      reveal: host().reveal,
+      secrets,
+    });
+    expect(await Effect.runPromise(run)).toEqual({ alreadySignedIn: false });
+    expect(fake.fills[0]?.values).toEqual(["91", "9812345678"]);
+    expect(secrets.redact("+91 98123 45678, 98123-45678, 098123 45678")).toBe(
+      "[private], [private], [private]",
+    );
+    expect(secrets.redact("India (+91)")).toBe("India (+91)");
+  });
+
   it("masks a revealed date of birth in each whole-date layout a page may show it in", async () => {
     const secrets = makeRunSecrets();
     // The host answers the date with one of its own, which it reveals as the owner's.

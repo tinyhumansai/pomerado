@@ -1,5 +1,6 @@
 import { Effect, Either } from "effect";
 import { describe, expect, it } from "vitest";
+import { heldPhoneDigits } from "../../src/destinations/login-field-formats.js";
 import { makeRunSecrets } from "../../src/inputs/secrets.js";
 
 const secret = "  correct  horse\tbattery  ";
@@ -164,6 +165,26 @@ describe("a phone number", () => {
     expect(masked).toContain("[private]");
     expect(masked).not.toMatch(/[0-9]{3}/u);
     expect(refused(secrets, `const shown = "${shown}";`)).toBe(true);
+  });
+
+  // A phone box the host followed may hold any of these (`heldPhoneDigits`), which it reads back
+  // as digits alone: a page that writes one out shows nothing of the number either.
+  it.each([
+    "+919876543210",
+    "00 91 98765 43210",
+    "+1 (555) 555-0123",
+    "+44 7700 900123",
+    "07700 900123",
+    "+39 06 1234 5678",
+  ])("masks and refuses each form a phone box may hold for %s", (number) => {
+    const secrets = phone(number);
+    const { whole, national } = heldPhoneDigits(number);
+    for (const form of [...whole, ...national]) {
+      const masked = secrets.redact(`Held ${form}.`);
+      expect(masked).toContain("[private]");
+      expect(masked).not.toMatch(/[1-9]/u);
+      expect(refused(secrets, `const held = "${form}";`)).toBe(true);
+    }
   });
 
   it("leaves another number and a longer run of digits as they are", () => {
