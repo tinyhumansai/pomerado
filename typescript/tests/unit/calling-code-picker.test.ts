@@ -134,7 +134,7 @@ describe("typedValues", () => {
     "00 91 98765 00000 ext 12",
     "+(91) 98765 00000 ext 12",
     "+91 98765 00000 ext 12",
-    "+91 98765 00000 #12",
+    "+91 98765 00000 # 12",
   ])(
     "gives the picker nothing for %s, whose extension's digits aren't the number's",
     (number) => {
