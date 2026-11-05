@@ -10,12 +10,11 @@ import type {
 import {
   callingCode,
   nationalDigits,
-  unmarkedNumber,
   wholeDateLayouts,
 } from "../destinations/login-field-formats.js";
 import type { WebsiteCredentials } from "./authentication.js";
 import { correctionTriesLeft } from "./credential-prompts.js";
-import type { InputAsker } from "./input-request.js";
+import { type InputAsker, unmarkedNumber } from "./input-request.js";
 import {
   chosenKind,
   heldField,

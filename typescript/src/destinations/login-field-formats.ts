@@ -1,4 +1,5 @@
 import { formatDate } from "../browser/form-controls.js";
+import { unmarkedNumber } from "../runtime/input-request.js";
 import { DateOfBirthFormat } from "./autofill-contracts.js";
 
 /** A date of birth an owner typed, year first, as the ISO date a record keeps; undefined if none. */
@@ -36,9 +37,6 @@ const shortCallingCodes = new Set([
   ...["60", "61", "62", "63", "64", "65", "66", "81", "82", "84", "86"],
   ...["90", "91", "92", "93", "94", "95", "98"],
 ]);
-
-/** `number` without the invisible marks a number copied from a contact or a page may carry. */
-export const unmarkedNumber = (number: string) => number.replaceAll(/\p{Cf}/gu, "");
 
 /**
  * A phone number written in international form: its digits after the `+` or `00`, which a bracket
