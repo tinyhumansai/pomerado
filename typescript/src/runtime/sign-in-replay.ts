@@ -354,6 +354,8 @@ const replayHooks = <E>(
               return Effect.succeed(revealRefusalReport(revealed.refused, revealed.target));
             }),
           ),
+    // The replay refuses a calling-code picker's screen unless the browser's fill picks the code.
+    ...(browser.picksCallingCodes === true ? { picksCallingCodes: true as const } : {}),
     // A resend types nothing, so it reveals nothing.
     ...(pressResend === undefined
       ? {}

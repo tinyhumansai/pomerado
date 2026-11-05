@@ -1,7 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
 import { Effect } from "effect";
+import type { AutofillStep } from "../../src/destinations/autofill-step.js";
 import { makeInputAsker } from "../../src/inputs/callback.js";
 import { makeRunSecrets } from "../../src/inputs/secrets.js";
+import { makeCodeResend } from "../../src/runtime/code-resend.js";
 import type { Question } from "../../src/runtime/input-request.js";
 import { signInForRun } from "../../src/runtime/sign-in-replay.js";
 import { localSignInLogin, makeSignInBrowser } from "../../src/standalone/authentication.js";
@@ -246,3 +248,139 @@ test("a run never presses a resend control that leads off the site", async ({ pa
   expect(left).toEqual([]);
   expect(site_.verified).toEqual(["111111"]);
 });
+
+/**
+ * One press of a code screen's resend as a run makes it (`makeCodeResend`), on `body` served at
+ * the code screen's address, with each form the site receives and where it went.
+ */
+const pressOn = async (page: Page, body: string, step: AutofillStep) => {
+  const posts: { path: string; form: Record<string, string> }[] = [];
+  await page.route(`${site}/**`, async (route) => {
+    const request = route.request();
+    if (request.method() === "POST")
+      posts.push({
+        path: new URL(request.url()).pathname,
+        form: Object.fromEntries(new URLSearchParams(request.postData() ?? "")),
+      });
+    await route.fulfill({ contentType: "text/html", body });
+  });
+  await page.goto(`${site}/verify`);
+  const browser = makeSignInBrowser({
+    page: await hostPage(page),
+    keyboard: (await hostKeyboard(page)).keyboard,
+    siteOrigin: site,
+    authenticationOrigins: [],
+    typing: { typed: false },
+  });
+  const events: Readonly<Record<string, unknown>>[] = [];
+  const resend = makeCodeResend({
+    hooks: {
+      inspect: (each) => browser.inspect(each).pipe(Effect.orDie),
+      ...(browser.resend === undefined ? {} : { resend: browser.resend }),
+    },
+    step,
+    presses: new Map(),
+    waitMs: 5_000,
+    pollMs: 250,
+    emit: (details) => Effect.sync(() => void events.push(details)),
+  });
+  if (resend === undefined) throw new Error("The step offers no resend");
+  const pressed = await Effect.runPromise(resend.press);
+  await page.waitForTimeout(500);
+  return { pressed, posts, events };
+};
+
+const codeOnly: AutofillStep = {
+  fields: [{ selector: "#code", slot: "code" }],
+  submit: "#verify",
+  resend: "#resend",
+};
+
+test("a press never sends a password an earlier screen left in the code's own form", async ({ page }) => {
+  // A screen drawn in place of the password screen keeps the typed password in a hidden box of
+  // the form its resend submits.
+  const { pressed, posts } = await pressOn(
+    page,
+    `<form method="post" action="/verify">
+<div hidden><label>Password <input id="password" name="password" type="password" value="typed-before"></label></div>
+<label>Code <input id="code" name="code" autocomplete="one-time-code"></label>
+<button id="verify">Verify</button>
+<button id="resend" formaction="/resend">Resend code</button>
+</form>`,
+    codeOnly,
+  );
+  expect(pressed).toBe(false);
+  expect(posts).toEqual([]);
+});
+
+test("a press never sends a password the site's own toggle shows as text", async ({ page }) => {
+  const { pressed, posts } = await pressOn(
+    page,
+    `<form method="post" action="/verify">
+<label>Password <input id="password" name="password" type="text" autocomplete="current-password" value="typed-before"></label>
+<label>Code <input id="code" name="code" autocomplete="one-time-code"></label>
+<button id="verify">Verify</button>
+<button id="resend" formaction="/resend">Resend code</button>
+</form>`,
+    codeOnly,
+  );
+  expect(pressed).toBe(false);
+  expect(posts).toEqual([]);
+});
+
+test("a press never sends a password from a form its control sits outside of", async ({ page }) => {
+  // The control's own script posts the code's form, which still holds the typed password.
+  const { pressed, posts } = await pressOn(
+    page,
+    `<form id="code-form" method="post" action="/verify">
+<div hidden><label>Password <input id="password" name="password" type="password" value="typed-before"></label></div>
+<label>Code <input id="code" name="code" autocomplete="one-time-code"></label>
+<button id="verify">Verify</button>
+</form>
+<button type="button" id="resend">Resend code</button>
+<script>document.getElementById("resend").addEventListener("click", () => {
+  const form = document.getElementById("code-form");
+  form.action = "/resend";
+  form.submit();
+});</script>`,
+    codeOnly,
+  );
+  expect(pressed).toBe(false);
+  expect(posts).toEqual([]);
+});
+
+test("a press never sends a code its box put back once emptied", async ({ page }) => {
+  const { pressed, posts } = await pressOn(
+    page,
+    `<form method="post" action="/verify">
+<label>Code <input id="code" name="code" autocomplete="one-time-code" value="999999"></label>
+<button id="verify">Verify</button>
+<button id="resend" formaction="/resend">Resend code</button>
+</form><script>
+const code = document.getElementById("code");
+let last = code.value;
+code.addEventListener("input", () => { if (code.value === "") code.value = last; else last = code.value; });
+</script>`,
+    codeOnly,
+  );
+  expect(pressed).toBe(false);
+  expect(posts).toEqual([]);
+  await expect(page.locator("#code")).toHaveValue("999999");
+});
+
+for (const [name, resend] of [
+  ["the screen's submit by another selector", "form button"],
+  ["one of the screen's fields by another selector", "input[name=code]"],
+] as const)
+  test(`a press never clicks a resend that is ${name}`, async ({ page }) => {
+    const { pressed, posts } = await pressOn(
+      page,
+      `<form method="post" action="/verify">
+<label>Code <input id="code" name="code" autocomplete="one-time-code"></label>
+<button id="verify">Verify</button>
+</form>`,
+      { ...codeOnly, resend },
+    );
+    expect(pressed).toBe(false);
+    expect(posts).toEqual([]);
+  });

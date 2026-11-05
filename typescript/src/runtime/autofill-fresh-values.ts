@@ -97,6 +97,8 @@ export const makeFreshAutofillValues = <E extends YieldableError>({
         if (!offered || !(answered instanceof Unanswered) || answered.cause !== resendRequested)
           return answered;
         const pressed = yield* login.resend?.press ?? Effect.succeed(false);
+        const stopped = login.resend?.stopped?.();
+        if (stopped !== undefined) return new Unanswered(stopped.cause);
         saying = pressed ? resendNotices.pressed : resendNotices.unpressed;
       }
     });

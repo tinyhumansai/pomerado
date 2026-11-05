@@ -80,8 +80,9 @@ export const callingCodeMessage =
   "a calling_code field accepts phone alone, a step names one at most, and a later field that accepts phone alone says format national";
 /**
  * Whether a step's `resend` fits it: none, or the code screen's own control that asks the site to
- * send a new code, on a step that takes a code, and never its submit, one of its fields or methods
- * or its `dismiss`. The host presses it only when the owner asks for a new code.
+ * send a new code, on a step whose every field takes a code, so no other value the host typed
+ * there goes out with a press, and never its submit, one of its fields or methods or its
+ * `dismiss`. The host presses it only when the owner asks for a new code.
  */
 export const resendFits = (step: {
   readonly fields: readonly ({ readonly selector: string } & object)[];
@@ -91,14 +92,15 @@ export const resendFits = (step: {
   readonly resend?: string | undefined;
 }) =>
   step.resend === undefined ||
-  (step.fields.some((field) => "slot" in field && field.slot === "code") &&
+  (step.fields.length > 0 &&
+    step.fields.every((field) => "slot" in field && field.slot === "code") &&
     step.resend !== step.submit &&
     step.resend !== step.dismiss &&
     !step.fields.some((field) => field.selector === step.resend) &&
     !(step.methods ?? []).some((method) => method.selector === step.resend));
 /** Why a step's `resend` does not fit it (`resendFits`). */
 export const resendMessage =
-  "a step names resend only beside a code field, as its code screen's own control, never its submit, a field, a method or its dismiss";
+  "a step names resend only when every field it takes is a code, as its code screen's own control, never its submit, a field, a method or its dismiss";
 /**
  * The control a `date_of_birth` field was filled into, as the host found it (`formControlShape`):
  * a native date input, a text box, a native select or a custom dropdown. The recipe records it,

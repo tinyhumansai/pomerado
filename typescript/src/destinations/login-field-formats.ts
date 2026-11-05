@@ -78,6 +78,13 @@ export const shownCallingCodes = (text: string): readonly string[] =>
   );
 
 /**
+ * A text with each calling code it shows (`shownCallingCodes`) left out, as a picker that shows
+ * "India (+91)" says the country alone. Page code runs it from its own source.
+ */
+export const withoutCallingCodes = (text: string): string =>
+  String(text).replaceAll(/\+\d+(?:[\s\-‐-–]\d+)*/gu, " ");
+
+/**
  * Whether a picker's text names the calling code `code` (`shownCallingCodes`). Page code runs it
  * from its own source, beside `shownCallingCodes`.
  */
@@ -86,13 +93,17 @@ export const namesCallingCode = (text: string, code: string): boolean =>
 
 /**
  * The digits a phone box may hold for `number` when the page, not the host, wrote it there, each
- * whole: a number that says its calling code as its national digits alone (`nationalDigits`),
- * after a trunk 0, or after its calling code; any other number as its own digits.
+ * whole. `whole` is the number itself: after its calling code for a number that says one, else
+ * its own digits. `national` is a number's national digits alone (`nationalDigits`), or after a
+ * trunk 0, which say no country, so a box that holds them needs a picker beside it to say the
+ * number's own; none for a number that says no calling code.
  */
-export const heldPhoneDigits = (number: string): readonly string[] => {
+export const heldPhoneDigits = (
+  number: string,
+): { readonly whole: readonly string[]; readonly national: readonly string[] } => {
   const code = callingCode(number);
   const national = nationalDigits(number);
   return code === undefined || national === undefined
-    ? [number.replaceAll(/[^0-9]/gu, "")]
-    : [national, `0${national}`, `${code}${national}`];
+    ? { whole: [number.replaceAll(/[^0-9]/gu, "")], national: [] }
+    : { whole: [`${code}${national}`], national: [national, `0${national}`] };
 };

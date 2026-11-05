@@ -68,13 +68,15 @@ export interface AutofillHooks<E = unknown, V extends string = string> {
   /**
    * Presses a code screen's resend control, typing nothing, after emptying its code fields
    * (`resendAutofillCode`): `step` is the screen's code fields with the control as its submit,
-   * waited on for up to `waitMs` while the site keeps it disabled. A host without it never offers
-   * the owner a resend.
+   * waited on for up to `waitMs` while the site keeps it disabled, and `apartFrom` the selectors
+   * of the screen's own submit, methods and dismiss, none of which the control may be. A host
+   * without it never offers the owner a resend.
    */
   readonly resend?: (input: {
     readonly step: AutofillStep;
     readonly inspection: AutofillInspection;
     readonly waitMs: number;
+    readonly apartFrom: readonly string[];
   }) => Effect.Effect<AutofillStepReport>;
   /** The marker check alone, which verifies nothing: a replay polls it. */
   readonly check: (
@@ -115,6 +117,12 @@ export interface AutofillHooks<E = unknown, V extends string = string> {
     screenPage: string,
     popup?: AutofillStep["popup"],
   ) => Effect.Effect<string | undefined, E>;
+  /**
+   * Whether `fill` picks a phone's calling code in a step's calling-code picker
+   * (`format: "calling_code"`), as core's fill does. Without it a replay refuses such a step at its
+   * inspection, as a host before version 11 does (`callingCodesGated`).
+   */
+  readonly picksCallingCodes?: true;
   /**
    * Lets a replay that sent the login cleanly and ended on a page that can't tell, such as an
    * account picker the site shows before the marker, go on signed in. A host may check the

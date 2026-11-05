@@ -242,6 +242,7 @@ export interface BoundedSignInHooks<E> {
     readonly step: AutofillStep;
     readonly inspection: AutofillInspection;
     readonly waitMs: number;
+    readonly apartFrom: readonly string[];
   }) => Effect.Effect<AutofillStepReport>;
 }
 

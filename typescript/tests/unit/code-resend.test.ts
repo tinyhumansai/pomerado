@@ -1,15 +1,17 @@
 // Failure modes covered: a code screen's resend control is refused by the step or recipe contract,
 // or a host that predates version 12 replays one; a recipe without one changes version or bytes; a
-// resend is named on a screen that takes no code, or is one of the screen's own controls; the code
-// question offers a resend without a control to press, more than twice for a screen, or the
-// answer `{ resend: true }` passes for a question that never offered it, or for any question but
-// the host's own code question; a resend's question spends a refused code's tries; the terminal
-// or an MCP caller can't ask for a resend; Guardian denies the step that names it, or lets an
-// explore press it.
+// resend is named on a screen that takes no code or takes anything else, or is one of the screen's
+// own controls; the code question offers a resend without a control to press, more than twice for
+// a screen, or the answer `{ resend: true }` passes for a question that never offered it, or for
+// any question but the host's own code question; the word resend is typed as a code where no
+// resend is offered; a resend's question spends a refused code's tries; the terminal or an MCP
+// caller can't ask for a resend; Guardian never sees the control before a press, a denial still
+// presses it, or the screen a press drew anew is filled without the checks of its first look;
+// Guardian denies the step that names it, or lets an explore press it.
 import { randomUUID } from "node:crypto";
 import { PassThrough } from "node:stream";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
-import { Data, Effect, Either, Schema } from "effect";
+import { Cause, Data, Effect, Either, Schema } from "effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CallingCodeAutofillRecipe } from "../../src/destinations/autofill-recipe.js";
 import type { AutofillStep } from "../../src/destinations/autofill-step.js";
@@ -22,6 +24,8 @@ import {
   guardianExecutionPolicy,
   nativeExecutionEnvironment,
 } from "../../src/guardian/execution-policy.js";
+import { makeInputAsker } from "../../src/inputs/callback.js";
+import { makeRunSecrets } from "../../src/inputs/secrets.js";
 import { makeTerminalAsker } from "../../src/inputs/terminal.js";
 import { SignInStep } from "../../src/mint/contracts.js";
 import { makeSignInRecorder } from "../../src/mint/sign-in-recorder.js";
@@ -37,6 +41,10 @@ import {
   boundedSignInHooks,
   type BoundedSignInHooks,
 } from "../../src/runtime/session-sign-in.js";
+import { makeCodeResend } from "../../src/runtime/code-resend.js";
+import { signInForRun } from "../../src/runtime/sign-in-replay.js";
+import { localSignInLogin } from "../../src/standalone/authentication.js";
+import { makeMcpJobs, mcpFailureMessage } from "../../src/standalone/mcp-jobs.js";
 import { makePomeradoMcp } from "../../src/standalone/mcp-server.js";
 
 const site = "https://phone.example.test";
@@ -72,6 +80,24 @@ describe("the code question's resend", () => {
     expect(text.questions[0]).not.toHaveProperty("allowResend");
     expect(Either.isLeft(validateAnswer(text, { code: { resend: true } }))).toBe(true);
     expect(Either.isLeft(validateAnswer(request({ ...codeQuestion, allowResend: true }), { code: { resend: false } }))).toBe(true);
+  });
+
+  it("refuses the word resend as a code where no resend is offered, and takes it as the request where one is", () => {
+    for (const word of ["resend", " Resend "]) {
+      const answered = validateAnswer(request(codeQuestion), { code: word });
+      expect(Either.isLeft(answered) && answered.left).toMatchObject({
+        reason: "resend_not_offered",
+        questionId: "code",
+      });
+      expect(validateAnswer(request({ ...codeQuestion, allowResend: true }), { code: word })).toEqual(
+        Either.right({ code: { type: "resend", value: { resend: true } } }),
+      );
+    }
+    // Any other secret takes the word as typed.
+    const other = request({ ...codeQuestion, secretKind: "private_text" });
+    expect(validateAnswer(other, { code: "resend" })).toEqual(
+      Either.right({ code: { type: "secret", value: "resend" } }),
+    );
   });
 
   it.each([
@@ -198,15 +224,19 @@ describe("the terminal", () => {
     vi.restoreAllMocks();
   });
 
-  /** Answers one code question by typing `typed` once its prompt shows; keeps what was shown. */
-  const typed = async (typedText: string, allowResend: boolean) => {
+  /** Answers one code question by typing each of `lines` at each prompt in turn; keeps what was shown. */
+  const typed = async (lines: string | readonly string[], allowResend: boolean) => {
     const input = Object.assign(new PassThrough(), { isTTY: true, isRaw: false, setRawMode: () => input });
     Object.defineProperty(process, "stdin", { value: input, configurable: true });
     const shown: string[] = [];
+    const queue = typeof lines === "string" ? [lines] : [...lines];
     vi.spyOn(process.stderr, "write").mockImplementation((chunk: string | Uint8Array) => {
       const text = String(chunk);
       shown.push(text);
-      if (text === "> ") setImmediate(() => input.write(`${typedText}\r`));
+      if (text === "> ") {
+        const next = queue.shift() ?? "";
+        setImmediate(() => input.write(`${next}\r`));
+      }
       return true;
     });
     const answered = await Effect.runPromise(
@@ -225,10 +255,11 @@ describe("the terminal", () => {
     expect(shown.join("")).toContain("Type resend to have the site send a new code.");
   });
 
-  it("takes resend typed at a question that offers none as what was typed", async () => {
-    const { answer, shown } = await typed("resend", false);
-    expect(answer).toEqual({ type: "secret", value: "resend" });
+  it("says no new code can be asked for when resend is typed at a question that offers none, and asks again", async () => {
+    const { answer, shown } = await typed(["resend", "424242"], false);
+    expect(answer).toEqual({ type: "secret", value: "424242" });
     expect(shown.join("")).not.toContain("Type resend");
+    expect(shown.join("")).toContain("No new code can be asked for here. Type the code the site sent.");
   });
 });
 
@@ -254,6 +285,31 @@ it("tells an MCP caller how to ask for a new code", async () => {
   expect(description).toContain('A secret with allowResend may be {"resend": true} instead of a code');
 });
 
+it("tells an MCP caller a code question offers no new code, and keeps the question pending", async () => {
+  const outcome = await Effect.runPromise(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const jobs = yield* makeMcpJobs(1, "run");
+        const started = yield* jobs.start((ask) => ask(request(codeQuestion)));
+        let view = yield* jobs.get(started.job_id, 200);
+        for (let attempt = 0; attempt < 20 && view.status !== "input_required"; attempt++)
+          view = yield* jobs.get(started.job_id, 200);
+        const requestId = "pending_input" in view ? (view.pending_input?.id ?? "") : "";
+        const refused = yield* Effect.flip(jobs.provide(started.job_id, requestId, { code: "resend" }));
+        const still = yield* jobs.get(started.job_id);
+        yield* jobs.provide(started.job_id, requestId, { code: "424242" });
+        let done = yield* jobs.get(started.job_id, 200);
+        for (let attempt = 0; attempt < 20 && done.status === "running"; attempt++)
+          done = yield* jobs.get(started.job_id, 200);
+        return { message: mcpFailureMessage(Cause.fail(refused), "run"), still: still.status, done };
+      }),
+    ),
+  );
+  expect(outcome.message).toBe("This code question offers no new code: answer with the code the site sent.");
+  expect(outcome.still).toBe("input_required");
+  expect(outcome.done).toMatchObject({ status: "completed", output: { code: { type: "secret", value: "424242" } } });
+});
+
 describe("a code screen's recorded resend", () => {
   const codeStep = { selector: "#code", slot: "code" } as const;
   const decode = (step: object) => Schema.decodeUnknownEither(SignInStep)(step);
@@ -272,6 +328,24 @@ describe("a code screen's recorded resend", () => {
   const phoneStep = { page: `${site}/login`, fields: [{ selector: "#phone", accepts: ["phone"] }], submit: "#send" };
   const recorded = { page: `${site}/verify`, fields: [codeStep], submit: "#verify", resend: "#resend" };
   const recipe = { version: 12, steps: [phoneStep, recorded], signedIn: { selector: "#account" } };
+
+  it("is refused on a step that takes anything besides codes, so a press never sends a typed value", () => {
+    const mixed = { fields: [{ selector: "#password", slot: "password" }, codeStep], submit: "#verify", resend: "#resend" };
+    expect(Either.isLeft(decode(mixed))).toBe(true);
+    expect(
+      decodeSignInRecipe(
+        JSON.stringify({ ...recipe, steps: [phoneStep, { ...recorded, fields: [{ selector: "#password", slot: "password" }, codeStep] }] }),
+      ),
+    ).toBe("invalid");
+    const pressing = {
+      inspect: () => Effect.dieMessage("Unexpected inspect"),
+      resend: () => Effect.dieMessage("Unexpected press"),
+    };
+    const offered = (step: AutofillStep) =>
+      makeCodeResend({ hooks: pressing, step, presses: new Map(), waitMs: 0, pollMs: 0, emit: () => Effect.void });
+    expect(offered(mixed as AutofillStep)).toBeUndefined();
+    expect(offered({ fields: [codeStep], submit: "#verify", resend: "#resend" })).toBeDefined();
+  });
 
   it("reads a version 12 recipe and writes it back byte for byte", () => {
     const text = JSON.stringify(recipe, null, 2);
@@ -316,7 +390,11 @@ describe("a code screen's recorded resend", () => {
 });
 
 describe("a press under a sign-in's bound", () => {
-  const code = { step: { fields: [{ selector: "#code", slot: "code" as const }], submit: "#resend" }, inspection: {} as never };
+  const code = {
+    step: { fields: [{ selector: "#code", slot: "code" as const }], submit: "#resend" },
+    inspection: {} as never,
+    apartFrom: ["#verify"],
+  };
   const hooks = () => {
     const waits: number[] = [];
     const browser: BoundedSignInHooks<Error> = {
@@ -364,33 +442,69 @@ describe("a press under a sign-in's bound", () => {
 describe("a build's code screen with a resend control", () => {
   const origin = "https://www.example.test";
   const target = { ownerUrl: `${origin}/code`, documentOrigin: origin, actions: [`${origin}/code`], methods: ["post"], submitMethod: "post", editable: true, control: "text" } as const;
-  const inspect = (step: AutofillStep) =>
+  /** A control as Guardian reads it, by its text alone. */
+  const described = (text: string) => ({
+    tag: "button",
+    role: null,
+    formMethod: null,
+    type: null,
+    name: null,
+    id: null,
+    autocomplete: null,
+    inputmode: null,
+    label: null,
+    placeholder: null,
+    ariaLabel: null,
+    text,
+  });
+  /** The screen as found; once pressed, as `afterPress` says, a resend may draw it anew. */
+  const inspect = (step: AutofillStep, pressedOnce: boolean, afterPress?: { readonly boxes: number }) =>
     Effect.sync(() => ({
       url: `${origin}/code`,
       page: `${origin}/code`,
       targets: { fields: step.fields.map(() => target), submit: target },
       siteOrigin: origin,
       authenticationOrigins: [],
-      screen: { origin, fields: [], submit: null, buttons: [] },
+      screen: {
+        origin,
+        fields:
+          pressedOnce && afterPress !== undefined && step.submit === "#verify"
+            ? step.fields.map(() => ({
+                ...described(""),
+                tag: "input",
+                slot: "code" as const,
+                codeBox: { box: 1, of: afterPress.boxes },
+              }))
+            : [],
+        submit: step.submit === undefined ? null : described(step.submit === "#resend" ? "Resend code" : "Verify"),
+        buttons: [],
+      },
     }));
-  const build = (answers: readonly string[]) => {
+  const build = (
+    answers: readonly string[],
+    options: {
+      readonly review?: (step: AutofillStep, seen: unknown, resendControl?: unknown) => Effect.Effect<void, Error>;
+      readonly afterPress?: { readonly boxes: number };
+    } = {},
+  ) => {
     const asked: Request[] = [];
     const queue = [...answers];
     const pressed: string[] = [];
     const inspected: AutofillStep[] = [];
+    const filled: (string | undefined)[] = [];
     const recorder = makeSignInRecorder({
       browser: {
         inspect: (step) => {
           inspected.push(step);
-          return inspect(step);
+          return inspect(step, pressed.length > 0, options.afterPress);
         },
         fill: ({ step }) =>
-          Effect.succeed({
+          Effect.sync(() => filled.push(step.submit)).pipe(Effect.as({
             outcome: "filled" as const,
             fields: step.fields.map((field) => ({ slot: field.slot, status: "filled" as const })),
             submit: "clicked" as const,
             url: `${origin}/next`,
-          }),
+          })),
         resend: ({ step }) =>
           Effect.sync(() => {
             pressed.push(step.submit ?? "");
@@ -418,11 +532,11 @@ describe("a build's code screen with a resend control", () => {
           };
         }),
       secrets: { register: () => {}, assertAbsent: () => Effect.void },
-      review: () => Effect.void,
+      review: options.review ?? (() => Effect.void),
       site: "example.test",
       signedOutPages: () => [],
     });
-    return { recorder, asked, pressed, inspected };
+    return { recorder, asked, pressed, inspected, filled };
   };
   const step = {
     fields: [{ selector: "#code", slot: "code" }],
@@ -453,6 +567,63 @@ describe("a build's code screen with a resend control", () => {
     });
   });
 
+  const identifier: SignInStep = { fields: [{ selector: "#user", accepts: ["username"] }], submit: "#next" };
+
+  it("has Guardian judge the resend control as it shows before the press, then the screen again", async () => {
+    const reviewed: unknown[] = [];
+    const { recorder, pressed } = build(["resend", "424242"], {
+      review: (step, _seen, resendControl) =>
+        Effect.sync(() => {
+          reviewed.push([step.submit, resendControl ?? null]);
+        }),
+    });
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* recorder.step(identifier, `${origin}/login`, Effect.void);
+        yield* recorder.step(step, undefined, Effect.void);
+      }),
+    );
+    expect(pressed).toEqual(["#resend"]);
+    expect(reviewed).toEqual([
+      ["#next", null],
+      ["#verify", null],
+      ["#verify", described("Resend code")],
+      ["#verify", null],
+    ]);
+  });
+
+  it("presses nothing when Guardian denies the resend control, and the build fails with the denial", async () => {
+    const denied = new Error("Guardian denied the resend control");
+    const { recorder, pressed, filled, asked } = build(["resend", "424242"], {
+      review: (_step, _seen, resendControl) => (resendControl === undefined ? Effect.void : Effect.fail(denied)),
+    });
+    const result = await Effect.runPromise(
+      Effect.either(
+        Effect.gen(function* () {
+          yield* recorder.step(identifier, `${origin}/login`, Effect.void);
+          yield* recorder.step(step, undefined, Effect.void);
+        }),
+      ),
+    );
+    expect(result).toEqual(Either.left(denied));
+    expect(pressed).toEqual([]);
+    expect(filled).toEqual(["#next"]);
+    expect(asked).toHaveLength(1);
+  });
+
+  it("refuses a screen a resend drew anew with its code split across boxes the step doesn't name", async () => {
+    const { recorder, pressed, filled } = build(["resend", "424242"], { afterPress: { boxes: 6 } });
+    const answered = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* recorder.step(identifier, `${origin}/login`, Effect.void);
+        return yield* recorder.step(step, undefined, Effect.void);
+      }),
+    );
+    expect(pressed).toEqual(["#resend"]);
+    expect(answered.report).toMatchObject({ outcome: "refused", reason: "code_boxes_incomplete" });
+    expect(filled).toEqual(["#next"]);
+  });
+
   it("refuses a resend selector that holds the mask, as every recorded selector", async () => {
     const { recorder, inspected } = build([]);
     const answer = await Effect.runPromise(
@@ -466,7 +637,94 @@ describe("a build's code screen with a resend control", () => {
 it("has Guardian allow a code step's own resend control, and deny an explore that presses one", () => {
   const policy = guardianExecutionPolicy(nativeExecutionEnvironment);
   expect(policy).toContain(
-    "A code step's resend names the screen's own control that asks the site to send a new code, such as Resend code or Send again: allow it when it is that control, since the host presses it only when the owner answers the code question by asking for a new code, never by itself, once the site enables it; deny a resend that signs in, submits the code or takes any other action.",
+    "A code step's resend names the screen's own control that asks the site to send a new code, such as Resend code or Send again, and a review's resendControl, when it has one, describes that control as the screen shows it, just before the host presses it: allow it when it is that control, since the host presses it only when the owner answers the code question by asking for a new code, never by itself, once the site enables it; deny a resend that signs in, submits the code or takes any other action.",
   );
   expect(policy).toContain("clicks its submit, Next, Continue, send-code or resend control");
+});
+
+describe("a run's code screen after a press", () => {
+  const login = `${site}/login`;
+  const recipe = {
+    version: 12,
+    steps: [
+      { page: login, fields: [{ selector: "#phone", accepts: ["phone"] }], submit: "#send" },
+      { page: `${site}/verify`, fields: [{ selector: "#code", slot: "code" }], submit: "#verify", resend: "#resend" },
+    ],
+    signedIn: { selector: "#account" },
+  } as const;
+
+  it("fills nothing on a screen the press moved to another origin", async () => {
+    const pressed: string[] = [];
+    const filled: (string | undefined)[] = [];
+    const answers = ["resend", "424242"];
+    const ask = makeInputAsker((asked) =>
+      Effect.sync(() => {
+        const question = asked.questions[0];
+        if (question?.type === "credential")
+          return { login: { identifierKind: "phone", username: "+15555550123", saveLogin: false } };
+        const answer = answers.shift() ?? "424242";
+        return { code: answer === "resend" ? { resend: true } : answer };
+      }),
+    );
+    const at = (step: AutofillStep) =>
+      step.submit === "#send" ? login : pressed.length > 0 && step.submit === "#verify" ? "https://other.example.test/verify" : `${site}/verify`;
+    const secrets = makeRunSecrets();
+    const failed = await Effect.runPromise(
+      Effect.flip(
+        signInForRun({
+          recipe: recipe as never,
+          entryUrl: login,
+          browser: {
+            inspect: (step) =>
+              Effect.sync(() => {
+                const page = at(step);
+                const origin = new URL(page).origin;
+                const target = { ownerUrl: page, documentOrigin: origin, actions: [page], methods: ["post"], submitMethod: "post", editable: true, control: "text" } as const;
+                return {
+                  url: page,
+                  page,
+                  targets: { fields: step.fields.map(() => target), submit: target },
+                  siteOrigin: site,
+                  authenticationOrigins: [],
+                  screen: { origin, fields: [], submit: null, buttons: [] },
+                };
+              }),
+            fill: ({ step }) =>
+              Effect.sync(() => {
+                filled.push(step.submit);
+                return {
+                  outcome: "filled" as const,
+                  fields: step.fields.map((field) => ({ slot: field.slot, status: "filled" as const })),
+                  submit: "clicked" as const,
+                  url: `${site}/verify`,
+                };
+              }),
+            resend: ({ step }) =>
+              Effect.sync(() => {
+                pressed.push(step.submit ?? "");
+                return { outcome: "filled" as const, fields: [], submit: "clicked" as const, url: `${site}/verify` };
+              }),
+            confirm: () => Effect.succeed({ signedIn: false as const, failed: "indicator_not_visible" as const }),
+            authenticationOrigins: [],
+            open: () => Effect.void,
+            markerVisible: () => Effect.succeed(false),
+          },
+          login: localSignInLogin({
+            ask,
+            register: secrets.register,
+            siteOrigin: site,
+            passwordless: { identifierKinds: ["phone"], password: false },
+          }),
+          ask,
+          secrets,
+          site: "phone.example.test",
+          siteOrigin: site,
+          timing: { stepWaitMs: 200, pollMs: 50 },
+        }),
+      ),
+    );
+    expect(pressed).toEqual(["#resend"]);
+    expect(filled).toEqual(["#send"]);
+    expect(failed).toMatchObject({ reason: "screen_changed" });
+  });
 });

@@ -255,6 +255,11 @@ export const typedValues = (
 export interface CodeResend {
   readonly left: () => number;
   readonly press: Effect.Effect<boolean>;
+  /**
+   * Set once a press was stopped before it went out by a check of the control that failed, such
+   * as a build's review of it, with that failure: the code question then ends unanswered with it.
+   */
+  readonly stopped?: () => { readonly cause: unknown } | undefined;
 }
 
 /** What the host holds of a login for one step's values. */

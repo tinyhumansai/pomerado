@@ -160,6 +160,8 @@ export const makeSignInBrowser = (options: {
   return {
     inspect: calls.inspect,
     fill: calls.fill,
+    // Core's fill picks a calling code in the screen's own picker.
+    picksCallingCodes: true,
     // It types nothing, so the session's record of typing stays as it is.
     resubmit: (input) => resubmitAutofillStep({ ...input, page }),
     // Neither does a code screen's resend, which empties the code fields before its press.

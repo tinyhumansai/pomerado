@@ -61,11 +61,21 @@ const fill = async (executor: PlaywrightExecutor, held: string) => {
   return { report, posted };
 };
 
-/** Follows a phone box that holds the number, and refuses one that holds another. */
+/**
+ * Follows a phone box that holds the number, and refuses one that holds another, or its national
+ * digits alone with no picker beside it to say the country.
+ */
 export const expectPhoneSwapThroughWorker = async (executor: PlaywrightExecutor) => {
-  const same = await fill(executor, "national");
+  const same = await fill(executor, '"+91" + national');
   expect(same.report).toMatchObject({ outcome: "filled", submit: "clicked" });
-  expect(same.posted).toEqual(["phone=9876543210"]);
+  expect(same.posted).toEqual(["phone=%2B919876543210"]);
+  const national = await fill(executor, "national");
+  expect(national.report).toMatchObject({
+    outcome: "filled",
+    submit: "refused",
+    failureDetail: { phase: "not_found", context: { phoneSwap: "calling_code" } },
+  });
+  expect(national.posted).toEqual([]);
   const other = await fill(executor, '"9999988888"');
   expect(other.report).toMatchObject({
     outcome: "filled",

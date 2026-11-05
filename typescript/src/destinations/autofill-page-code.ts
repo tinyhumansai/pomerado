@@ -8,7 +8,7 @@ import { hostOnSiteSource } from "../runtime/same-site.js";
 import { submissionGuardCode } from "./autofill-submission-guard.js";
 import { holdsFocusCode } from "./field-focus-code.js";
 import { phoneReadBackMs } from "./credential-keyboard.js";
-import { namesCallingCode, shownCallingCodes } from "./login-field-formats.js";
+import { namesCallingCode, shownCallingCodes, withoutCallingCodes } from "./login-field-formats.js";
 import { pageControlsCode } from "./page-controls.js";
 
 /**
@@ -278,6 +278,15 @@ export type AutofillFillCall =
        * click is `blocked`, so a covering notice is dismissed first.
        */
       readonly pressCovered?: true;
+      /**
+       * A code screen's resend press (`resendAutofillCode`), whose submit is its resend control:
+       * before the click every field of the step holds nothing (lengths only); the control is
+       * none of them, and none of the elements `apartFrom` names in its frame, the screen's own
+       * submit, methods and dismiss; and its document holds no password in any form, as one an
+       * earlier screen typed may still be (`resendRefused`). So nothing typed goes out with the
+       * press, and it presses no other control of the screen.
+       */
+      readonly resend?: { readonly apartFrom: readonly string[] };
     };
 
 /** How long the read of the page's alerts before a submit's click may hold the click back. */
@@ -710,19 +719,35 @@ return { dismiss: "clicked", ...(emptied ? { emptied } : {}), url: primary.url()
  * Page code: `chooseCallingCode` picks a calling code (its digits) in a picker with the authoring
  * library's own chooser, a native select's or a custom dropdown's (`formControlsCode`): the one
  * option whose label names it with its `+` (`namesCallingCode`), or whose value is it with its
- * `+`. Options that share a label and a value are one, as a list that repeats a country among its
- * favourites does. None, several or a disabled one throws, having picked nothing; a picker that is
- * neither throws `control_unsupported`. A moment after the choice, as long as the host gives a
- * phone's read-back (`phoneReadBackMs`), the picker must still show it: a select's chosen option,
- * else the control's own words, `aria-label` or `title`, names the code, or holds the chosen
- * option's words or some of them, as a control that shows only the country does. Otherwise it
- * throws `not_committed`, as a page that puts its picker back does.
+ * `+`. An option whose label or value shows another code is none, whichever names this one, since
+ * the site may post the other. Options that share a label and a value are one, as a list that
+ * repeats a country among its favourites does. None, several or a disabled one throws, having
+ * picked nothing; a picker that is neither throws `control_unsupported`. A moment after the
+ * choice, as long as the host gives a phone's read-back (`phoneReadBackMs`), the picker must still
+ * hold it: a select's chosen option is that option, by its label and value. Any other control is
+ * judged by its own words whenever it has any, and by its `aria-label` or `title` only when it has
+ * none, as one that shows a flag alone: they name the code, or say just the chosen option's words
+ * with any code left out, as a control that shows only the country does. A country whose name only
+ * holds the chosen one's or sits inside it, as South Sudan and Sudan do, is not that choice, and
+ * its words, `aria-label` or `title` naming another code, or saying another option of the list,
+ * refuse it, so a stale `title` never stands for the choice. Otherwise it throws `not_committed`,
+ * as a page that puts its picker back does.
  */
 const callingCodeChoiceCode = String.raw`const shownCallingCodes = ${String(shownCallingCodes)};
 const namesCallingCode = ${String(namesCallingCode)};
+const withoutCallingCodes = ${String(withoutCallingCodes)};
+const otherCallingCode = (text, code) => shownCallingCodes(text).some((shown) => shown !== code);
+// The options the pick chose among, as the list last showed them.
+let callingCodeOptions = [];
 const callingCodePick = (options, wanted) => {
+  callingCodeOptions = options;
   const code = wanted[0].slice(1);
-  const named = options.filter((option) => namesCallingCode(option.label, code) || option.value === wanted[0]);
+  const named = options.filter(
+    (option) =>
+      !otherCallingCode(option.label, code) &&
+      !otherCallingCode(option.value, code) &&
+      (namesCallingCode(option.label, code) || option.value === wanted[0]),
+  );
   const distinct = named.filter(
     (option, at) => named.findIndex((other) => other.label === option.label && other.value === option.value) === at,
   );
@@ -741,77 +766,183 @@ const chooseCallingCode = async (control, code) => {
   const shown = await control.evaluate((element) => {
     if (element instanceof HTMLSelectElement) {
       const option = element.selectedOptions[0];
-      return option === undefined ? [] : [option.label || option.textContent || "", option.value];
+      return { option: option === undefined ? null : [(option.label || option.textContent || "").trim(), option.value] };
     }
     const own = element instanceof HTMLInputElement ? element.value : element.textContent;
-    return [own ?? "", element.getAttribute("aria-label") ?? "", element.getAttribute("title") ?? ""];
+    return { texts: [own ?? "", element.getAttribute("aria-label") ?? "", element.getAttribute("title") ?? ""] };
   }, undefined, { timeout: ${elementReadMs} });
-  const words = (text) => " " + formControlText(text).split(/[^\p{L}\p{N}]+/u).filter(Boolean).join(" ") + " ";
-  const label = words(chosen.label);
-  const holdsChoice = (text) => {
-    const said = words(text);
-    return said.trim() !== "" && (said.includes(label) || label.includes(said));
-  };
-  if (!shown.some((text) => namesCallingCode(text, code) || holdsChoice(text)))
+  if ("option" in shown) {
+    if (shown.option === null || shown.option[0] !== chosen.label || shown.option[1] !== chosen.value)
+      throw formControlFailure("not_committed");
+    return;
+  }
+  // A text's words with every calling code it shows left out, as one string.
+  const bare = (text) =>
+    formControlText(withoutCallingCodes(text))
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter(Boolean)
+      .join(" ");
+  const label = bare(chosen.label);
+  const others = new Set(
+    callingCodeOptions.map((option) => bare(option.label)).filter((words) => words !== "" && words !== label),
+  );
+  const saysOther = (text) => otherCallingCode(text, code) || others.has(bare(text));
+  const saysChoice = (text) => namesCallingCode(text, code) || (label !== "" && bare(text) === label);
+  const [own, ariaLabel, title] = shown.texts;
+  const ownWords = bare(own) !== "" || shownCallingCodes(own).length > 0;
+  if (shown.texts.some(saysOther) || !(ownWords ? [own] : [ariaLabel, title]).some(saysChoice))
     throw formControlFailure("not_committed");
 };
 `;
 
 /**
- * Page code, on a phone box: what any calling-code picker beside it shows, against `code`, the
- * number's own calling code, or null. The pickers it reads are the visible selects and dropdowns
- * in the box's form, or, for a box in no form, in the nearest of its next four ancestors that
- * holds one, never the box itself. A control whose chosen option, words, `aria-label` or `title`
- * name a calling code (`shownCallingCodes`, or a value that is one) is a picker: `matches` when it
- * names `code`, else `other`. One that names none but whose name, id, `aria-label`,
- * `autocomplete` or `title` says country, dial or calling code, is `unreadable`, since it may be
- * set to another country. Any other control is no picker: with none, `none`. A control's own list
- * of options, when it sits inside it, says nothing of its choice.
+ * Page code, on a phone box: what the calling-code pickers around it show, against `code`, the
+ * number's own calling code, or null. It reads the visible selects, buttons, text boxes,
+ * dropdowns and focusable elements of the box's whole document, open shadow roots included, never
+ * the box, what holds it, or a list's own options. A control's codes are those its chosen option,
+ * words, `aria-label` or `title` name (`shownCallingCodes`), or a text box's that holds a calling
+ * code alone. Near the box means in its form, or for a box in no form in the nearest of its next
+ * four ancestors that holds a control. Any control near it, and anywhere in the document one that
+ * looks like a calling-code picker (a select, a combobox or popup, or one whose name, id,
+ * `aria-label`, `autocomplete` or `title` says country, region, dial or calling code), that names
+ * another code than `code` is `other`; a plain button or text far from the box, such as a support
+ * number, is none. Else a control near it that names `code` is `matches`, and one near it that
+ * names no code but says country so is `unreadable`, since it may be set to another country.
+ * Otherwise `none`. It returns that word alone, never what a control holds.
  */
 const pickerBesideCode = `(element, code) => {
   const shownCallingCodes = ${String(shownCallingCodes)};
   const shows = (control) =>
     control.getClientRects().length > 0 && getComputedStyle(control).visibility !== "hidden";
-  const selector = 'select, [role="combobox"], [aria-haspopup="listbox"], [aria-haspopup="true"], [aria-haspopup="menu"]';
-  const within = (root) =>
-    Array.from(root.querySelectorAll(selector)).filter(
-      (control) => control !== element && !control.contains(element) && !element.contains(control) && shows(control),
+  const kinds = 'select, button, input, [role="combobox"], [role="button"], [aria-haspopup]:not([aria-haspopup="false"]), [tabindex]';
+  const boxTypes = ["", "text", "tel", "search", "button"];
+  const candidate = (control) =>
+    control !== element &&
+    !control.contains(element) &&
+    !element.contains(control) &&
+    control.matches(kinds) &&
+    (!(control instanceof HTMLInputElement) || boxTypes.includes((control.getAttribute("type") ?? "").toLowerCase())) &&
+    control.closest('[role="listbox"], [role="menu"], datalist') === null &&
+    shows(control);
+  // Each control under root, into every open shadow root, over a bounded number of nodes.
+  const within = (root) => {
+    const found = [];
+    const roots = [root];
+    let nodes = 0;
+    while (roots.length > 0 && nodes < 20000)
+      for (const node of roots.pop().querySelectorAll("*")) {
+        if (++nodes > 20000) break;
+        if (candidate(node)) found.push(node);
+        if (node.shadowRoot) roots.push(node.shadowRoot);
+      }
+    return found;
+  };
+  const named = (control) =>
+    /country|region|dial|calling|tel-country-code/i.test(
+      ["name", "id", "aria-label", "autocomplete", "title"].map((attribute) => control.getAttribute(attribute) ?? "").join(" "),
     );
+  const pickerLike = (control) =>
+    control instanceof HTMLSelectElement ||
+    control.matches('[role="combobox"], [aria-haspopup]:not([aria-haspopup="false"])') ||
+    named(control);
+  const codes = (control) => {
+    if (control instanceof HTMLSelectElement) {
+      const option = control.selectedOptions[0];
+      return option === undefined ? [] : [option.label || option.textContent || "", option.value].flatMap(shownCallingCodes);
+    }
+    // A text box counts only when it holds a calling code alone, as one that takes the code does.
+    if (control instanceof HTMLInputElement && control.type !== "button")
+      return /^\\s*\\+\\d{1,4}\\s*$/.test(control.value) ? shownCallingCodes(control.value) : [];
+    // Its own words, never those of a list or select it holds.
+    const own = control.cloneNode(true);
+    for (const list of own.querySelectorAll('select, option, datalist, [role="listbox"], [role="option"]')) list.remove();
+    return [
+      control instanceof HTMLInputElement ? control.value : (own.textContent ?? ""),
+      control.getAttribute("aria-label") ?? "",
+      control.getAttribute("title") ?? "",
+    ].flatMap(shownCallingCodes);
+  };
   let near = [];
   const form = "form" in element && element.form instanceof HTMLFormElement ? element.form : element.closest("form");
   if (form !== null) near = within(form);
   else
     for (let up = element.parentElement, level = 0; up !== null && level < 4 && near.length === 0; up = up.parentElement, level++)
       near = within(up);
-  const words = (control) => {
-    if (control instanceof HTMLSelectElement) {
-      const option = control.selectedOptions[0];
-      return option === undefined ? [] : [option.label || option.textContent || "", option.value];
-    }
-    const own = control.cloneNode(true);
-    for (const list of own.querySelectorAll('[role="listbox"]')) list.remove();
-    return [
-      control instanceof HTMLInputElement ? control.value : (own.textContent ?? ""),
-      control.getAttribute("aria-label") ?? "",
-      control.getAttribute("title") ?? "",
-    ];
-  };
-  let matched = false;
-  let unreadable = false;
-  for (const control of near) {
-    const codes = words(control).flatMap(shownCallingCodes);
-    if (codes.length > 0) {
-      if (code === null || !codes.includes(code)) return "other";
-      matched = true;
-      continue;
-    }
-    const named = ["name", "id", "aria-label", "autocomplete", "title"]
-      .map((attribute) => control.getAttribute(attribute) ?? "")
-      .join(" ");
-    if (/country|dial|calling|tel-country-code/i.test(named)) unreadable = true;
+  const nearBox = new Set(near);
+  for (const control of within(element.ownerDocument)) {
+    if (!nearBox.has(control) && !pickerLike(control)) continue;
+    const shown = codes(control);
+    if (shown.length > 0 && (code === null || shown.some((each) => each !== code))) return "other";
   }
-  return unreadable ? "unreadable" : matched ? "matches" : "none";
+  let matched = false;
+  for (const control of near) {
+    const shown = codes(control);
+    if (shown.length === 0) {
+      if (named(control)) return "unreadable";
+    } else if (code === null || shown.some((each) => each !== code)) return "other";
+    else matched = true;
+  }
+  return matched ? "matches" : "none";
 }`;
+
+/**
+ * Page code for a resend press's submit call, before its click (`AutofillFillCall`'s `resend`): a
+ * field that still holds something fails the check, with its index; a control that is one of the
+ * step's fields or of the elements `apartFrom` names in its frame refuses as `same_control`, and
+ * one whose document holds a password anywhere, by its type or its autocomplete, as
+ * `password_held`. Lengths only, never a value; a read that fails refuses.
+ */
+const resendChecksCode = (apartFrom: readonly string[]) => `for (const [index, field] of fields.entries()) {
+  const empty = await field.locator
+    .evaluate((element) => typeof element.value === "string" && element.value.length === 0, undefined, { timeout: ${elementReadMs} })
+    .catch(() => false);
+  if (!empty) return { checked: false, field: index, url: primary.url() };
+}
+const resendControl = await submit.locator.elementHandle({ timeout: 5000 });
+const resendFrame = await resendControl.ownerFrame();
+for (const { locator } of fields) {
+  const handle = await locator.elementHandle({ timeout: 5000 });
+  if ((await handle.ownerFrame()) !== resendFrame) continue;
+  if (await resendControl.evaluate((element, other) => element === other, handle).catch(() => true))
+    return { resendRefused: "same_control", url: primary.url() };
+}
+for (const selector of ${JSON.stringify(apartFrom)}) {
+  const same = await resendFrame
+    .locator(selector)
+    .evaluateAll((elements, control) => elements.includes(control), resendControl)
+    .catch(() => true);
+  if (same) return { resendRefused: "same_control", url: primary.url() };
+}
+// Any password the control's document holds, in any form or none, open shadow roots included, as
+// its own script may post any of them: by its type, or by its autocomplete once the site's own
+// toggle shows it as text. A document too large to read through refuses.
+const passwordHeld = await resendControl
+  .evaluate((element) => {
+    const password = (input) =>
+      input.type === "password" ||
+      (input.getAttribute("autocomplete") ?? "")
+        .toLowerCase()
+        .split(/\\s+/)
+        .some((token) => token === "current-password" || token === "new-password");
+    const roots = [element.ownerDocument];
+    let nodes = 0;
+    while (roots.length > 0) {
+      for (const node of roots.pop().querySelectorAll("*")) {
+        if (++nodes > 20000) return true;
+        if (node instanceof HTMLInputElement && node.value.length > 0 && password(node)) return true;
+        if (node.shadowRoot) roots.push(node.shadowRoot);
+      }
+    }
+    return false;
+  })
+  .catch(() => true);
+if (passwordHeld) return { resendRefused: "password_held", url: primary.url() };`;
+
+/** A resend press's submit call that refused its control before the click (`resendChecksCode`). */
+export const ResendRefusedAnswer = Schema.Struct({
+  resendRefused: Schema.Literal("same_control", "password_held"),
+  url: Schema.String,
+});
 
 /** What a calling-code call answers when it threw: a reason `chooseCallingCode` gives, else `failed`. */
 const callingCodeFailures = [
@@ -940,6 +1071,7 @@ try {
   return `${call.look === true ? "return { submit: \"none\", url: primary.url() };\n" : ""}if (submit === null) return { submit: "none", url: primary.url() };
 // Disabled as Playwright's own click judges it, read where page code cannot redefine the answer.
 if (await submit.locator.isDisabled({ timeout: 5000 })) return { submit: "disabled", url: primary.url() };
+${call.resend === undefined ? "" : resendChecksCode(call.resend.apartFrom)}
 const guardKey = ${JSON.stringify(call.guardKey)};
 const guardCall = ${JSON.stringify(call.guardCall)};
 const secretMatch = ${JSON.stringify(call.secretMatch)};

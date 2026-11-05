@@ -15,7 +15,10 @@ import { expectOriginsOnly, hostKeyboard, hostPage } from "./autofill-host-page.
 // it with a phone box holding the value, often beside a calling-code picker. The host typed the
 // value into the box it bound, in one atomic insertion, and that box is gone. It judges the
 // replacement as a fresh screen, reads it back, and clicks the screen's submit, typing nothing
-// again. Anything else stays the refusal of a field gone from the page.
+// again. A box that holds the national digits alone, which say no country, needs a picker near it
+// that shows the number's own calling code; no control near it, nor a picker anywhere in the
+// document, may show another, while a support number far from it counts for nothing. Anything
+// else stays the refusal of a field gone from the page.
 
 const site = "https://login.example.test";
 const other = "https://other.example.test";
@@ -124,10 +127,10 @@ const clicked = {
 test("clicks the submit of a phone box that took the identifier box's place, holding the number", async ({
   page,
 }) => {
-  const received = await serve(page, screen(phoneBox("national")));
+  const received = await serve(page, screen(phoneBox('"+91" + national')));
   const { report, typed } = await fill(page);
   expect(report).toMatchObject(clicked);
-  expect(received).toEqual([{ phone: "9876543210" }]);
+  expect(received).toEqual([{ phone: "+919876543210" }]);
   expect(typed).toEqual([number]);
 });
 
@@ -172,13 +175,127 @@ test("refuses a phone box beside a calling-code picker that shows another callin
   await expect(page.locator("#phone")).toHaveValue("9876543210");
 });
 
-test("refuses a phone box beside a picker that shows no calling code", async ({ page }) => {
+/** A swap's refusal for a calling code it can't trust beside the box: nothing clicked or typed again. */
+const refusedForCallingCode = async (
+  page: Page,
+  received: readonly object[],
+  result: Awaited<ReturnType<typeof fill>>,
+) => {
+  await refusedAsToday(page, received, result);
+  expect(result.report).toMatchObject({ failureDetail: { context: { phoneSwap: "calling_code" } } });
+};
+
+for (const [name, picker] of [
+  [
+    "whose id says country",
+    '<label>Country <select id="country" name="country"><option value="us">United States</option><option value="in" selected>India</option></select></label>',
+  ],
+  [
+    "whose name and id say nothing of a country",
+    '<label>Region <select id="r" name="region"><option value="US" selected>United States</option><option value="IN">India</option></select></label>',
+  ],
+] as const)
+  test(`refuses a phone box beside a picker that shows no calling code, ${name}`, async ({ page }) => {
+    const received = await serve(
+      page,
+      screen(`box.innerHTML = ${JSON.stringify(`${picker}<label>Mobile number <input id="phone" name="phone" type="tel"></label>`)};
+document.getElementById("phone").value = national;`),
+    );
+    await refusedForCallingCode(page, received, await fill(page));
+  });
+
+test("refuses a phone box that holds the national number alone, with no picker beside it", async ({
+  page,
+}) => {
+  // The site would get the national digits with no country: another country's number, maybe.
+  const received = await serve(page, screen(phoneBox("national")));
+  await refusedForCallingCode(page, received, await fill(page));
+  await expect(page.locator("#phone")).toHaveValue("9876543210");
+});
+
+test("refuses a phone box whose picker sits outside its form and shows another calling code", async ({
+  page,
+}) => {
   const received = await serve(
     page,
-    screen(`box.innerHTML = '<label>Country <select id="country" name="country"><option value="us">United States</option><option value="in" selected>India</option></select></label><label>Mobile number <input id="phone" name="phone" type="tel"></label>';
+    `<label>Country <select id="dial" name="dial" form="elsewhere"><option value="1">+1</option><option value="91">+91</option></select></label>
+${screen(`${phoneBox("national")}
+document.getElementById("dial").value = "1";`)}`,
+  );
+  await refusedForCallingCode(page, received, await fill(page));
+});
+
+test("refuses a phone box whose picker sits in an open shadow root and shows another calling code", async ({
+  page,
+}) => {
+  const received = await serve(
+    page,
+    `<script>customElements.define("dial-pick", class extends HTMLElement {
+  connectedCallback() {
+    this.attachShadow({ mode: "open" }).innerHTML = '<select aria-label="Country code"><option>+1</option><option>+91</option></select>';
+  }
+});</script>
+${screen(`box.innerHTML = '<dial-pick></dial-pick><label>Mobile number <input id="phone" name="phone" type="tel"></label>';
+document.getElementById("phone").value = national;`)}`,
+  );
+  await refusedForCallingCode(page, received, await fill(page));
+});
+
+test("refuses a phone box whose only control showing its code sits far from it", async ({ page }) => {
+  // The picker beside the box is a plain focusable element showing +1; a header button shows +91.
+  const received = await serve(
+    page,
+    `<header><button type="button">Recent: +91</button></header>
+${screen(`box.innerHTML = '<div class="picker" tabindex="0">US +1</div><label>Mobile number <input id="phone" name="phone" type="tel"></label>';
+document.getElementById("phone").value = national;`)}`,
+  );
+  await refusedForCallingCode(page, received, await fill(page));
+});
+
+test("refuses a phone box whose country select and a box holding its code sit far from it", async ({
+  page,
+}) => {
+  const received = await serve(
+    page,
+    `<label>Country <select id="country" name="country"><option value="US" selected>United States</option><option value="IN">India</option></select></label>
+<input id="hint" type="text" value="+91" readonly>
+${screen(phoneBox("national"))}`,
+  );
+  await refusedForCallingCode(page, received, await fill(page));
+});
+
+test("refuses a phone box holding the whole number beside a plain focusable picker that shows another code", async ({
+  page,
+}) => {
+  const received = await serve(
+    page,
+    screen(`box.innerHTML = '<div class="picker" tabindex="0">US +1</div><label>Mobile number <input id="phone" name="phone" type="tel"></label>';
+document.getElementById("phone").value = "+91" + national;`),
+  );
+  await refusedForCallingCode(page, received, await fill(page));
+});
+
+test("takes a phone box beside a picker that shows its code, whatever a support number far from it shows", async ({
+  page,
+}) => {
+  const received = await serve(
+    page,
+    `${screen(pickerAndBox("91"))}
+<footer><button type="button">Call us +1 800 555 0100</button></footer>`,
+  );
+  const { report, typed } = await fill(page);
+  expect(report).toMatchObject(clicked);
+  expect(received).toEqual([{ dial: "91", phone: "9876543210" }]);
+  expect(typed).toEqual([number]);
+});
+
+test("refuses a phone box beside a plain button that shows another calling code", async ({ page }) => {
+  const received = await serve(
+    page,
+    screen(`box.innerHTML = '<button type="button" class="flag">US +1</button><label>Mobile number <input id="phone" name="phone" type="tel"></label>';
 document.getElementById("phone").value = national;`),
   );
-  await refusedAsToday(page, received, await fill(page));
+  await refusedForCallingCode(page, received, await fill(page));
 });
 
 test("refuses a phone box in another origin's frame", async ({ page }) => {
@@ -313,16 +430,36 @@ document.getElementById("continue").addEventListener("click", () => {
 test("types nothing again when the submit beside the phone box stays disabled", async ({ page }) => {
   const received = await serve(
     page,
-    screen(`${phoneBox("national")}
+    screen(`${phoneBox('"+91" + national')}
 document.getElementById("continue").disabled = true;`),
   );
   const { report, typed } = await fill(page);
-  expect(report).toMatchObject({ outcome: "filled" });
-  expect(report).not.toMatchObject({ submit: "clicked" });
+  expect(report).toMatchObject({ outcome: "filled", submit: "stayed_disabled" });
   expect(typed).toEqual([number]);
   await page.waitForTimeout(300);
   expect(received).toEqual([]);
-  await expect(page.locator("#phone")).toHaveValue("9876543210");
+  await expect(page.locator("#phone")).toHaveValue("+919876543210");
+});
+
+test("types nothing again when the submit stays disabled and the page puts the identifier box back", async ({
+  page,
+}) => {
+  // The identifier box comes back beside the phone box while the host waits on the submit: the
+  // host's wait for a page that enables its submit only on key presses must not type into it.
+  const received = await serve(
+    page,
+    screen(`${phoneBox('"+91" + national')}
+document.getElementById("continue").disabled = true;
+setTimeout(() => {
+  box.insertAdjacentHTML("beforeend", '<label>Email or mobile number <input id="identifier" name="identifier" autocomplete="username"></label>');
+}, 2_000);`),
+  );
+  const { report, typed } = await fill(page);
+  expect(report).toMatchObject({ outcome: "filled", submit: "stayed_disabled" });
+  expect(typed).toEqual([number]);
+  await page.waitForTimeout(300);
+  expect(received).toEqual([]);
+  await expect(page.locator("#identifier")).toHaveValue("");
 });
 
 test("leaves an email that took the box's place to the refusal of a field gone", async ({ page }) => {

@@ -205,9 +205,9 @@ attribute.
     the person to do something, such as call a number or approve in an app, prefer naming the
     element with that instruction as the code field's `questionSelector`. When a code screen has
     its own control that asks the site to send a new code, such as "Resend code" or "Send again",
-    name it as the step's `resend`, even while the page keeps it disabled, and never press it
-    yourself: the host presses it only when the owner answers the code question by asking for a
-    new code, once the site enables it.
+    name it as the step's `resend`, on a step whose every field takes a code, even while the page
+    keeps it disabled, and never press it yourself: the host presses it only when the owner
+    answers the code question by asking for a new code, once the site enables it.
   - `slot: "date_of_birth"` for a date of birth, with `format`, how the field takes it, read from
     its placeholder, label, input mask or hint: `MM/DD/YYYY`, `DD/MM/YYYY`, `M/D/YYYY`,
     `D/M/YYYY`, `MM-DD-YYYY`, `DD-MM-YYYY`, `DD.MM.YYYY`, `YYYY-MM-DD`, `YYYY/MM/DD`, `MMDDYYYY`,

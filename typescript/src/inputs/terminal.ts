@@ -192,13 +192,17 @@ const answerQuestion = (question: Question): Effect.Effect<unknown, InputRequest
       case "text":
         return yield* line("> ");
       case "secret": {
-        // A code question that offers a resend takes the word resend as the request for one.
+        // A code question that offers a resend takes the word resend as the request for one; one
+        // that offers none says so and asks again, so the word is never typed as the code.
         if (question.allowResend === true)
           process.stderr.write("Type resend to have the site send a new code.\n");
-        const typed = yield* line("> ", true);
-        return question.allowResend === true && typed.trim().toLowerCase() === "resend"
-          ? { resend: true }
-          : typed;
+        for (;;) {
+          const typed = yield* line("> ", true);
+          if (typed.trim().toLowerCase() !== "resend") return typed;
+          if (question.allowResend === true) return { resend: true };
+          if (question.secretKind !== "one_time_code") return typed;
+          process.stderr.write("No new code can be asked for here. Type the code the site sent.\n");
+        }
       }
       case "credential": {
         // A login that offers identifier kinds is asked for by them, and its answer says its kind.

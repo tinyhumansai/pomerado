@@ -125,6 +125,25 @@ const closedInPlace = <E extends YieldableError, V extends string, L extends Aut
   });
 
 /**
+ * Whether a code screen inspected again after a resend press is still the screen this fill
+ * admitted at its first look: on the same origin, in the same popup, with its controls in a frame
+ * of the same origin and its code fields split across boxes as they were, which its code was asked
+ * for. Anything else is a screen changed, as a first look on another origin is.
+ */
+const sameScreen = (first: AutofillInspection, again: AutofillInspection) => {
+  const origin = URL.parse(first.page)?.origin;
+  const boxes = (inspection: AutofillInspection) =>
+    JSON.stringify(inspection.screen.fields.map((field) => field.codeBox ?? null));
+  return (
+    origin !== undefined &&
+    URL.parse(again.page)?.origin === origin &&
+    again.screen.origin === first.screen.origin &&
+    again.popupTargetId === first.popupTargetId &&
+    boxes(again) === boxes(first)
+  );
+};
+
+/**
  * A code screen's resend for its step, when it names one the hooks can press (`makeCodeResend`),
  * with the session's count of each screen's presses, and how many this fill's asks pressed.
  */
@@ -153,7 +172,8 @@ const screenResend = <E extends YieldableError, V extends string, L extends Auto
  * undefined. `planned` is the recorded screen's `refills`. A code screen that closed in place
  * counts as sent only once the marker shows (`closedInPlace`). A code screen whose resend the
  * owner had the host press is inspected again before it is filled, since the press may have
- * loaded it anew (`screenResend`).
+ * loaded it anew (`screenResend`), and filled only while it is still the screen first admitted
+ * (`sameScreen`).
  */
 export const runReplayStep = <E extends YieldableError, V extends string, L extends AutofillLogin>(
   session: ReplaySession<E, V, L>,
@@ -220,6 +240,10 @@ export const runReplayStep = <E extends YieldableError, V extends string, L exte
       if ("outcome" in again) {
         yield* input.hosted?.settleRecoveryCodes?.(recoveryCodes, false) ?? Effect.void;
         return again.reason;
+      }
+      if (!sameScreen(inspection, again)) {
+        yield* input.hosted?.settleRecoveryCodes?.(recoveryCodes, false) ?? Effect.void;
+        return "screen_changed" as const;
       }
       inspection = again;
     }

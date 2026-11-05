@@ -1,7 +1,11 @@
 import { Clock, Duration, Effect } from "effect";
 import type { YieldableError } from "effect/Cause";
 import type { AutofillRecipeStep } from "../destinations/autofill-recipe.js";
-import { resolvedPage, type SignInRecipeStep } from "../destinations/sign-in-recipe.js";
+import {
+  callingCodesGated,
+  resolvedPage,
+  type SignInRecipeStep,
+} from "../destinations/sign-in-recipe.js";
 import type {
   AutofillInspection,
   AutofillRefusal,
@@ -536,6 +540,13 @@ const settle = <E extends YieldableError, V extends string, L extends AutofillLo
  * A value counts as sent once a submit was clicked after it was filled.
  */
 export const replayAutofillRecipe = <E extends YieldableError, V extends string, L extends AutofillLogin>(
+  input: AutofillReplayInput<E, V, L>,
+) =>
+  // A calling-code picker's screen is refused at its inspection unless the hooks' fill picks the
+  // code (`AutofillHooks.picksCallingCodes`), so a fill of a host's own never gets it to type.
+  replayGated({ ...input, hooks: callingCodesGated(input.hooks) });
+
+const replayGated = <E extends YieldableError, V extends string, L extends AutofillLogin>(
   input: AutofillReplayInput<E, V, L>,
 ) =>
   Effect.gen(function* () {

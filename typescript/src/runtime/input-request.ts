@@ -393,7 +393,9 @@ export class InvalidAnswer extends Data.TaggedError("InvalidAnswer")<{
     | "selection_bounds"
     | "too_long"
     | "username_not_allowed"
-    | "password_required";
+    | "password_required"
+    /** The word resend, on a one-time code question that offers no resend (`allowResend`). */
+    | "resend_not_offered";
 }> {}
 
 const decodeAs = <A, I>(schema: Schema.Schema<A, I>, value: unknown) =>
@@ -469,6 +471,16 @@ const validateOne = (
           : invalid("unexpected_answer");
       const decoded = decodeAs(Text, value);
       if (Either.isLeft(decoded)) return invalid("malformed");
+      // The word resend is never a one-time code: it asks for a new one where the question
+      // offers that, and is refused where it does not, so it is never typed as the code.
+      if (
+        question.type === "secret" &&
+        question.secretKind === "one_time_code" &&
+        decoded.right.trim().toLowerCase() === "resend"
+      )
+        return question.allowResend === true
+          ? Either.right({ type: "resend", value: { resend: true } })
+          : invalid("resend_not_offered");
       if (decoded.right.length > (question.maxLength ?? maximumAnswerLength))
         return invalid("too_long");
       return Either.right({ type: question.type, value: decoded.right });

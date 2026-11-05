@@ -23,15 +23,17 @@ import {
   type AutofillRecipeOrigins,
   type AutofillRecipeStep,
 } from "./autofill-recipe.js";
-import type {
-  AutofillField,
-  AutofillInspection,
-  AutofillRefusal,
-  AutofillScreens,
-  AutofillSignedIn,
-  AutofillSignedInCheck,
-  AutofillStep,
-  AutofillStepReport,
+import { refused } from "./autofill-refusal.js";
+import {
+  isCallingCode,
+  type AutofillField,
+  type AutofillInspection,
+  type AutofillRefusal,
+  type AutofillScreens,
+  type AutofillSignedIn,
+  type AutofillSignedInCheck,
+  type AutofillStep,
+  type AutofillStepReport,
 } from "./autofill-step.js";
 import type { CredentialRejectedField, WebsiteCredentials } from "../runtime/authentication.js";
 import { recordedScreenPage } from "../runtime/workspace-origin.js";
@@ -245,12 +247,14 @@ export interface SignInBrowser<E> {
   /**
    * Presses a code screen's resend control, typing nothing (`resendAutofillCode`): the step's code
    * fields, emptied first, and the control as its submit, waited on for up to `waitMs` while the
-   * site keeps it disabled. A browser without it never offers a resend.
+   * site keeps it disabled, never one of the elements `apartFrom` names (the screen's own submit,
+   * methods and dismiss). A browser without it never offers a resend.
    */
   readonly resend?: (input: {
     readonly step: AutofillStep;
     readonly inspection: AutofillInspection;
     readonly waitMs: number;
+    readonly apartFrom: readonly string[];
   }) => Effect.Effect<AutofillStepReport>;
   /**
    * Checks the minter's signed-in indicator on the page: `screens` are every screen the build
@@ -266,7 +270,33 @@ export interface SignInBrowser<E> {
   ) => Effect.Effect<AutofillSignedInCheck, E>;
   /** The configured sign-in origins off the site. */
   readonly authenticationOrigins: readonly string[];
+  /**
+   * Whether `fill` picks a phone's calling code in a step's calling-code picker
+   * (`format: "calling_code"`) with the authoring library's own chooser, as core's fill does. A
+   * browser without it has such a step refused at its inspection (`callingCodesGated`).
+   */
+  readonly picksCallingCodes?: true;
 }
+
+/**
+ * `browser`, or a replay's hooks, with its inspection refusing a step that names a calling-code
+ * picker, as not editable at the picker, when its fill can't pick a calling code
+ * (`SignInBrowser.picksCallingCodes`, `AutofillHooks.picksCallingCodes`), as a host before version
+ * 11 refuses such a picker: nothing is picked or typed, and a fill of its own never gets the
+ * picker's code to type. A build's recorder and every replay apply it.
+ */
+export const callingCodesGated = <B extends Pick<SignInBrowser<unknown>, "inspect" | "picksCallingCodes">>(
+  browser: B,
+): B => {
+  if (browser.picksCallingCodes === true) return browser;
+  return {
+    ...browser,
+    inspect: (step: AutofillStep) => {
+      const picker = step.fields.findIndex(isCallingCode);
+      return picker === -1 ? browser.inspect(step) : Effect.succeed(refused("not_editable", picker));
+    },
+  };
+};
 
 /** The identifier kinds a login question offers, as `CurrentLoginStep` names them. */
 const loginIdentifierKinds = ["username", "email", "phone", "account_number"] as const;

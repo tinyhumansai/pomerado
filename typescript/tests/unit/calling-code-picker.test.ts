@@ -3,9 +3,10 @@
 // replays one; a recipe without one changes version or bytes; the picker takes another kind than a
 // phone, comes after the box or beside a box that may take another kind; the picker is typed the
 // whole number, or a matcher reads a code inside a longer one, without its plus, or as a value
-// that may be a list position; a run that can't pick the code fails as anything but what it is.
+// that may be a list position; a run that can't pick the code fails as anything but what it is; a
+// host's own browser that can't pick a code is handed a picker's step to fill.
 import { createHash } from "node:crypto";
-import { Effect, Either, Schema } from "effect";
+import { Data, Effect, Either, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 import {
   autofillRecipe,
@@ -30,6 +31,9 @@ import { callingCodeNotices, stepNotice } from "../../src/mint/autofill-results.
 import { SignInStep } from "../../src/mint/contracts.js";
 import { signInFailureFeedback } from "../../src/mint/sign-in-failure.js";
 import { makeSignInRecorder } from "../../src/mint/sign-in-recorder.js";
+import type { AutofillRecipe } from "../../src/destinations/autofill-recipe.js";
+import { replayAutofillRecipe } from "../../src/runtime/autofill-replay.js";
+import type { AutofillHooks } from "../../src/runtime/autofill-state.js";
 import { typedValues } from "../../src/runtime/autofill-values.js";
 import { signInForRun, SignInRunFailed } from "../../src/runtime/sign-in-replay.js";
 import { localSignInLogin } from "../../src/standalone/authentication.js";
@@ -196,6 +200,7 @@ describe("a run that can't pick the calling code", () => {
             authenticationOrigins: [],
             open: () => Effect.void,
             markerVisible: () => Effect.succeed(false),
+            picksCallingCodes: true,
           },
           login: localSignInLogin({
             ask,
@@ -215,6 +220,156 @@ describe("a run that can't pick the calling code", () => {
     expect(failed).toMatchObject({ code, reason });
     expect(failed.message).toMatch(message);
     expect(filled).toHaveLength(1);
+  });
+});
+
+describe("a host's own browser that can't pick a calling code", () => {
+  const recipe = {
+    version: 11,
+    steps: [{ page: `${site}/login`, fields: [picker, national], submit: "#send" }],
+    signedIn: { selector: "#account" },
+  } as SignInRecipe;
+  const inspection = (step: AutofillStep): AutofillInspection => ({
+    page: `${site}/login`,
+    targets: {
+      fields: step.fields.map(() => ({ ownerUrl: `${site}/login`, documentOrigin: site, actions: [], methods: [], editable: true, control: "text" as const })),
+      submit: null,
+    },
+    siteOrigin: site,
+    authenticationOrigins: [],
+    screen: { origin: site, fields: [], submit: null, buttons: [] },
+  });
+  const browser = (filled: string[][]) => ({
+    inspect: (step: AutofillStep) => Effect.succeed(inspection(step)),
+    fill: ({ values }: { readonly values: readonly string[] }) =>
+      Effect.sync(() => {
+        filled.push([...values]);
+        return { outcome: "refused" as const, reason: "not_found" as const, target: 0 };
+      }),
+    confirm: () => Effect.succeed({ signedIn: false as const, failed: "indicator_not_visible" as const }),
+    authenticationOrigins: [],
+    open: () => Effect.void,
+    markerVisible: () => Effect.succeed(false),
+  });
+
+  it("has a run refuse the picker as a host before version 11 does, with nothing filled", async () => {
+    const filled: string[][] = [];
+    const ask = makeInputAsker(() =>
+      Effect.succeed({ login: { identifierKind: "phone", username: "+91 98765 43210", saveLogin: false } }),
+    );
+    const secrets = makeRunSecrets();
+    const failed = await Effect.runPromise(
+      Effect.flip(
+        signInForRun({
+          recipe,
+          entryUrl: `${site}/login`,
+          browser: browser(filled),
+          login: localSignInLogin({
+            ask,
+            register: secrets.register,
+            siteOrigin: site,
+            passwordless: { identifierKinds: ["phone"], password: false },
+          }),
+          ask,
+          secrets,
+          site: "login.example.test",
+          siteOrigin: site,
+          timing: { stepWaitMs: 200, pollMs: 50 },
+        }),
+      ),
+    );
+    expect(failed).toBeInstanceOf(SignInRunFailed);
+    expect(failed).toMatchObject({ reason: "not_editable" });
+    expect(filled).toEqual([]);
+  });
+
+  it("has a build refuse the picker's screen with nothing filled", async () => {
+    const filled: string[][] = [];
+    const recorder = makeSignInRecorder({
+      browser: { ...browser(filled), confirm: () => Effect.dieMessage("Unexpected check") },
+      login: {
+        held: () => ({ username: "+15555550123", phone: "+15555550123" }),
+        values: Effect.dieMessage("Unexpected login"),
+        correct: () => Effect.dieMessage("Unexpected correction"),
+      },
+      ask: () => Effect.dieMessage("Unexpected question"),
+      secrets: { register: () => {}, assertAbsent: () => Effect.void },
+      review: () => Effect.void,
+      site: "login.example.test",
+      signedOutPages: () => [],
+    });
+    const answered = await Effect.runPromise(
+      recorder.step({ fields: [picker, national], submit: "#send" }, undefined, Effect.void),
+    );
+    expect(answered.report).toMatchObject({ outcome: "refused", reason: "not_editable", target: 0 });
+    expect(filled).toEqual([]);
+  });
+});
+
+describe("a replay on hooks whose fill can't pick a calling code", () => {
+  class TestFailure extends Data.TaggedError("TestFailure")<{ readonly code: string }> {}
+  const replay = async (picksCallingCodes: boolean) => {
+    let fills = 0;
+    const target = { ownerUrl: null, documentOrigin: site, actions: [`${site}/session`], methods: ["post"], editable: true, control: "text" as const };
+    const hooks: AutofillHooks<TestFailure> = {
+      open: () => Effect.void,
+      check: () => Effect.succeed({ signedIn: false as const, failed: "indicator_not_visible" as const, url: `${site}/login` }),
+      confirm: () => Effect.succeed({ signedIn: false as const, failed: "indicator_not_visible" as const }),
+      inspect: (step) =>
+        Effect.succeed({
+          page: `${site}/login`,
+          siteOrigin: site,
+          authenticationOrigins: [],
+          targets: { fields: step.fields.map(() => target), submit: target },
+          screen: { origin: site, fields: [], submit: null, buttons: [] },
+        }),
+      fill: ({ step }) =>
+        Effect.sync(() => {
+          fills += 1;
+          return {
+            outcome: "filled" as const,
+            fields: step.fields.map((field) => ({ slot: field.slot, status: "filled" as const })),
+            submit: "clicked" as const,
+            url: `${site}/next`,
+          };
+        }),
+      ...(picksCallingCodes ? { picksCallingCodes: true as const } : {}),
+    };
+    const outcome = await Effect.runPromise(
+      replayAutofillRecipe({
+        recipe: {
+          version: 11,
+          steps: [{ page: `${site}/login`, fields: [picker, national], submit: "#send" }],
+          signedIn: { selector: "#account" },
+        } as AutofillRecipe,
+        hooks,
+        entryUrl: `${site}/login`,
+        credentials: { username: "+919876543210", phone: "+919876543210" },
+        ask: () => Effect.dieMessage("Unexpected question"),
+        broker: { register: () => Effect.void, registeredSecretMatches: () => Effect.succeed([]) },
+        site: "login.example.test",
+        correlation: { jobId: "job", attemptId: "attempt" },
+        emit: () => Effect.void,
+        failures: {
+          unanswered: () => new TestFailure({ code: "NeedsInput" }),
+          unavailable: () => new TestFailure({ code: "BrowserUnavailable" }),
+        },
+        timing: { stepWaitMs: 200, pollMs: 50 },
+        sent: { current: false },
+      }).pipe(Effect.scoped, Effect.either),
+    );
+    return { outcome, fills };
+  };
+
+  it("refuses the picker's screen as a host before version 11 does, with nothing filled", async () => {
+    const { outcome, fills } = await replay(false);
+    expect(fills).toBe(0);
+    expect(JSON.stringify(outcome)).toContain("not_editable");
+  });
+
+  it("fills it on hooks that say their fill picks the code", async () => {
+    const { fills } = await replay(true);
+    expect(fills).toBe(1);
   });
 });
 
@@ -257,6 +412,7 @@ describe("a build's step at a calling-code picker", () => {
           authenticationOrigins: [],
           open: () => Effect.void,
           markerVisible: () => Effect.succeed(false),
+          picksCallingCodes: true,
         },
         login: {
           held: () => ({ username: "+15555550123", phone: "+15555550123" }),

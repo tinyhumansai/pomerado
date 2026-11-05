@@ -138,10 +138,22 @@ for (const [name, screen, chosen] of [
   });
 
 test("picks a code that is the start of a longer one, and never the longer one", async ({ page }) => {
-  const received = await serve(page, nativeScreen());
-  const { report } = await signIn(page, "+44 7700 900123");
+  // +1 268 is one code, Antigua and Barbuda's, never +1 with 268 after it.
+  const received = await serve(
+    page,
+    `<form action="/session" method="post">
+<label>Country <select id="country" name="country">
+<option value="AG">Antigua and Barbuda (+1 268)</option>
+<option value="US">United States (+1)</option>
+<option value="GB">United Kingdom (+44)</option>
+</select></label>
+<label>Mobile number <input id="phone" name="phone" type="tel" maxlength="10"></label>
+<button id="send">Send code</button>
+</form>`,
+  );
+  const { report } = await signIn(page, "+1 415 555 0134");
   expect(report).toMatchObject({ outcome: "filled", submit: "clicked" });
-  expect(received).toEqual([{ country: "GB", phone: "7700900123" }]);
+  expect(received).toEqual([{ country: "US", phone: "4155550134" }]);
 });
 
 test("picks an option by its value with its plus, and takes a country listed twice as one", async ({
@@ -181,6 +193,146 @@ test("never takes an option's bare number for a code, as a list position may be"
   await page.waitForTimeout(300);
   expect(received).toEqual([]);
   await expect(page.locator("#country")).toHaveValue("1");
+});
+
+test("never picks an option whose label shows another country's code, whatever its value", async ({ page }) => {
+  // The site would post +91 beside a list entry that shows Norway's code: the label and value
+  // disagree, so the option names no code the host can trust.
+  const received = await serve(
+    page,
+    `<form action="/session" method="post">
+<label>Country <select id="country" name="country">
+<option value="+1">United States (+1)</option>
+<option value="+91">Norway (+47)</option>
+</select></label>
+<label>Mobile number <input id="phone" name="phone" type="tel" maxlength="10"></label>
+<button id="send">Send code</button>
+</form>`,
+  );
+  const { report } = await signIn(page, "+91 98765 43210");
+  expect(report).toMatchObject({ outcome: "refused", reason: "calling_code_unoffered", target: 0 });
+  await page.waitForTimeout(300);
+  expect(received).toEqual([]);
+  await expect(page.locator("#country")).toHaveValue("+1");
+});
+
+/**
+ * A picker whose options show country names alone, their codes in their values, and whose page
+ * puts it back on `back` a moment after each choice: a country whose name sits inside the chosen
+ * one's, or holds it. `custom` draws it as a button that opens its own list; with `staleTitle`,
+ * its title keeps the chosen country once its words go back.
+ */
+const revertingScreen = (
+  options: readonly (readonly [string, string])[],
+  back: string,
+  custom: boolean,
+  staleTitle = false,
+) =>
+  custom
+    ? `<form action="/session" method="post">
+<input type="hidden" name="country" value="${back}">
+<button type="button" id="country" role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-controls="dial">${options.find(([value]) => value === back)?.[1]}</button>
+<ul id="dial" role="listbox" hidden>
+${options.map(([value, name]) => `<li role="option" data-value="${value}">${name}</li>`).join("\n")}
+</ul>
+<label>Mobile number <input id="phone" name="phone" type="tel" maxlength="10"></label>
+<button id="send">Send code</button>
+</form><script>
+const button = document.getElementById("country");
+const list = document.getElementById("dial");
+const kept = document.querySelector("input[name=country]");
+const backName = button.textContent;
+button.addEventListener("click", () => {
+  list.hidden = !list.hidden;
+  button.setAttribute("aria-expanded", String(!list.hidden));
+});
+for (const option of list.querySelectorAll("[role=option]"))
+  option.addEventListener("click", () => {
+    button.textContent = option.textContent;
+    kept.value = option.dataset.value;
+    ${staleTitle ? 'button.setAttribute("title", option.textContent);' : ""}
+    list.hidden = true;
+    button.setAttribute("aria-expanded", "false");
+    setTimeout(() => { button.textContent = backName; kept.value = ${JSON.stringify(back)}; }, 50);
+  });
+</script>`
+    : `<form action="/session" method="post">
+<label>Country <select id="country" name="country">
+${options.map(([value, name]) => `<option value="${value}"${value === back ? " selected" : ""}>${name}</option>`).join("\n")}
+</select></label>
+<label>Mobile number <input id="phone" name="phone" type="tel" maxlength="10"></label>
+<button id="send">Send code</button>
+</form><script>document.getElementById("country").addEventListener("change", (event) => {
+  setTimeout(() => { event.target.value = ${JSON.stringify(back)}; }, 50);
+});</script>`;
+
+const sudans = [
+  ["+249", "Sudan"],
+  ["+211", "South Sudan"],
+  ["+1", "United States"],
+] as const;
+const guineas = [
+  ["+675", "Papua New Guinea"],
+  ["+224", "Guinea"],
+  ["+1", "United States"],
+] as const;
+for (const [name, options, back, phone, custom, staleTitle] of [
+  ["a native picker that goes back to a country whose name sits inside the chosen one", sudans, "+249", "+211 912 345 678", false, false],
+  ["a custom picker that goes back to a country whose name sits inside the chosen one", sudans, "+249", "+211 912 345 678", true, false],
+  ["a native picker that goes back to a country whose name holds the chosen one", guineas, "+675", "+224 621 23 45 67", false, false],
+  ["a custom picker that goes back to a country whose name holds the chosen one", guineas, "+675", "+224 621 23 45 67", true, false],
+  ["a custom picker whose words go back while its title keeps the chosen country", sudans, "+249", "+211 912 345 678", true, true],
+] as const)
+  test(`types nothing at ${name}`, async ({ page }) => {
+    const received = await serve(page, revertingScreen(options, back, custom, staleTitle));
+    const { report } = await signIn(page, phone);
+    expect(report).toMatchObject({
+      outcome: "filled",
+      fields: [
+        { slot: "phone", status: "failed" },
+        { slot: "phone", status: "not_attempted" },
+      ],
+      submit: "not_attempted",
+    });
+    await page.waitForTimeout(300);
+    expect(received).toEqual([]);
+    await expect(page.locator("#phone")).toHaveValue("");
+  });
+
+test("picks the code in a picker that shows only a flag, by the label its control says", async ({ page }) => {
+  // The control has no words of its own: its aria-label says the chosen country.
+  const received = await serve(
+    page,
+    `<form action="/session" method="post">
+<input type="hidden" name="country" value="+1">
+<button type="button" id="country" role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-controls="flags" aria-label="United States"><span class="flag"></span></button>
+<ul id="flags" role="listbox" hidden>
+<li role="option" data-value="+1">United States</li>
+<li role="option" data-value="+91">India</li>
+</ul>
+<label>Mobile number <input id="phone" name="phone" type="tel" maxlength="10"></label>
+<button id="send">Send code</button>
+</form><script>
+const button = document.getElementById("country");
+const list = document.getElementById("flags");
+button.addEventListener("click", () => {
+  list.hidden = !list.hidden;
+  button.setAttribute("aria-expanded", String(!list.hidden));
+});
+for (const option of list.querySelectorAll("[role=option]"))
+  option.addEventListener("click", () => {
+    for (const other of list.querySelectorAll("[role=option]")) other.setAttribute("aria-selected", "false");
+    option.setAttribute("aria-selected", "true");
+    button.setAttribute("aria-label", option.textContent);
+    document.querySelector("input[name=country]").value = option.dataset.value;
+    list.hidden = true;
+    button.setAttribute("aria-expanded", "false");
+  });
+</script>`,
+  );
+  const { report } = await signIn(page, "+91 98765 43210");
+  expect(report).toMatchObject({ outcome: "filled", submit: "clicked" });
+  expect(received).toEqual([{ country: "+91", phone: "9876543210" }]);
 });
 
 for (const [name, phone, reason] of [

@@ -17,6 +17,7 @@ import {
   type SignedOutSnapshot,
 } from "../destinations/signed-in-marker.js";
 import {
+  callingCodesGated,
   SignInRecipe,
   signInRecipe,
   type SignInBrowser,
@@ -235,7 +236,15 @@ export const makeSignInRecorder = (input: {
   readonly login: SignInLogin<MintFailure>;
   readonly ask: InputAsker;
   readonly secrets: RunSignInSecrets;
-  readonly review: (step: AutofillStep, seen: AutofillInspection) => Effect.Effect<void, Error>;
+  /**
+   * Guardian's review of a screen as the host found it; `resendControl`, the screen's resend
+   * control as found once it shows, just before the host presses it.
+   */
+  readonly review: (
+    step: AutofillStep,
+    seen: AutofillInspection,
+    resendControl?: AutofillInspection["screen"]["submit"],
+  ) => Effect.Effect<void, Error>;
   /** The site as a question names it: its host, without `www.`. */
   readonly site: string;
   /** The pages the build saw signed out, which a marker or a lock message must not show. */
@@ -243,7 +252,8 @@ export const makeSignInRecorder = (input: {
   /** How long a check waits for a marker drawn late; `markerSettle` unless a test shortens it. */
   readonly markerSettle?: MarkerSettle;
 }) => {
-  const { browser, login } = input;
+  const { login } = input;
+  const browser = callingCodesGated(input.browser);
   /** The build's sign-in state, as the shared rules read and keep it. */
   const h: AutofillHost = {
     reportCorrelation: undefined,
@@ -427,6 +437,8 @@ export const makeSignInRecorder = (input: {
         waitMs: resendWaitMs,
         pollMs: 250,
         emit: (details) => emit(h, details),
+        // Guardian judges the control as it shows, which a timer may hide at the screen's review.
+        review: (found) => input.review(step, inspected, found.screen.submit),
       });
       if (ambiguousRecoveredCode(h, step)) return new Unanswered("code_already_rejected");
       const codeRequests = {
@@ -463,6 +475,12 @@ export const makeSignInRecorder = (input: {
         },
         inspected.screen.fields,
       );
+      // A review that denied the resend control fails the build, as a denied screen does.
+      const stopped = resend?.stopped?.();
+      if (stopped !== undefined)
+        return yield* Effect.fail(
+          stopped.cause instanceof Error ? stopped.cause : new Error("The resend review failed"),
+        );
       if (codeAgain !== undefined && !(filled instanceof Unanswered))
         h.autofillCodeAgain.current = undefined;
       return filled;
@@ -598,11 +616,17 @@ export const makeSignInRecorder = (input: {
       if (valued instanceof Unanswered) return yield* unansweredStep(h, valued);
       step = valued.step;
       filled = valued.values;
-      // A resend the owner asked for may have loaded the code screen anew: it is judged again.
+      // A resend the owner asked for may have loaded the code screen anew: it is judged again,
+      // by the same checks and review as its first look.
       const inspection = pressed.count === 0 ? inspected : yield* browser.inspect(step);
       if (inspection !== inspected) noteInspection(step, inspection);
       if ("outcome" in inspection)
         return { report: inspection, result: { nextStep: notice(inspection) } };
+      if (inspection !== inspected) {
+        const split = codeBoxesRefusal(step, inspection);
+        if (split !== undefined) return { report: split, result: { nextStep: notice(split) } };
+        yield* input.review(step, inspection);
+      }
       const named = yield* stepIdentityRefusal(
         h,
         h.autofillSignIn.current,

@@ -241,9 +241,12 @@ export const guardedSubmit = (
     readonly alertsBefore: boolean;
     /** Whether a click another element catches is pressed from the keyboard (`AutofillFillCall`). */
     readonly pressCovered?: boolean;
+    /** A code screen's resend press, with the controls it must not be (`AutofillFillCall`). */
+    readonly resend?: { readonly apartFrom: readonly string[] } | undefined;
   },
 ): AutofillFillCall => ({
   kind: "submit",
+  ...(call.resend === undefined ? {} : { resend: call.resend }),
   ...(call.codeBoxes === undefined || call.codeBoxes.length === 0 ? {} : { codeBoxes: call.codeBoxes }),
   settleMs: call.settleMs,
   ...(call.alertsBefore ? { alertsBefore: true as const } : {}),
