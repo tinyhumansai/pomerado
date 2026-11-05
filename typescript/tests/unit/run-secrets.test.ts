@@ -220,6 +220,8 @@ describe("a phone number", () => {
     "+91 98765 00000 ext 12",
     "+91 98765 00000 x12",
     "+(91) 98765 00000 ext. 12",
+    "+91 98765 00000 #12",
+    "00 91 98765 00000 #12",
   ])(
     "masks and refuses the number before an extension, %s",
     (number) => {

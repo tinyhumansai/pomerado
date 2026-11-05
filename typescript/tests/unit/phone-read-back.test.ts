@@ -199,10 +199,12 @@ it.each([
   "(0170) 555-0100",
   "+0 123 4567",
   "+12",
-  // A letter: a handle, or an extension whose digits are no part of the number.
+  // A letter or a `#`: a handle, or an extension whose digits are no part of the number.
   "00 91 98765 00000 ext 12",
   "+(91) 98765 00000 ext 12",
   "+91 98765 00000 ext 12",
+  "+91 98765 00000 #12",
+  "00 91 98765 00000 #12",
   "001a2b345678",
 ])(
   "names no calling code for %s, which does not say it",

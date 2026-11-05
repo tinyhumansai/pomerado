@@ -5,7 +5,7 @@ import {
   isCardSlot,
   shortCardPart,
 } from "../destinations/payment-frames.js";
-import { callingCode, nationalDigits } from "../destinations/login-field-formats.js";
+import { callingCode, nationalDigits, numberPart } from "../destinations/login-field-formats.js";
 import { shownForms } from "../privacy/value-forms.js";
 import { writtenAsNumber } from "../runtime/input-request.js";
 
@@ -67,13 +67,13 @@ const numberEdge = "(?:(?<![0-9])|(?<=%[0-9A-Fa-f]{2}))";
  * `00`. Undefined for a value not written as a number, such as a host's handle, one too short to
  * say its calling code, or one with too little after that code (`phoneLocalFewest`). Any marks may
  * group its digits, as a saved login or a login of another kind never met the shape a phone answer
- * must have, and what a letter starts, such as an extension, is no part of the number. `run` also
+ * must have, and what a letter or a `#` starts, such as an extension, is no part of it. `run` also
  * counts the value as given, since it goes first: an extension or a `(00NN)` lead would stay beside
  * what it masks.
  */
 const phoneForms = (given: string) => {
   if (!writtenAsNumber(given)) return undefined;
-  const number = given.replace(/\p{L}.*$/su, "");
+  const number = numberPart(given);
   const code = callingCode(number) ?? "";
   const local = (nationalDigits(number) ?? number.replaceAll(/[^0-9]/gu, "")).replace(/^0+/u, "");
   const short = local.length < phoneLocalLeast;

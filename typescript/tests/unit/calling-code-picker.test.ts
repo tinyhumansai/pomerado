@@ -102,7 +102,12 @@ describe("typedValues", () => {
     expect(typedValues(step, ["98765 43210", "98765 43210"])).toEqual(["", "98765 43210"]);
   });
 
-  it.each(["00 91 98765 00000 ext 12", "+(91) 98765 00000 ext 12", "+91 98765 00000 ext 12"])(
+  it.each([
+    "00 91 98765 00000 ext 12",
+    "+(91) 98765 00000 ext 12",
+    "+91 98765 00000 ext 12",
+    "+91 98765 00000 #12",
+  ])(
     "gives the picker nothing for %s, whose extension's digits aren't the number's",
     (number) => {
       expect(typedValues(step, [number, number])).toEqual(["", number]);

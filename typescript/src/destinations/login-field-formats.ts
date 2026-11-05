@@ -38,22 +38,27 @@ const shortCallingCodes = new Set([
   ...["90", "91", "92", "93", "94", "95", "98"],
 ]);
 
+/** What ends the number in a value that goes on past it: a letter or a `#`, as an extension does. */
+const numberEnd = /[\p{L}#]/u;
+/** `value` up to what ends its number (`numberEnd`), or whole when nothing does. */
+export const numberPart = (value: string) => value.split(numberEnd, 1)[0] ?? "";
+
 /**
  * A phone number written in international form: its digits after the `+` or `00`, which a bracket
- * may open. Undefined for a value with a letter, which may be a host's handle, and whose digits,
- * such as an extension's, may not all be the number's.
+ * may open. Undefined for a value that goes on past its number (`numberEnd`): a letter may mean a
+ * host's handle, and an extension's digits aren't the number's.
  */
 const internationalDigits = (number: string) => {
   const written = unmarkedNumber(number).trim();
-  if (/\p{L}/u.test(written)) return undefined;
+  if (numberEnd.test(written)) return undefined;
   const lead = /^\(?\s*(?:\+|00)/u.exec(written)?.[0];
   return lead === undefined ? undefined : written.slice(lead.length).replaceAll(/[^0-9]/gu, "");
 };
 
 /**
  * A phone number's country calling code, digits only, when the number is written in international
- * form, after `+` or `00`; undefined for a number written another way, or with a letter, which does
- * not say it (`internationalDigits`).
+ * form, after `+` or `00`; undefined for a number written another way, or with a letter or a `#`,
+ * which does not say it (`internationalDigits`).
  */
 export const callingCode = (number: string) => {
   const digits = internationalDigits(number);
