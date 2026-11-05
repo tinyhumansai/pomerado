@@ -38,8 +38,11 @@ const shortCallingCodes = new Set([
   ...["90", "91", "92", "93", "94", "95", "98"],
 ]);
 
-/** What ends the number in a value that goes on past it: a letter or a `#`, as an extension does. */
-const numberEnd = /[\p{L}#]/u;
+/**
+ * What ends the number in a value that goes on past it, as an extension does: a letter, or a `#`
+ * after a digit. A `#` before the digits ends nothing, so `#1234567` is those digits.
+ */
+const numberEnd = /\p{L}|(?<=[0-9].*)#/su;
 /** `value` up to what ends its number (`numberEnd`), or whole when nothing does. */
 export const numberPart = (value: string) => value.split(numberEnd, 1)[0] ?? "";
 

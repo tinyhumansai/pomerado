@@ -262,6 +262,13 @@ describe("a phone number", () => {
     expect(phone("\u202a\u202c").redact("Sent to 1234.")).toBe("Sent to 1234.");
   });
 
+  // A `#` ends a number only after a digit: before them it ends nothing, as in a login of digits.
+  it.each(["#1234567", "# 1234567"])("masks and refuses the digits behind a lead of #: %s", (login) => {
+    const secrets = phone(login);
+    expect(secrets.redact("Sent to 1234567.")).toBe("Sent to [private].");
+    expect(refused(secrets, 'const shown = "123 4567";')).toBe(true);
+  });
+
   it("leaves another number and a longer run of digits as they are", () => {
     const secrets = phone("+15555550123");
     for (const text of [
