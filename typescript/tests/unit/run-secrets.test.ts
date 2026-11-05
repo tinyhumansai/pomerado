@@ -234,6 +234,21 @@ describe("a phone number", () => {
     },
   );
 
+  // A login of digits may turn up inside a timestamp or an id, which then stands as it is.
+  it("counts a value of digits as given only where no digit adjoins it", () => {
+    const secrets = phone("5550123");
+    expect(refused(secrets, "id=1755501234")).toBe(false);
+    expect(Effect.runSync(secrets.json({ ts: 1755501234 }))).toEqual({ ts: 1755501234 });
+    expect(secrets.redact("Sent to 5550123.")).toBe("Sent to [private].");
+    expect(refused(secrets, 'const login = "5550123";')).toBe(true);
+    expect(Effect.runSync(secrets.json({ login: 5550123 }))).toEqual({ login: "[private]" });
+  });
+
+  it("still counts as given a value that ends in digits, beside what isn't a digit", () => {
+    const secrets = phone("(0091) 98765 00000");
+    expect(secrets.redact("Sent to (0091) 98765 00000, today.")).toBe("Sent to [private], today.");
+  });
+
   it("leaves another number and a longer run of digits as they are", () => {
     const secrets = phone("+15555550123");
     for (const text of [

@@ -88,9 +88,14 @@ const phoneForms = (given: string) => {
     ...(code === "" ? [] : [`${gapped(code)}${phoneGap}0(?:${phoneGap}${cutGapped(local)})?`]),
     ...(short ? [] : [`${trunk}${cutGapped(local)}`]),
   ];
+  const start = /^[0-9]/u.test(given) ? numberEdge : "";
+  const end = /[0-9]$/u.test(given) ? "(?![0-9])" : "";
   return {
     digits: short ? [] : [local, `${code}${local}`],
-    run: new RegExp(`${literal(given)}|${lead}${calling}${trunk}${gapped(local)}(?![0-9])`, "gu"),
+    run: new RegExp(
+      `${start}${literal(given)}${end}|${lead}${calling}${trunk}${gapped(local)}(?![0-9])`,
+      "gu",
+    ),
     cut: new RegExp(`${lead}(?:${cuts.join("|")})${phoneGap}$`, "u"),
   };
 };
