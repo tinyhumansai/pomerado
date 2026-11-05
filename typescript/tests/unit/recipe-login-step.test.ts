@@ -104,6 +104,24 @@ describe("a password-free login's correction", () => {
     ]);
   });
 
+  it("masks a phone login in each form a page writes it, and an email login as given", async () => {
+    const registering = (answer: object) => {
+      const secrets = makeRunSecrets();
+      const local = localSignInLogin({
+        ask: makeInputAsker(() => Effect.succeed({ login: answer } as InputAnswers)),
+        register: secrets.register,
+        siteOrigin: origin,
+        passwordless: { identifierKinds: ["email", "phone"], password: false },
+      });
+      return Effect.runPromise(local.values).then(() => secrets);
+    };
+    const byPhone = { username: "+15555550123", identifierKind: "phone", saveLogin: false };
+    expect((await registering(byPhone)).redact("Sent to +1 (555) 555-0123.")).toBe(
+      "Sent to [private].",
+    );
+    expect((await registering(email)).redact("Order 1-555-555-0123")).toBe("Order 1-555-555-0123");
+  });
+
   it("refuses a correction that switches the login to another kind", async () => {
     const phone = { username: "+919812345678", identifierKind: "phone", saveLogin: false };
     const { local } = login([email, phone]);

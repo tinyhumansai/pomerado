@@ -137,9 +137,12 @@ export type WorkspaceOriginEvent =
   | { readonly kind: "relearned"; readonly from: string; readonly to: string }
   | { readonly kind: "unrecognized_sibling"; readonly origin: string };
 
-/** What the local host masks: each value a sign-in types, and a text checked for one. */
+/**
+ * What the local host masks: each value a sign-in types, and a text checked for one. A value named
+ * a `phone` number also counts in the forms a site writes it back in.
+ */
 export interface RunSignInSecrets {
-  readonly register: (value: string) => void;
+  readonly register: (value: string, kind?: "phone") => void;
   readonly assertAbsent: (text: string) => Effect.Effect<void, unknown>;
 }
 
@@ -238,6 +241,7 @@ const revealedValues = (
       }
       // Each field's own form, as one handle may fill fields that take it differently.
       for (const form of revealedForms(input.step.fields[index], revealed)) secrets.register(form);
+      if (input.step.fields[index]?.slot === "phone") secrets.register(revealed, "phone");
       values.push(revealed);
       revealedFor.push(origin);
     }
@@ -363,7 +367,8 @@ const replayHooks = <E>(
 
 /** The local masking as the shared sign-in code's broker, for runs and builds. */
 export const localSecretBroker = (secrets: RunSignInSecrets): SecretBroker => ({
-  register: (entry) => Effect.sync(() => secrets.register(entry.value)),
+  register: (entry) =>
+    Effect.sync(() => secrets.register(entry.value, entry.entity === "PHONE" ? "phone" : undefined)),
   registeredSecretMatches: (text) =>
     Effect.either(secrets.assertAbsent(text)).pipe(
       Effect.map((found) => (found._tag === "Left" ? [found.left] : [])),

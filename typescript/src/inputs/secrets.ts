@@ -5,7 +5,9 @@ import {
   isCardSlot,
   shortCardPart,
 } from "../destinations/payment-frames.js";
+import { callingCode, nationalDigits } from "../destinations/login-field-formats.js";
 import { shownForms } from "../privacy/value-forms.js";
+import { phoneShaped } from "../runtime/login-values.js";
 
 /**
  * A short form of a secret (`shownForms`) counts in source only as a whole token, as the
@@ -27,16 +29,69 @@ const tokenPattern = (form: string) => {
   );
 };
 
+/**
+ * What a page may write between a phone number's digits, three at most: whitespace, a dash, a dot,
+ * a slash, a bracket, a plus, an invisible mark, or a URL's percent escape of one.
+ */
+const phoneGap = "(?:[\\s\\p{Pd}\\p{Cf}().+/]|%[0-9A-Fa-f]{2}){0,3}";
+/** Fewer digits than this after the calling code say too little to mask on their own. */
+const phoneLocalLeast = 7;
+/** A pattern for `digits` with `phoneGap` between each. */
+const gapped = (digits: string) => [...digits].join(phoneGap);
+/** A pattern for `digits` that a cut may end after any of them. */
+const cutGapped = (digits: string) =>
+  [...digits].reduceRight(
+    (rest, digit) => (rest === "" ? digit : `${digit}(?:${phoneGap}${rest})?`),
+    "",
+  );
+
+/**
+ * The forms of a phone number beyond the value as given, as a site writes it back in its own way:
+ * its digits, with and without its calling code (`digits`); a global pattern for those digits in
+ * any grouping, with a trunk 0 or none and no digit adjoining them (`run`); and one for the start
+ * of the run where a cut ended the text (`cut`). Undefined for a value of no phone shape, such as
+ * a host's handle, or with too few digits after its calling code (`phoneLocalLeast`).
+ */
+const phoneForms = (number: string) => {
+  if (!phoneShaped(number)) return undefined;
+  const code = callingCode(number) ?? "";
+  const local = (nationalDigits(number) ?? number.replaceAll(/[^0-9]/gu, "")).replace(/^0+/u, "");
+  if (local.length < phoneLocalLeast) return undefined;
+  const lead = "(?<![0-9])[+(]?";
+  const trunk = `(?:0${phoneGap})?`;
+  const calling = code === "" ? "" : `(?:${gapped(code)}${phoneGap})?`;
+  return {
+    digits: [local, `${code}${local}`],
+    run: new RegExp(`${lead}${calling}${trunk}${gapped(local)}(?![0-9])`, "gu"),
+    cut: new RegExp(
+      `${lead}(?:${cutGapped(`${code}${local}`)}|${trunk}${cutGapped(local)})${phoneGap}$`,
+      "u",
+    ),
+  };
+};
+
 /** Explicit caller secrets live only for this run. This does not detect or classify page data. */
 export const makeRunSecrets = () => {
   /** Each registered form, with the pattern source screening counts it by when it is short. */
   const values = new Map<string, RegExp | undefined>();
-  /** Registers each form a page or URL can show the value in (`shownForms`). */
-  const register = (value: string) => {
-    for (const [shownForm, short] of shownForms(value))
-      if (!short) values.set(shownForm, undefined);
-      else if (!values.has(shownForm)) values.set(shownForm, tokenPattern(shownForm));
+  /** Each phone number's patterns (`phoneForms`), masked and checked in source alike. */
+  const phoneRuns = new Map<string, { readonly run: RegExp; readonly cut: RegExp }>();
+  /**
+   * Registers each form a page or URL can show the value in (`shownForms`). Named a `phone`
+   * number, its digits and any grouping of them count too (`phoneForms`), since a site writes the
+   * number back in its own format and a `national` field takes it without its calling code.
+   */
+  const register = (value: string, kind?: "phone") => {
+    const phone = kind === "phone" ? phoneForms(value) : undefined;
+    if (phone !== undefined) phoneRuns.set(phone.run.source, phone);
+    for (const form of [value, ...(phone?.digits ?? [])])
+      for (const [shownForm, short] of shownForms(form))
+        if (!short) values.set(shownForm, undefined);
+        else if (!values.has(shownForm)) values.set(shownForm, tokenPattern(shownForm));
   };
+  /** Whether `text` holds a registered phone number, in any grouping. */
+  const holdsPhone = (text: string) =>
+    [...phoneRuns.values()].some(({ run }) => text.search(run) !== -1);
   /**
    * A payment card's own patterns, masked only in what a model or log sees (`redact`), never
    * checked in source: a card number's digits in any grouping, and a short card part (a security
@@ -59,7 +114,14 @@ export const makeRunSecrets = () => {
   const redact = (text: string) =>
     [...cardPatterns.values()].reduce(
       (result, pattern) => result.replace(pattern, "[private]"),
-      ordered().reduce((result, [secret]) => result.split(secret).join("[private]"), text),
+      ordered().reduce(
+        (result, [secret]) => result.split(secret).join("[private]"),
+        // Before the values, which would leave a calling code that stands beside the digits.
+        [...phoneRuns.values()].reduce(
+          (result, { run }) => result.replace(run, "[private]"),
+          text,
+        ),
+      ),
     );
   /** The longest proper prefix of a registered form that `text` ends with, as a length. */
   const splitPrefix = (text: string) =>
@@ -71,10 +133,14 @@ export const makeRunSecrets = () => {
   /** Redacts text a cut ended, so a secret the cut split leaves no prefix at its end either. */
   const redactCut = (text: string) => {
     const redacted = redact(text);
-    return redacted.slice(0, redacted.length - splitPrefix(redacted));
+    return [...phoneRuns.values()].reduce(
+      (result, { cut }) => result.replace(cut, ""),
+      redacted.slice(0, redacted.length - splitPrefix(redacted)),
+    );
   };
   const assertAbsent = (text: string) =>
     Effect.suspend(() =>
+      holdsPhone(text) ||
       ordered().some(([secret, token]) =>
         token === undefined ? text.includes(secret) : token.test(text),
       )
@@ -88,6 +154,8 @@ export const makeRunSecrets = () => {
         const seen = new WeakSet<object>();
         const visit = (item: unknown): unknown => {
           if (typeof item === "string") return redact(item);
+          // A site's JSON may hold the number as a number.
+          if (typeof item === "number" && holdsPhone(String(item))) return "[private]";
           if (item === null || typeof item !== "object") return item;
           if (seen.has(item)) throw new Error("Observation must be JSON serializable");
           seen.add(item);
@@ -113,6 +181,7 @@ export const makeRunSecrets = () => {
     json,
     clear: () => {
       values.clear();
+      phoneRuns.clear();
       cardPatterns.clear();
     },
   };

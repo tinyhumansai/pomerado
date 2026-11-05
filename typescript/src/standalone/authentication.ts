@@ -222,7 +222,7 @@ export const repeatedLoginFailure = (field: CredentialRejectedField) =>
  */
 export const localSignInLogin = (options: {
   readonly ask: InputAsker;
-  readonly register: (value: string) => void;
+  readonly register: (value: string, kind?: "phone") => void;
   readonly siteOrigin: string;
   /**
    * What the login needs when the sign-in types no password (`recipeLoginStep` for a run, the
@@ -281,6 +281,7 @@ export const localSignInLogin = (options: {
       if (kinds !== undefined) {
         const { username } = answer.value;
         const kind = answer.value.identifierKind ?? (kinds.length === 1 ? kinds[0] : undefined);
+        if (kind === "phone") options.register(username, "phone");
         held = {
           username,
           ...(kind === undefined ? {} : { primaryIdentifierKind: kind }),

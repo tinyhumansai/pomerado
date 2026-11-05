@@ -6,7 +6,9 @@ import {
   type InputRequest,
 } from "../../src/runtime/input-request.js";
 import type { AnsweredLoginFields } from "../../src/runtime/login-values.js";
+import { makeRunSecrets } from "../../src/inputs/secrets.js";
 import { makeLoginFieldAsk, Unanswered } from "../../src/runtime/login-field-asks.js";
+import { localSecretBroker } from "../../src/runtime/sign-in-replay.js";
 
 class UnavailableField extends Data.TaggedError("UnavailableField")<{
   readonly operation: string;
@@ -184,4 +186,22 @@ it("fails the ask after three answers the field cannot take", async () => {
   expect(answering.requests).toHaveLength(3);
   expect(ask.registered).toEqual([]);
   expect(ask.given.current).toEqual({});
+});
+
+it("masks a phone number the owner gives in place in each form a page writes it", async () => {
+  const secrets = makeRunSecrets();
+  const ask = makeLoginFieldAsk({
+    broker: localSecretBroker(secrets),
+    unavailable: (operation) => new UnavailableField({ operation }),
+    site: "example.com",
+    given: { current: {} },
+  });
+  const answering = owner(["+91 98765 43210"], "text");
+  expect(await Effect.runPromise(ask.ask(answering.asker, ["phone"]))).toEqual({
+    slot: "phone",
+    value: "+91 98765 43210",
+  });
+  expect(secrets.redact("+919876543210, 9876543210, (987) 654-3210, 98765 43210")).toBe(
+    "[private], [private], [private], [private]",
+  );
 });
