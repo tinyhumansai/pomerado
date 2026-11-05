@@ -2929,6 +2929,13 @@ export interface MintDependencies {
   readonly canPublishRepair?: (executionId: string) => boolean;
   /** Host-created SDK workspace, no credentials, no external grants. Host owns cleanup. */
   readonly workspace: SandboxSession;
+  /**
+   * The workspace's files as they are now, each path with its text, for a host that can list them.
+   * A step's source digest then covers everything its entrypoint can load, a file only a computed
+   * import names included, so a live test goes stale when such a file changes. Absent, the digest
+   * reads the entrypoint's static imports alone, one file at a time.
+   */
+  readonly workspaceFiles?: Effect.Effect<readonly (readonly [string, string])[], unknown>;
   /** Same-attempt artifacts already screened and published by the host collector.
    * Generated source cannot populate this read-only view. */
   readonly readPublishedCapture?: (path: string) => Effect.Effect<string | undefined, MintFailure>;

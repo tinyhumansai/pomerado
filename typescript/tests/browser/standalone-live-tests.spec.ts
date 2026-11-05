@@ -498,3 +498,143 @@ test("passes a case that expects an error when the tool refuses an input the pag
     await site.close();
   }
 });
+
+// A tool's digest covers what it can load: src/ ships whole, so a file only a computed import
+// names can change after its tests, and those tests no longer speak for the source.
+test("a case goes stale when a file a computed import loads changes after it ran", async () => {
+  test.setTimeout(240_000);
+  const tool = `import { Schema } from "effect";
+import { defineOperation } from "../runtime/index.js";
+const name = "answer";
+export default defineOperation({name:"answer_fixture",input:Schema.Struct({query:Schema.String}),output:Schema.Struct({answer:Schema.String})},
+async ({input}) => {
+  const { answer } = await import("./" + name + ".mjs");
+  return {answer: answer(input.query)};
+});`;
+  const site = await startSite((_request, response) => html(response, "<h1>Fixture</h1>"));
+  const guardian = recordingGuardian();
+  try {
+    const { built, requests } = await mint({
+      effect: "read",
+      url: site.url,
+      guardian,
+      intent: "Answer a query",
+      timeoutMs: 600_000,
+      turns: [
+        () =>
+          patch({
+            "src/tool.mjs": tool,
+            "src/answer.mjs": `export const answer = (query) => "before " + query;\n`,
+            "test/cases.json": JSON.stringify({
+              cases: [{ id: "lamp", purpose: "The answer.", input: { query: "lamp" }, expect: "result" }],
+            }),
+          }),
+        () => [
+          call("live_tests", {
+            intent: "Run every planned case",
+            action: "run",
+            entrypoint: "src/tool.mjs",
+            cases: null,
+            maxWorkers: 1,
+          }),
+        ],
+        () => [
+          {
+            type: "apply_patch_call",
+            callId: "patch_answer",
+            status: "completed",
+            operation: {
+              type: "update_file",
+              path: "src/answer.mjs",
+              diff: `@@\n-export const answer = (query) => "before " + query;\n+export const answer = (query) => "after " + query;\n`,
+            },
+          },
+        ],
+        () => [
+          call(
+            "execute",
+            execution("example", "src/tool.mjs", { exampleInput: '{"query":"lamp"}' }),
+            "example",
+          ),
+        ],
+        (request) => [
+          call("finish_build", {
+            intent: "Publish the answer",
+            entrypoint: "src/tool.mjs",
+            executionId: executionIdOf(request, "example"),
+            metadata: { name: "answer_fixture", description: "Answer a query" },
+            coverage: "One live example.",
+          }),
+        ],
+      ],
+    });
+
+    const ran = toolResult(requests[2], "live_tests") as {
+      readonly cases: readonly Readonly<Record<string, unknown>>[];
+    };
+    expect(ran.cases[0]).toMatchObject({ id: "lamp", status: "pass" });
+    expect(built.liveTests?.versions[0]?.counts, JSON.stringify(built)).toEqual({
+      pass: 0,
+      fail: 0,
+      inconclusive: 0,
+      stale: 1,
+    });
+  } finally {
+    await site.close();
+  }
+});
+
+test("a case stays current when a probe the tool can't load is added after it ran", async () => {
+  test.setTimeout(240_000);
+  const site = await startSite((_request, response) => html(response, "<h1>Fixture</h1>"));
+  try {
+    const { built } = await mint({
+      effect: "read",
+      url: site.url,
+      guardian: recordingGuardian(),
+      intent: "Search the fixture catalog",
+      timeoutMs: 600_000,
+      turns: [
+        () =>
+          patch({
+            "src/tool.mjs": searchTool,
+            "test/cases.json": JSON.stringify({ cases: cases.cases.slice(0, 1) }),
+          }),
+        () => [
+          call("live_tests", {
+            intent: "Run every planned case",
+            action: "run",
+            entrypoint: "src/tool.mjs",
+            cases: null,
+            maxWorkers: 1,
+          }),
+        ],
+        () => patch({ "explore/later.mjs": "export default 1;\n" }),
+        () => [
+          call(
+            "execute",
+            execution("example", "src/tool.mjs", { exampleInput: '{"query":"lamp"}' }),
+            "example",
+          ),
+        ],
+        (request) => [
+          call("finish_build", {
+            intent: "Publish the search",
+            entrypoint: "src/tool.mjs",
+            executionId: executionIdOf(request, "example"),
+            metadata: { name: "search_fixture", description: "Search the fixture catalog" },
+            coverage: "One live example.",
+          }),
+        ],
+      ],
+    });
+
+    expect(built.liveTests?.versions[0]?.counts, JSON.stringify(built)).toEqual({
+      pass: 1,
+      fail: 0,
+      inconclusive: 0,
+    });
+  } finally {
+    await site.close();
+  }
+});

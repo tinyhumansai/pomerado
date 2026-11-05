@@ -124,7 +124,7 @@ import {
   memoryHistoryArchive,
   minterHistory,
 } from "./outcome-review.js";
-import { readImportClosure } from "./operation-source.js";
+import { executedSourceClosure, readImportClosure } from "./operation-source.js";
 import { boundedResult, digestResult, resultDigestPath } from "./result-digest.js";
 import { contentDigest } from "./step-checks.js";
 import { writePathNotice } from "./write-session.js";
@@ -3413,21 +3413,26 @@ export const runMint = (input: unknown): Effect.Effect<MintOutcome, MintFailure,
       /** The caller's accepted answers and approved changes, in order, for the outcome reviewer. */
       const acceptedAnswers: unknown[] = [];
       /**
-       * The digest of what `entrypoint`'s import closure holds in the workspace now, without
-       * paths; undefined when it cannot be read, and a failed read is reported to the host.
+       * The digest of what `entrypoint` can load from the workspace now, without paths: every file
+       * a computed import might name, on a host that lists its files (`workspaceFiles`), else its
+       * static imports. Undefined when it cannot be read, and a failed read is reported to the host.
        */
       const stepDigest = (entrypoint: string) =>
-        Effect.tryPromise({
-          try: async () => {
-            const files = await readImportClosure(async (path) => {
-              if ((await session.pathExists?.(path)) === false) return undefined;
-              const text: unknown = await session.readFile?.({ path });
-              return typeof text === "string" ? text : undefined;
-            }, entrypoint);
-            return files.size === 0 ? undefined : contentDigest(files);
-          },
-          catch: (error) => error,
-        }).pipe(
+        (dependencies.workspaceFiles === undefined
+          ? Effect.tryPromise({
+              try: () =>
+                readImportClosure(async (path) => {
+                  if ((await session.pathExists?.(path)) === false) return undefined;
+                  const text: unknown = await session.readFile?.({ path });
+                  return typeof text === "string" ? text : undefined;
+                }, entrypoint),
+              catch: (error) => error,
+            })
+          : dependencies.workspaceFiles.pipe(
+              Effect.map((files) => executedSourceClosure(new Map(files), entrypoint)),
+            )
+        ).pipe(
+          Effect.map((files) => (files.size === 0 ? undefined : contentDigest(files))),
           Effect.catchAll((error) =>
             reportFailure(error, {
               component: "mint",
