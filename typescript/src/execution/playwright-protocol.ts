@@ -26,6 +26,17 @@ export const NativeWorkerRequest = Schema.Union(
     keys: Schema.optional(Schema.Literal(true)),
     trustedKeys: Schema.optional(Schema.Literal(true)),
   }),
+  /** A read of a bound field, typing nothing (`CredentialKeyboard.readBack`). */
+  Schema.Struct({
+    id: Schema.String,
+    kind: Schema.Literal("credential_read_back"),
+    target: Schema.Struct({
+      targetId: Schema.optional(Schema.String),
+      bindingKey: Schema.String,
+      documentOrigin: Schema.String,
+    }),
+    numbers: Schema.Array(Schema.String),
+  }),
 );
 export const NativeWorkerReply = Schema.Union(
   Schema.Struct({

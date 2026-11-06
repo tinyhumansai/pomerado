@@ -56,6 +56,10 @@ const refusalNotices: Readonly<Record<string, RefusalNotice>> = {
     why: "the field's selector matched more than one visible control when the host went to type",
     next: "Read the screen again read-only and correct the selector so it matches the one visible field.",
   },
+  calling_code: {
+    why: "the calling_code field is no select or dropdown the host can choose in, or the choice it made there did not stick",
+    next: "Inspect the picker read-only: name its select, or the control that opens its list, as the calling_code field. Otherwise send the signInStep again without the calling_code field and without the phone box's format, so the host types the whole number and the read-back stops one typed under another country.",
+  },
 };
 /** A `change` refusal whose cause is a private answer's question that changed. */
 const questionChanged = {

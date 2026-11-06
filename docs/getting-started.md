@@ -216,7 +216,7 @@ When a job needs something from you, `get_job` returns `"status": "input_require
 - You can answer any choice the build asks in your own words. A choice takes an option ID, `{"other": "…"}` for your own answer, or `{"option": "…", "note": "…"}` for an option with a note. Several choices take an array of option IDs, or `{"options": […], "other": "…", "note": "…"}` with your own option or a note, each optional. A question offers these when it has `allowOther` or `allowNote`.
 - A question expires after 10 minutes. After that, `provide_input` refuses answers to it.
 - For a login, Pomerado finds the sign-in form, asks for the username and password, and types them into the page.
-- For a one-time code, Pomerado asks you for the code. It reads no SMS or authenticator app for you.
+- For a one-time code, Pomerado asks you for the code. It reads no SMS or authenticator app for you. When the code question has `allowResend`, you can answer `{"resend": true}` instead of a code: Pomerado waits for the site to allow it, has the site send a new code, and asks you again. Without it, the question takes the code alone.
 - Answers, passwords included, pass through your MCP client and its model provider. Pomerado saves none of them.
 
 ## Server options

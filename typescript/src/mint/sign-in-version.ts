@@ -116,6 +116,7 @@ const stepSelectors = (step: SignInRecipeStep, at: string): Text[] => [
     part: `${at}.methods[${index}].selector`,
     text: option.selector,
   })),
+  ...(step.resend === undefined ? [] : [{ part: `${at}.resend`, text: step.resend }]),
 ];
 
 /** What a page names past its origin: a path's path, an absolute URL's path, query and fragment. */
@@ -214,8 +215,8 @@ export const checkSignInVersion = (
     for (const { part, text } of stepSelectors(step, at)) {
       if (namesMaskedContact(text) || namesIdentityOrPrivateMask(text, values))
         refuse("selector_names_contact", part);
-      // What a step clicks: its submit and its methods.
-      if (/\.(?:submit|methods\[\d+\]\.selector)$/u.test(part) && signsOut(text))
+      // What a step clicks: its submit, its methods and a code screen's resend.
+      if (/\.(?:submit|methods\[\d+\]\.selector|resend)$/u.test(part) && signsOut(text))
         refuse("sign_out", part);
     }
     const page = pastOrigin(step.page);

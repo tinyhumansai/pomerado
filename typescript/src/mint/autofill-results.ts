@@ -145,24 +145,29 @@ const filledNotices = {
   page: "The host filled the fields, and the page may have sent them itself: once the last field was filled, the screen moved on, emptied its fields or stopped taking typing before the host clicked anything. Explore read-only to read the next screen (never read a field the host filled), then send its signInStep, or signInStep.signedIn with what shows the site signed in.",
 } as const;
 
+/** What to do on a screen with a country picker: name it as its own field, picking `what`. */
+const pickerAdvice = (what: string) =>
+  `prefer sending this signInStep again with the picker as its own field before the phone field, accepting phone with format calling_code, and the phone field's format set to national: the host then picks ${what} there, checks it stuck, and types the number without it.`;
+
 /**
  * After a phone field whose `maxLength` is shorter than the number the host typed, when the number
  * says its calling code (`code`): it names that code and no other digit of the number, so that on
- * a screen with a country picker the picker shows the number's country before the number goes
- * without its calling code.
+ * a screen with a country picker the step names the picker as its own field, where the host picks
+ * the number's country before the number goes without its calling code.
  */
 const localNumberNotice = (code: string) =>
-  `The phone field seems to take only the local number: it kept just the start of the number the host typed. Nothing was submitted and nobody was asked. If the screen has no country picker, prefer sending this signInStep again with that phone field's format set to national: the host then types the number without its country calling code, and reads the field back again before it submits. If the screen has a country picker, prefer setting that phone field's format to national only when the picker already shows the country for calling code +${code} as the screen loads, which is what a run will see, and otherwise keep the full number, so the read-back stops a number typed under another country.`;
+  `The phone field seems to take only the local number: it kept just the start of the number the host typed. Nothing was submitted and nobody was asked. If the screen has no country picker, prefer sending this signInStep again with that phone field's format set to national: the host then types the number without its country calling code, and reads the field back again before it submits. If the screen has a country picker, ${pickerAdvice(`calling code +${code}`)}`;
 
 /**
  * A step the host stopped before its submit because a phone field kept other digits than the
  * number it typed (field status `changed`). When the field seems to take only the local number
  * (`local`, from `takesLocalNumber`) and the number is written in international form, it says to
  * send the step again with the field's format set to national, naming only the number's calling
- * code, for a screen with a country picker to show first. Otherwise it names the number's calling
- * code when it is written in international form (`callingCode`), else the site's own country, as
- * a number written without its calling code most likely belongs to it. Nothing was submitted and
- * nobody was asked.
+ * code, and on a screen with a country picker to name the picker as its own field, where the host
+ * picks that code (`format: "calling_code"`). Otherwise it names the number's calling code when it
+ * is written in international form (`callingCode`), with the same advice for a picker, else the
+ * site's own country, as a number written without its calling code most likely belongs to it.
+ * Nothing was submitted and nobody was asked.
  */
 export const changedPhoneNotice = (number: string | undefined, local = false) => {
   const code = number === undefined ? undefined : callingCode(number);
@@ -171,7 +176,7 @@ export const changedPhoneNotice = (number: string | undefined, local = false) =>
     "The phone field kept different digits than the number the host typed, as when the site's country picker is set to another country. Nothing was submitted and nobody was asked.";
   return code === undefined
     ? `${lead} If the screen has a country picker, prefer setting it to the site's own country with an explore step, then send this signInStep again.`
-    : `${lead} The number's country calling code is +${code}. If the screen has a country picker, prefer setting it to that country with an explore step, then send this signInStep again.`;
+    : `${lead} The number's country calling code is +${code}. If the screen has a country picker, ${pickerAdvice("the number's calling code")}`;
 };
 
 /**
@@ -220,12 +225,33 @@ const keyNotices = {
     "The host filled the fields and pressed the step's submitKey in the last field. Explore read-only to read the next screen (never read a field the host filled), then send its signInStep, or signInStep.signedIn with what shows the site signed in.",
 } as const;
 
+/**
+ * After a step the host refused at its calling-code picker (`format: "calling_code"`), picking
+ * and typing nothing: the number says no calling code, or the picker offers no option, or
+ * several, for it. Each names no digit of the number.
+ */
+export const callingCodeNotices = {
+  calling_code_missing:
+    "The login's phone number doesn't say its country calling code (it isn't written with + or 00), so the host can't tell which option of the screen's calling-code picker is its country. It picked and typed nothing, so nothing reached the site and nobody was asked. If the picker already shows the number's country as the screen loads, send this signInStep again without the calling_code field, with the phone box's format still national; otherwise the sign-in can't go on with this number.",
+  calling_code_unoffered:
+    "The screen's calling-code picker has no option that shows the number's calling code with its plus, as in +44 or United Kingdom (+44), so the host picked and typed nothing; nothing reached the site and nobody was asked. Check with a read-only explore that the calling_code field is the picker itself (a select, or the control that opens its list) and that its options show their codes. Otherwise send this signInStep again without the calling_code field and without the phone box's format, so the host types the whole number and the read-back stops one typed under another country.",
+  calling_code_ambiguous:
+    "The screen's calling-code picker has more than one option for the number's calling code, as two countries that share +1 do. The host never guesses a country, since a guess could send the code to someone else's phone, so it picked and typed nothing; nothing reached the site and nobody was asked. Send this signInStep again without the calling_code field and without the phone box's format, so the host types the whole number and the read-back stops one typed under another country.",
+} as const;
+
 export const stepNotice = (
   stepReport: AutofillStepReport,
   step?: Pick<AutofillStep, "submitKey">,
 ) => {
   if (stepReport.outcome === "refused" && stepReport.reason === "dismiss_refused")
     return dismissRefusedNotice;
+  if (
+    stepReport.outcome === "refused" &&
+    (stepReport.reason === "calling_code_missing" ||
+      stepReport.reason === "calling_code_unoffered" ||
+      stepReport.reason === "calling_code_ambiguous")
+  )
+    return callingCodeNotices[stepReport.reason];
   if (stepReport.outcome === "refused")
     return `The host typed and clicked nothing (${stepReport.reason}), so nothing reached the site and no sign-in was spent. Correct the step from the page's evidence, ${autofillRecovery}.`;
   if (lostTyping(stepReport)) return lostTypingNotice;

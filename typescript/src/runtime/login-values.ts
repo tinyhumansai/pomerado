@@ -1,6 +1,7 @@
 import { identifierPreference, type IdentifierKind } from "../destinations/autofill-step.js";
 import { parseDateOfBirth } from "../destinations/login-field-formats.js";
 import type { WebsiteCredentials } from "./authentication.js";
+import { phoneShaped } from "./input-request.js";
 
 /** An identifier a site may ask for besides the username: it picks which account signs in. */
 export type LoginIdentifierKind = "email" | "phone" | "account_number";
@@ -43,8 +44,7 @@ export const asksPrivateIdentifier = (asked: Asked): asked is PrivateIdentifierA
 export const privateIdentifierLimit = 128;
 
 export const emailShaped = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(value.trim());
-export const phoneShaped = (value: string) =>
-  /^\+?[\d\s().-]+$/u.test(value.trim()) && value.replace(/\D/gu, "").length >= 7;
+export { phoneShaped };
 
 /**
  * The kind of an answer to the kinds a field accepts: an email-shaped answer is an email address,

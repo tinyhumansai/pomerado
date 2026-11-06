@@ -589,6 +589,10 @@ const phoneShop = async (
     readonly codeInPassword?: boolean;
     /** What the code screen says of the number it received, in its text and in its field's label. */
     readonly echo?: (phone: string) => readonly [text: string, label: string];
+    /** The phone screen's own form, in place of the one phone box. */
+    readonly loginForm?: string;
+    /** The label of the code screen's resend control, which asks for a new code when pressed. */
+    readonly resend?: string;
   } = {},
 ) => {
   const directory = await mkdtemp(join(tmpdir(), "pomerado-phone-shop-"));
@@ -608,6 +612,7 @@ const phoneShop = async (
     "1",
   ]);
   const received = { phones: [] as string[], codes: [] as string[] };
+  const resends: string[] = [];
   const shop = createHttpsServer(
     {
       key: await readFile(join(directory, "key.pem")),
@@ -628,6 +633,11 @@ const phoneShop = async (
           response.end();
           return;
         }
+        if (request.method === "POST" && path === "/resend") {
+          resends.push(received.phones.at(-1) ?? "");
+          response.end("{}");
+          return;
+        }
         if (request.method === "POST" && path === "/verify") {
           const code =
             form.get("code") ?? [1, 2, 3, 4, 5, 6].map((box) => form.get(`d${box}`) ?? "").join("");
@@ -644,12 +654,17 @@ const phoneShop = async (
         if (path === "/login") {
           html(
             response,
-            `<form method="post" action="/send-code"><label>Phone number <input name="phone" type="tel" autocomplete="tel"></label>${options.passwordField === true ? `<label>Password <input name="password" type="password"></label>` : ""}<button>Send code</button></form>`,
+            options.loginForm ??
+              `<form method="post" action="/send-code"><label>Phone number <input name="phone" type="tel" autocomplete="tel"></label>${options.passwordField === true ? `<label>Password <input name="password" type="password"></label>` : ""}<button>Send code</button></form>`,
           );
           return;
         }
         if (path === "/verify") {
           const echoed = options.echo?.(received.phones.at(-1) ?? "");
+          const resend =
+            options.resend === undefined
+              ? ""
+              : `<button type="button" id="resend" onclick="fetch('/resend', { method: 'POST' })">${options.resend}</button>`;
           // The code in one field, or in six one-character boxes.
           const fields = options.codeBoxes
             ? [1, 2, 3, 4, 5, 6]
@@ -661,7 +676,7 @@ const phoneShop = async (
             : `<label>Code ${echoed?.[1] ?? ""} <input name="code" ${options.codeInPassword === true ? 'type="password"' : ""} inputmode="numeric" autocomplete="one-time-code"></label>`;
           html(
             response,
-            `${echoed === undefined ? "" : `<p>We sent a code to ${echoed[0]}</p>`}<form method="post" action="/verify">${fields}<button>Verify</button></form>`,
+            `${echoed === undefined ? "" : `<p>We sent a code to ${echoed[0]}</p>`}<form method="post" action="/verify">${fields}<button>Verify</button>${resend}</form>`,
           );
           return;
         }
@@ -707,6 +722,8 @@ const phoneShop = async (
       ignoreHTTPSErrors: true,
     },
     received,
+    /** The number each press of the code screen's resend control asked a new code for. */
+    resends,
     close: async () => {
       shop.closeAllConnections();
       tunnel.closeAllConnections();
@@ -1238,6 +1255,149 @@ test("a mint masks a number a national field takes without its calling code, in 
   }
 });
 
+test("a mint masks a number on a calling-code picker's screen and on a resend control, in each form the site writes it", async () => {
+  test.setTimeout(180_000);
+  const shop = await phoneShop({
+    loginForm: `<form method="post" action="/send-code"><label>Country <select id="country"><option>United States (+1)</option><option>India (+91)</option></select></label><label>Mobile number <input name="phone" type="tel" maxlength="10"></label><button>Send code</button></form>`,
+    echo: (typed) => [typed, "98765 43210"],
+    resend: "Send again to +91 98765-43210",
+  });
+  const guardian = recordingGuardian();
+  let codes = 0;
+  try {
+    const { built, requests } = await mint({
+      effect: "read",
+      url: `${shop.origin}/login`,
+      guardian,
+      intent: "Read the account's heading",
+      timeoutMs: 600_000,
+      browser: { context: shop.context },
+      passwordless: byPhone,
+      answer: (request) =>
+        Object.fromEntries(
+          request.questions.map((question) => [
+            question.id,
+            question.type === "credential"
+              ? { username: "+919876543210", saveLogin: false }
+              : codes++ === 0
+                ? { resend: true }
+                : "424242",
+          ]),
+        ),
+      turns: [
+        () => patch({ "src/tool.mjs": searchHeading, "explore/body.mjs": readBody }),
+        () => [
+          call(
+            "execute",
+            execution("authenticate", "src/tool.mjs", {
+              signInStep: {
+                fields: [
+                  { selector: "#country", accepts: ["phone"], format: "calling_code" },
+                  { selector: "input[name=phone]", accepts: ["phone"], format: "national" },
+                ],
+                submit: "button",
+              },
+            }),
+            "phone",
+          ),
+        ],
+        ...phoneSignInTurns.slice(1, 2),
+        () => [
+          call(
+            "execute",
+            execution("authenticate", "src/tool.mjs", {
+              signInStep: {
+                fields: [{ selector: "input[name=code]", slot: "code" }],
+                submit: "button:not(#resend)",
+                resend: "#resend",
+              },
+            }),
+            "code",
+          ),
+        ],
+        () => [said("Stop here.")],
+      ],
+    });
+
+    expect(shop.received).toEqual({ phones: ["9876543210"], codes: ["424242"] });
+    expect(shop.resends).toEqual(["9876543210"]);
+    expect(JSON.stringify(requests)).toContain("We sent a code to [private]");
+    // Guardian judged the control as it showed, just before the host pressed it.
+    expect(JSON.stringify(guardian.reviews)).toContain("resendControl");
+    expect(JSON.stringify(guardian.reviews)).toContain("Send again to [private]");
+    for (const form of ["9876543210", "98765 43210", "98765-43210"]) {
+      expect(JSON.stringify(built)).not.toContain(form);
+      expect(JSON.stringify(requests)).not.toContain(form);
+      expect(JSON.stringify(guardian.reviews)).not.toContain(form);
+    }
+  } finally {
+    await shop.close();
+  }
+});
+
+test("a mint masks a number a page's phone box took from the box the host typed, in each form the site writes it", async () => {
+  test.setTimeout(180_000);
+  const shop = await phoneShop({
+    loginForm: `<form method="post" action="/send-code"><div id="box"><label>Email or mobile number <input id="identifier" name="identifier"></label></div><button>Continue</button></form>
+<script>
+document.getElementById("identifier").addEventListener("input", (event) => {
+  const typed = event.target.value;
+  document.getElementById("box").innerHTML = '<label>Mobile number <input id="phone" name="phone" type="tel"></label>';
+  document.getElementById("phone").value = typed;
+});
+</script>`,
+    echo: (typed) => [typed, "98765 43210"],
+  });
+  const guardian = recordingGuardian();
+  try {
+    const { built, requests } = await mint({
+      effect: "read",
+      url: `${shop.origin}/login`,
+      guardian,
+      intent: "Read the account's heading",
+      timeoutMs: 600_000,
+      browser: { context: shop.context },
+      passwordless: byPhone,
+      answer: (request) =>
+        Object.fromEntries(
+          request.questions.map((question) => [
+            question.id,
+            question.type === "credential"
+              ? { username: "+919876543210", saveLogin: false }
+              : "424242",
+          ]),
+        ),
+      turns: [
+        () => patch({ "src/tool.mjs": searchHeading, "explore/body.mjs": readBody }),
+        () => [
+          call(
+            "execute",
+            execution("authenticate", "src/tool.mjs", {
+              signInStep: {
+                fields: [{ selector: "#identifier", accepts: ["email", "phone"] }],
+                submit: "button",
+              },
+            }),
+            "phone",
+          ),
+        ],
+        ...phoneSignInTurns.slice(1, 3),
+        () => [said("Stop here.")],
+      ],
+    });
+
+    expect(shop.received).toEqual({ phones: ["+919876543210"], codes: ["424242"] });
+    expect(JSON.stringify(requests)).toContain("We sent a code to [private]");
+    for (const form of ["+919876543210", "9876543210", "98765 43210"]) {
+      expect(JSON.stringify(built)).not.toContain(form);
+      expect(JSON.stringify(requests)).not.toContain(form);
+      expect(JSON.stringify(guardian.reviews)).not.toContain(form);
+    }
+  } finally {
+    await shop.close();
+  }
+});
+
 test("a mint on an account with no password refuses a screen that takes one, types nothing and tells the minter", async () => {
   test.setTimeout(120_000);
   const shop = await phoneShop({ passwordField: true });
@@ -1321,6 +1481,56 @@ test("a mint on an account with no password types no identifier into a password 
     expect(refused).toContain("credential_unavailable");
     expect(refused).toContain("This login has no password");
     expect(shop.received).toEqual({ phones: [], codes: [] });
+  } finally {
+    await shop.close();
+  }
+});
+
+test("a mint on an account with no password picks no calling code for a number that would go into a password input", async () => {
+  test.setTimeout(120_000);
+  const shop = await phoneShop({
+    loginForm: `<form method="post" action="/send-code"><label>Country <select id="country" name="country"><option>United States (+1)</option><option>India (+91)</option></select></label><label>Number <input name="phone" type="password"></label><button>Send code</button></form>
+<script>
+document.getElementById("country").addEventListener("change", () => fetch("/resend", { method: "POST" }));
+</script>`,
+  });
+  try {
+    const { built, requests } = await mint({
+      effect: "read",
+      url: `${shop.origin}/login`,
+      guardian: recordingGuardian(),
+      intent: "Read the account's heading",
+      browser: { context: shop.context },
+      passwordless: byPhone,
+      answer: () => ({ login: { username: "+919876543210", saveLogin: false } }),
+      turns: [
+        () => patch({ "src/tool.mjs": searchHeading }),
+        () => [
+          call(
+            "execute",
+            execution("authenticate", "src/tool.mjs", {
+              signInStep: {
+                fields: [
+                  { selector: "#country", accepts: ["phone"], format: "calling_code" },
+                  { selector: "input[name=phone]", accepts: ["phone"], format: "national" },
+                ],
+                submit: "button",
+              },
+            }),
+            "phone",
+          ),
+        ],
+        () => [said("This shop needs a password.")],
+      ],
+    });
+
+    expect(built.build).toBe("incomplete");
+    const refused = JSON.stringify(requests[2]);
+    expect(refused).toContain("credential_unavailable");
+    expect(refused).toContain("This login has no password");
+    expect(shop.received).toEqual({ phones: [], codes: [] });
+    // The picker's change would have reached the site.
+    expect(shop.resends).toEqual([]);
   } finally {
     await shop.close();
   }

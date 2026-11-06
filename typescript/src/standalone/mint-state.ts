@@ -266,11 +266,16 @@ export const mintState = (
           ask: signInAsks.ask,
           secrets,
           // The screen may show a value the caller gave, such as the typed email on a password
-          // screen; it reaches Guardian masked. The source check still refuses any value left.
-          review: (step, inspection) =>
+          // screen; it reaches Guardian masked. The source check still refuses any value left. A
+          // code screen's resend control goes with it as found, just before the host presses it.
+          review: (step, inspection, resendControl) =>
             screenMintText(
               { projection: session.projection },
-              { step, screen: inspection.screen },
+              {
+                step,
+                screen: inspection.screen,
+                ...(resendControl === undefined || resendControl === null ? {} : { resendControl }),
+              },
             ).pipe(
               Effect.flatMap((source) =>
                 context.review(

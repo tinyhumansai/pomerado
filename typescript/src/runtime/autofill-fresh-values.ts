@@ -1,6 +1,11 @@
 import { Effect } from "effect";
 import type { YieldableError } from "effect/Cause";
-import { bareCode, Unanswered, type makeLoginFieldAsk } from "./login-field-asks.js";
+import {
+  bareCode,
+  resendRequested,
+  Unanswered,
+  type makeLoginFieldAsk,
+} from "./login-field-asks.js";
 import type { AutofillLogin, AnsweredLoginField } from "./autofill-values.js";
 
 /**
@@ -19,6 +24,16 @@ const codeNotices: Record<NonNullable<AutofillLogin["codeAgain"]>, string> = {
   // Not called a refusal: a page error may have lost the code, or the site may want a second one.
   returned: "The last code didn't sign you in.",
 };
+
+/**
+ * Host-written: why the owner is asked for a code again after asking for a new one. The host
+ * pressed the site's resend control, which asks the site to send one; nothing tells the host it
+ * did.
+ */
+const resendNotices = {
+  pressed: "The site was asked to send a new code.",
+  unpressed: "The site's resend control couldn't be pressed, so no new code was asked for.",
+} as const;
 
 /**
  * A code this sign-in already sent and the site refused: as given, or as one-digit boxes sent it,
@@ -55,9 +70,43 @@ export const makeFreshAutofillValues = <E extends YieldableError>({
       return new Unanswered("field_corrections_exhausted", slot);
     });
   /**
+   * The owner's code, asked with `notice`. While the screen's resend control has presses left
+   * (`resend`), the question offers a resend: an owner who asks for one has the host press it,
+   * and is asked again for the newest code, saying whether the press went through. Those asks
+   * spend none of a refused code's tries.
+   */
+  const codeOrResend = (
+    login: AutofillLogin,
+    codeBoxes: number | undefined,
+    notice: string | undefined,
+  ) =>
+    Effect.gen(function* () {
+      let saying = notice;
+      while (true) {
+        const offered = login.resend !== undefined && login.resend.left() > 0;
+        const answered = yield* ask(
+          login.ask,
+          "code",
+          saying,
+          false,
+          0,
+          codeBoxes,
+          login.codeInstruction,
+          offered,
+        );
+        if (!offered || !(answered instanceof Unanswered) || answered.cause !== resendRequested)
+          return answered;
+        const pressed = yield* login.resend?.press ?? Effect.succeed(false);
+        const stopped = login.resend?.stopped?.();
+        if (stopped !== undefined) return new Unanswered(stopped.cause);
+        saying = pressed ? resendNotices.pressed : resendNotices.unpressed;
+      }
+    });
+  /**
    * Caller-provided codes consume the existing shared two-correction budget. An answer must fit
    * `codeBoxes` code fields one character each, when the screen has several. The question quotes
-   * the screen's own instruction for the code when the step named one (`codeInstruction`).
+   * the screen's own instruction for the code when the step named one (`codeInstruction`), and
+   * offers a resend on a screen whose resend control the host can press (`codeOrResend`).
    */
   const askedCode = (login: AutofillLogin, codeBoxes: number | undefined) =>
     Effect.gen(function* () {
@@ -66,14 +115,10 @@ export const makeFreshAutofillValues = <E extends YieldableError>({
           if (login.codeRequests.current >= 2) return new Unanswered("code_corrections_exhausted");
           login.codeRequests.current += 1;
         }
-        const answered = yield* ask(
-          login.ask,
-          "code",
-          login.codeAgain === undefined ? undefined : codeNotices[login.codeAgain],
-          false,
-          0,
+        const answered = yield* codeOrResend(
+          login,
           codeBoxes,
-          login.codeInstruction,
+          login.codeAgain === undefined ? undefined : codeNotices[login.codeAgain],
         );
         if (answered instanceof Unanswered || !refusedBefore(login, answered.value))
           return answered;

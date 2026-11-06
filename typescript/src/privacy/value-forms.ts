@@ -96,7 +96,7 @@ const lowercaseHex = (encoded: string) =>
  * token, since a short value, such as a favorite color or a six-digit code, turns up inside a
  * longer word or a timestamp by chance.
  */
-const shortForm = 8;
+export const shortForm = 8;
 
 /**
  * Each form a page or URL can show `value` in, each with whether it is short (`shortForm`). The
