@@ -286,12 +286,20 @@ interface NamedScreen {
 
 const isInsertionRefusal = Schema.is(InsertionRefusal);
 
+/** A calling-code picker's refusal: its step's number or options, not a control the host judged. */
+export const isCallingCodeRefusal = (reason: AutofillRefusal["reason"]) =>
+  reason === "calling_code_missing" ||
+  reason === "calling_code_unoffered" ||
+  reason === "calling_code_ambiguous";
+
 /**
  * The fill's refusal of a field of `step`, if its report is one: a check refused to type into the
  * field, or to keep typing once an earlier field was typed, so the host submitted nothing of the
  * screen. Only a fill's report counts; an inspection's refusal comes before any typing. A refused
- * submit, a failed call and a lost answer are not refusals of a field. A refused native insertion
- * keeps its finite cause, as does a private answer's question that changed.
+ * submit, a failed call and a lost answer are not refusals of a field, and neither is a
+ * calling-code picker's (`isCallingCodeRefusal`), whose step the minter corrects from its notice.
+ * A refused native insertion keeps its finite cause, as does a private answer's question that
+ * changed.
  */
 export const typingRefusal = (
   step: NamedScreen,
@@ -299,6 +307,7 @@ export const typingRefusal = (
 ): HostRefusal | undefined => {
   if (report.outcome === "uncertain" || report.failureDetail?.subCause !== "autofill_step_failed")
     return undefined;
+  if (report.outcome === "refused" && isCallingCodeRefusal(report.reason)) return undefined;
   const check = report.failureDetail.context?.["check"];
   const field =
     report.outcome === "refused"

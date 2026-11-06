@@ -20,7 +20,7 @@ GITLEAKS=/path/to/gitleaks bash tools/ci-scan.sh secrets
 ```
 
 - Browser tests run the built `dist/`, so build before you run them.
-- `test:browser` runs every browser test on Chromium, and `native-firefox.spec.ts`, `host-hooks.spec.ts` and the other specs that `playwright.config.ts` lists for its `firefox` project, the page helpers' and the sign-in code and phone specs, on Playwright's Firefox too. Set `CAMOUFOX_EXECUTABLE` to a Camoufox binary to add the `camoufox` project, which runs every browser test on Camoufox. CI doesn't run it, so run it locally for a change to the Firefox engine, with nothing else heavy running: Camoufox types about ten times slower than Chromium.
+- `test:browser` runs every browser test on Chromium, and `native-firefox.spec.ts`, `host-hooks.spec.ts` and the other specs that `playwright.config.ts` lists for its `firefox` project, the page helpers' and the sign-in code, phone and slotted dismiss specs, on Playwright's Firefox too. Set `CAMOUFOX_EXECUTABLE` to a Camoufox binary to add the `camoufox` project, which runs every browser test on Camoufox. CI doesn't run it, so run it locally for a change to the Firefox engine, with nothing else heavy running: Camoufox types about ten times slower than Chromium.
 - Tests use synthetic sites and scripted model responses. They need no model key, and no test may call a real model.
 - CI runs gitleaks 8.30.1.
 - Set `EVENT=pull_request`, `PR_BASE` to the base commit and `PR_HEAD` to your head commit to scan your commits as CI does. The content scan then also checks your commit messages, and the secrets scan checks each commit's diff.

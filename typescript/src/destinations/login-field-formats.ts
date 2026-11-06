@@ -1,4 +1,5 @@
 import { formatDate } from "../browser/form-controls.js";
+import { unmarkedNumber } from "../runtime/input-request.js";
 import { DateOfBirthFormat } from "./autofill-contracts.js";
 
 /** A date of birth an owner typed, year first, as the ISO date a record keeps; undefined if none. */
@@ -37,16 +38,30 @@ const shortCallingCodes = new Set([
   ...["90", "91", "92", "93", "94", "95", "98"],
 ]);
 
-/** A phone number written in international form: its digits after the `+` or `00`. */
+/**
+ * What ends the number in a value that goes on past it, as an extension does: a letter, or a `#`,
+ * `;` or `*` after a digit. One before the digits ends nothing, so `#1234567` is those digits.
+ */
+const numberEnd = /\p{L}|(?<=[0-9].*)[#;*]/su;
+/** `value` up to what ends its number (`numberEnd`), or whole when nothing does. */
+export const numberPart = (value: string) => value.split(numberEnd, 1)[0] ?? "";
+
+/**
+ * A phone number written in international form: its digits after the `+`, `00` or `+00`, which a
+ * bracket may open. Undefined for a value that goes on past its number (`numberEnd`): a letter may mean a
+ * host's handle, and an extension's digits aren't the number's.
+ */
 const internationalDigits = (number: string) => {
-  const written = number.trim();
-  const lead = /^(?:\+|00)/u.exec(written)?.[0];
+  const written = unmarkedNumber(number).trim();
+  if (numberEnd.test(written)) return undefined;
+  const lead = /^\(?\s*(?:\+(?:00)?|00)/u.exec(written)?.[0];
   return lead === undefined ? undefined : written.slice(lead.length).replaceAll(/[^0-9]/gu, "");
 };
 
 /**
  * A phone number's country calling code, digits only, when the number is written in international
- * form, after `+` or `00`; undefined for a number written another way, which does not say it.
+ * form, after `+` or `00`; undefined for a number written another way, or that goes on past its
+ * digits, which does not say it (`internationalDigits`).
  */
 export const callingCode = (number: string) => {
   const digits = internationalDigits(number);
@@ -63,4 +78,47 @@ export const callingCode = (number: string) => {
 export const nationalDigits = (number: string) => {
   const code = callingCode(number);
   return code === undefined ? undefined : internationalDigits(number)?.slice(code.length);
+};
+
+/**
+ * The calling codes a picker's text names, each as its digits: a `+` and those digits, as in
+ * "India (+91)", "+91" or "🇮🇳 +91". Digits that a space or hyphen joins to them belong to the
+ * code, so "+1 268" names 1268 and never 1, and digits with no `+` before them name nothing, as
+ * they may be a list position or a number of the page's own. Self-contained: page code runs it
+ * from its own source.
+ */
+export const shownCallingCodes = (text: string): readonly string[] =>
+  Array.from(String(text).matchAll(/\+(\d+(?:[\s\-‐-–]\d+)*)/gu), (match) =>
+    (match[1] ?? "").replace(/\D/gu, ""),
+  );
+
+/**
+ * A text with each calling code it shows (`shownCallingCodes`) left out, as a picker that shows
+ * "India (+91)" says the country alone. Page code runs it from its own source.
+ */
+export const withoutCallingCodes = (text: string): string =>
+  String(text).replaceAll(/\+\d+(?:[\s\-‐-–]\d+)*/gu, " ");
+
+/**
+ * Whether a picker's text names the calling code `code` (`shownCallingCodes`). Page code runs it
+ * from its own source, beside `shownCallingCodes`.
+ */
+export const namesCallingCode = (text: string, code: string): boolean =>
+  shownCallingCodes(text).includes(code);
+
+/**
+ * The digits a phone box may hold for `number` when the page, not the host, wrote it there, each
+ * whole. `whole` is the number itself: after its calling code for a number that says one, else
+ * its own digits. `national` is a number's national digits alone (`nationalDigits`), or after a
+ * trunk 0, which say no country, so a box that holds them needs a picker beside it to say the
+ * number's own; none for a number that says no calling code.
+ */
+export const heldPhoneDigits = (
+  number: string,
+): { readonly whole: readonly string[]; readonly national: readonly string[] } => {
+  const code = callingCode(number);
+  const national = nationalDigits(number);
+  return code === undefined || national === undefined
+    ? { whole: [number.replaceAll(/[^0-9]/gu, "")], national: [] }
+    : { whole: [`${code}${national}`], national: [national, `0${national}`] };
 };

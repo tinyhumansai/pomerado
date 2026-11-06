@@ -183,12 +183,33 @@ it.each([
   ["+380 44 123 4567", "380"],
   ["+86 138 0013 8000", "86"],
   ["+213 555 12 34 56", "213"],
+  ["(+91) 98765 00000", "91"],
+  ["( +91 ) 98765 00000", "91"],
+  ["(0091) 98765 00000", "91"],
+  ["\u200e+91 98765 00000", "91"],
+  ["\u202a0091 98765 00000\u202c", "91"],
+  ["+0091 98765 00000", "91"],
 ])("names the calling code of %s", (number, code) => {
   expect(callingCode(number)).toBe(code);
   expect(changedPhoneNotice(number)).toContain(`The number's country calling code is +${code}.`);
 });
 
-it.each(["912 345 6789", "8 912 345-67-89", "+0 123 4567", "+12"])(
+it.each([
+  "912 345 6789",
+  "8 912 345-67-89",
+  "(0170) 555-0100",
+  "+0 123 4567",
+  "+12",
+  // A letter, or a `#`, `;` or `*`: a handle, or an extension whose digits aren't the number's.
+  "00 91 98765 00000 ext 12",
+  "+(91) 98765 00000 ext 12",
+  "+91 98765 00000 ext 12",
+  "+91 98765 00000 # 12",
+  "+91 98765 00000;12",
+  "+91 98765 00000*12",
+  "00 91 98765 00000 # 12",
+  "001a2b345678",
+])(
   "names no calling code for %s, which does not say it",
   (number) => {
     expect(callingCode(number)).toBeUndefined();
@@ -200,7 +221,7 @@ it.each(["912 345 6789", "8 912 345-67-89", "+0 123 4567", "+12"])(
 
 it("tells the minter what to do about a changed phone, naming only its calling code", () => {
   expect(changedPhoneNotice("+7 912 345-67-89")).toBe(
-    "The phone field kept different digits than the number the host typed, as when the site's country picker is set to another country. Nothing was submitted and nobody was asked. The number's country calling code is +7. If the screen has a country picker, prefer setting it to that country with an explore step, then send this signInStep again.",
+    "The phone field kept different digits than the number the host typed, as when the site's country picker is set to another country. Nothing was submitted and nobody was asked. The number's country calling code is +7. If the screen has a country picker, prefer sending this signInStep again with the picker as its own field before the phone field, accepting phone with format calling_code, and the phone field's format set to national: the host then picks the number's calling code there, checks it stuck, and types the number without it.",
   );
 });
 
@@ -214,7 +235,7 @@ it("names the calling code for a box that keeps only the local number, in case t
   const local = takesLocalNumber(report, step, changedField(report));
   expect(local).toBe(true);
   expect(changedPhoneNotice("+44 7911 123456", local)).toBe(
-    "The phone field seems to take only the local number: it kept just the start of the number the host typed. Nothing was submitted and nobody was asked. If the screen has no country picker, prefer sending this signInStep again with that phone field's format set to national: the host then types the number without its country calling code, and reads the field back again before it submits. If the screen has a country picker, prefer setting that phone field's format to national only when the picker already shows the country for calling code +44 as the screen loads, which is what a run will see, and otherwise keep the full number, so the read-back stops a number typed under another country.",
+    "The phone field seems to take only the local number: it kept just the start of the number the host typed. Nothing was submitted and nobody was asked. If the screen has no country picker, prefer sending this signInStep again with that phone field's format set to national: the host then types the number without its country calling code, and reads the field back again before it submits. If the screen has a country picker, prefer sending this signInStep again with the picker as its own field before the phone field, accepting phone with format calling_code, and the phone field's format set to national: the host then picks calling code +44 there, checks it stuck, and types the number without it.",
   );
 });
 

@@ -41,11 +41,67 @@ export type DateOfBirthFormat = typeof DateOfBirthFormat.Type;
 /**
  * How a field that takes a phone number takes it: `national`, the number without its country
  * calling code, for a box that keeps only the local number and has no country picker, or a picker
- * that already shows the number's country as the screen loads. The host types the digits after
- * the saved number's calling code (`nationalDigits`); a number saved without one is typed as saved.
+ * that already shows the number's country as the screen loads, or a picker the step names as its
+ * own field. The host types the digits after the saved number's calling code (`nationalDigits`); a
+ * number saved without one is typed as saved. `calling_code`: the screen's calling-code picker, a
+ * select or dropdown beside such a box, where the host picks the option for the number's calling
+ * code (`callingCode`, `namesCallingCode`) before it types the box (`callingCodeFits`).
  */
-export const PhoneFormat = Schema.Literal("national");
+export const PhoneFormat = Schema.Literal("national", "calling_code");
 export type PhoneFormat = typeof PhoneFormat.Type;
+/** A phone field's format a version 10 recipe may carry: the national number alone. */
+export const NationalFormat = Schema.Literal("national");
+/**
+ * Whether a step's calling-code picker fits it: a field that says `format: "calling_code"` accepts
+ * a phone alone, the step names one at most, and a later field that accepts a phone alone says
+ * `format: "national"`, so the host picks the calling code before it types the national number
+ * beside it. A step with no such field fits.
+ */
+export const callingCodeFits = (fields: readonly object[]) => {
+  const format = (field: object) => ("format" in field ? field.format : undefined);
+  const phoneAlone = (field: object) =>
+    "accepts" in field &&
+    Array.isArray(field.accepts) &&
+    field.accepts.length === 1 &&
+    field.accepts[0] === "phone";
+  const pickers = fields.flatMap((field, index) =>
+    format(field) === "calling_code" ? [index] : [],
+  );
+  const [at] = pickers;
+  if (at === undefined) return true;
+  return (
+    pickers.length === 1 &&
+    phoneAlone(fields[at] ?? {}) &&
+    fields.slice(at + 1).some((field) => phoneAlone(field) && format(field) === "national")
+  );
+};
+/** Why a step's calling-code picker does not fit it (`callingCodeFits`). */
+export const callingCodeMessage =
+  "a calling_code field accepts phone alone, a step names one at most, and a later field that accepts phone alone says format national";
+/**
+ * Whether a step's `resend` fits it: none, or the code screen's own control that asks the site to
+ * send a new code, on a step whose every field takes a code, so the press has no other value of
+ * this step to send, and never its submit, one of its fields or methods or its `dismiss`. The host
+ * presses it only when the owner asks for a new code, and only when the form it submits holds no
+ * value an earlier screen may have left (`resendChecksCode`).
+ */
+export const resendFits = (step: {
+  readonly fields: readonly ({ readonly selector: string } & object)[];
+  readonly submit?: string | undefined;
+  readonly methods?: readonly { readonly selector: string }[] | undefined;
+  readonly dismiss?: string | undefined;
+  readonly resend?: string | undefined;
+}) =>
+  step.resend === undefined ||
+  (step.fields.length > 0 &&
+    step.fields.every((field) => "slot" in field && field.slot === "code") &&
+    step.resend !== step.submit &&
+    step.resend !== step.dismiss &&
+    !step.fields.some((field) => field.selector === step.resend) &&
+    !(step.methods ?? []).some((method) => method.selector === step.resend));
+/** Why a step's `resend` does not fit it (`resendFits`). */
+export const resendMessage =
+  "a step names resend only when every field it takes is a code, as its code screen's own control, never its submit, a field, a method or its dismiss";
 /**
  * The control a `date_of_birth` field was filled into, as the host found it (`formControlShape`):
  * a native date input, a text box, a native select or a custom dropdown. The recipe records it,

@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { Effect, Schema } from "effect";
-import { fillAutofillStep, resubmitAutofillStep } from "../destinations/autofill-fill.js";
+import {
+  fillAutofillStep,
+  resendAutofillCode,
+  resubmitAutofillStep,
+} from "../destinations/autofill-fill.js";
 import { autofillApprovalNumber, autofillMarkerVisible } from "../destinations/autofill-marker.js";
 import {
   checkAutofillSignedIn,
@@ -156,8 +160,12 @@ export const makeSignInBrowser = (options: {
   return {
     inspect: calls.inspect,
     fill: calls.fill,
+    // Core's fill picks a calling code in the screen's own picker.
+    picksCallingCodes: true,
     // It types nothing, so the session's record of typing stays as it is.
     resubmit: (input) => resubmitAutofillStep({ ...input, page }),
+    // Neither does a code screen's resend, which empties the code fields before its press.
+    resend: (input) => resendAutofillCode({ ...input, page }),
     // The account page opens on `openOrigin`, the login's workspace, only when it is an exact
     // origin on the site's registrable domain.
     confirm: (indicator, screens, challengeScreens, openOrigin) => {

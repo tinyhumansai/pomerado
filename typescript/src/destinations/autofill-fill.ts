@@ -1,7 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { Effect, Either, Schema } from "effect";
 import { failureDetail } from "../runtime/failure-detail.js";
-import { type AutofillFillCall, autofillStepCode } from "./autofill-page-code.js";
+import {
+  type AutofillFillCall,
+  autofillStepCode,
+  BoundFieldAnswer,
+  CallingCodeAnswer,
+  ResendRefusedAnswer,
+} from "./autofill-page-code.js";
+import { namesNoOtherKind, swappedStep } from "./autofill-phone-swap.js";
 import { frameCrossing, unsupportedSelector } from "./autofill-locate-code.js";
 import { firedRefusal, guardedSubmit, GuardRefusal } from "./autofill-submission-guard.js";
 import {
@@ -30,6 +37,8 @@ import {
   coveringElement,
   ReadCoveringElement,
   hostSubmits,
+  inspectAutofillStep,
+  isCallingCode,
   LocatedError,
   notingHostTrust,
   Targets,
@@ -41,6 +50,7 @@ import {
   type InsertionRefusal,
 } from "./credential-keyboard.js";
 import { DateOfBirthFormat } from "./autofill-contracts.js";
+import { callingCode, heldPhoneDigits } from "./login-field-formats.js";
 import { PageControls } from "./page-controls.js";
 import { PageNavigation, reportedNavigation } from "./sign-in-redirect.js";
 
@@ -109,6 +119,11 @@ const FillAnswer = Schema.Union(
     url: Schema.String,
   }),
   GuardRefusal,
+  CallingCodeAnswer,
+  /** An `empty` call's answer: how many of the step's fields held something it emptied. */
+  Schema.Struct({ cleared: Schema.Number, url: Schema.String }),
+  BoundFieldAnswer,
+  ResendRefusedAnswer,
 );
 type FillAnswer = typeof FillAnswer.Type;
 /** A call that found a control changed since the host last judged it did nothing: each as found. */
@@ -379,6 +394,22 @@ interface CallInput {
    * that reads the count asks; a read that takes longer than `alertsBeforeMs` counts nothing.
    */
   readonly countNewAlerts?: boolean;
+  /**
+   * How long the host waits for the page to enable a disabled submit, `submitEnableMs` by default:
+   * a code screen's resend waits on the site's own timer (`resendAutofillCode`).
+   */
+  readonly enableMs?: number;
+  /**
+   * Once raised, the wait for the submit starts no further call that could click: a script's
+   * stop, for a code screen's resend press (`resendAutofillCode`). A call already clicking can't
+   * be called back (`submitWhenEnabled`).
+   */
+  readonly stop?: AbortSignal;
+  /**
+   * A code screen's resend press (`resendAutofillCode`): the selectors of the screen's own
+   * submit, methods and dismiss, none of which its control may be.
+   */
+  readonly resend?: { readonly apartFrom: readonly string[] };
 }
 
 interface FillInput extends CallInput {
@@ -434,14 +465,15 @@ const rejudge = (
   changes: number,
 ) => {
   // A dismiss call acts before the step's fields are typed or before its submit is clicked again,
-  // so the controls it finds changed are judged as a submit's would be at that point.
-  const target = call.kind === "submit" || call.kind === "dismiss" ? "submit" : call.index;
-  const from =
-    call.kind === "submit"
-      ? input.step.fields.length
-      : call.kind === "dismiss"
-        ? progress.statuses.length
-        : call.index;
+  // so the controls it finds changed are judged as a submit's would be at that point, and so does
+  // a call that only empties or binds a field, which types none of them.
+  const typesNone = call.kind === "submit" || call.kind === "empty" || call.kind === "bind";
+  const target = typesNone || call.kind === "dismiss" ? "submit" : call.index;
+  const from = typesNone
+    ? input.step.fields.length
+    : call.kind === "dismiss"
+      ? progress.statuses.length
+      : call.index;
   const judged = progress.judged;
   const named = evidenceOrigins(input, progress);
   const trusted = new Set<string>();
@@ -524,7 +556,8 @@ const revealedElsewhere = (
   progress: FillProgress,
   call: AutofillFillCall,
 ) => {
-  if (call.kind !== "focus" && call.kind !== "date") return undefined;
+  if (call.kind !== "focus" && call.kind !== "date" && call.kind !== "calling_code")
+    return undefined;
   const revealed = input.revealedFor?.[call.index];
   const judged = progress.judged.fields[call.index];
   if (revealed === undefined || judged?.documentOrigin === revealed) return undefined;
@@ -723,6 +756,7 @@ const submitCall = (
     codeBoxes: boxes,
     alertsBefore: input.countNewAlerts === true,
     pressCovered,
+    resend: input.resend,
   });
 
 /**
@@ -743,7 +777,10 @@ const submitCall = (
  * screen as typed, or is lost, looks again, and any other answer is taken as the submit call's
  * would be. Only then does the submit call click. A click again of a blocked screen skips that
  * first look, and none of its later looks takes every box locked or emptied as the page's own send
- * (`codeLook`): its dismiss may have emptied every box itself.
+ * (`codeLook`): its dismiss may have emptied every box itself. With a `stop`, each click call waits
+ * on a call that only reads the submit (`enabledRead`), and the stop is read again after it, so a
+ * stop raised before the click call starts means no press, however the page answers meanwhile. A
+ * stop raised once that call started is too late: the call runs on, and may still click.
  */
 const submitWhenEnabled = (
   input: CallInput,
@@ -759,13 +796,27 @@ const submitWhenEnabled = (
       lookFirst && call.kind === "submit" && codeOnly(input.step) && sendMs > 0
         ? { ...call, look: true as const }
         : undefined;
+    const read =
+      input.stop !== undefined && call.kind === "submit"
+        ? { ...call, enabledRead: true as const }
+        : undefined;
     let unsentSince: number | undefined;
     let lost: Either.Either<CallAnswer, Error> | undefined;
     let lastLost = false;
     const changes = { count: 0 };
+    const stopRaised = () => input.stop?.aborted === true;
     for (;;) {
+      if (stopRaised())
+        return Either.right<CallAnswer>({
+          refusal: withCheck(refused("typing_unavailable", "submit"), "stopped"),
+        });
       const looking = look !== undefined && Date.now() - started < sendMs;
-      const answered = yield* fillCall(input, progress, changes)(looking ? look : call);
+      const enabled = read === undefined ? undefined : yield* fillCall(input, progress, changes)(read);
+      if (stopRaised()) continue;
+      const answered =
+        enabled !== undefined && unclicked(enabled, "disabled")
+          ? enabled
+          : yield* fillCall(input, progress, changes)(looking ? look : call);
       if (looking && (Either.isLeft(answered) || unclicked(answered, "none"))) {
         yield* Effect.sleep(submitPollMs);
         continue;
@@ -778,7 +829,7 @@ const submitWhenEnabled = (
       const unsent = unclicked(answered, "none") || failed;
       if (unsent) unsentSince ??= Date.now();
       const waiting = unclicked(answered, "disabled")
-        ? Date.now() - started < submitEnableMs
+        ? Date.now() - started < (input.enableMs ?? submitEnableMs)
         : unsent &&
           (Date.now() - (unsentSince ?? started) < sendMs || (failed && !lastLost));
       if (failed) lost ??= answered;
@@ -789,10 +840,11 @@ const submitWhenEnabled = (
   });
 
 /**
- * One field: a date's call fills it; any other field's call focuses it and binds its original node/document/frame; the host inserts its
- * value atomically. Undefined when the fill goes on to the next field, else the step's report.
- * The focus call of the first of the step's code boxes (`boxes`) first empties every box that
- * still holds something (`emptyBoxes`).
+ * One field: a date's call fills it, a calling-code picker's picks its code; any other field's
+ * call focuses it and binds its original node/document/frame; the host inserts its value
+ * atomically. Undefined when the fill goes on to the next field, else the step's report. The focus
+ * call of the first of the step's code boxes (`boxes`) first empties every box that still holds
+ * something (`emptyBoxes`).
  */
 const fillField = (
   input: FillInput,
@@ -810,23 +862,28 @@ const fillField = (
         : isDateOfBirthFormat(field.format)
           ? field.format
           : "YYYY-MM-DD";
+    const picker = isCallingCode(field);
     const answered = yield* fillCall(
       input,
       progress,
     )(
-      format === undefined
-        ? {
-            kind: "focus",
-            index,
-            bindingKey,
-            ...(index === boxes[0] ? { emptyBoxes: boxes } : {}),
-          }
-        : { kind: "date", index, iso: value, format },
+      picker
+        ? { kind: "calling_code", index, code: value }
+        : format === undefined
+          ? {
+              kind: "focus",
+              index,
+              bindingKey,
+              ...(index === boxes[0] ? { emptyBoxes: boxes } : {}),
+              ...(takesPhoneAlone(input.step) ? { markDocument: true as const } : {}),
+            }
+          : { kind: "date", index, iso: value, format },
     );
+    // A date's or a calling code's call holds its value and may have changed the page.
     if (answered._tag === "Left")
       return failedCall(progress, answered.left, {
-        ...(format === undefined ? {} : { held: input.values }),
-        mayMutate: format !== undefined,
+        ...(format === undefined && !picker ? {} : { held: input.values }),
+        mayMutate: format !== undefined || picker,
       });
     const answer = answered.right;
     if ("refusal" in answer || "checked" in answer)
@@ -881,6 +938,7 @@ const afterFieldCall = (
         ? undefined
         : filledReport(input.step, progress, "not_attempted", answer.url);
     }
+    if ("calling" in answer) return calledCode(input, progress, index, answer);
     if (!("focused" in answer)) return refused("page_unavailable");
     let insertion: InsertionRefusal | undefined;
     if (answer.focused) {
@@ -950,14 +1008,70 @@ const afterFieldCall = (
     return filledReport(input.step, progress, "not_attempted", answer.url, refusal);
   });
 
+/** A calling-code call that threw before it picked an option, and the refusal that says why. */
+const unpicked: Partial<Record<typeof CallingCodeAnswer.Type.calling, AutofillRefusal["reason"]>> = {
+  option_missing: "calling_code_unoffered",
+  option_disabled: "calling_code_unoffered",
+  option_ambiguous: "calling_code_ambiguous",
+  control_unsupported: "not_editable",
+  listbox_missing: "not_editable",
+};
+
+/**
+ * What a calling-code picker's call found (`calling_code`): the code picked, which stuck, and the
+ * fill goes on; else a refusal when it picked nothing (`unpicked`) before anything was typed, and
+ * otherwise the field failed, as a picker that may now show another choice, with nothing typed
+ * after it. A chosen code counts as typed, since the picker shows part of the number.
+ */
+const calledCode = (
+  input: FillInput,
+  progress: FillProgress,
+  index: number,
+  answer: typeof CallingCodeAnswer.Type,
+): AutofillStepReport | undefined => {
+  if (answer.calling === "chosen") {
+    progress.typed = true;
+    progress.typedIn = answer.document;
+    progress.statuses.push("filled");
+    return undefined;
+  }
+  const reason = unpicked[answer.calling];
+  const refusal = withCheck(refused(reason ?? "typing_unavailable", index), callingCodeCheck, {
+    picked: answer.calling,
+    ...foundEvidence(answer.url, undefined, evidenceOrigins(input, progress)),
+  });
+  if (reason !== undefined && !progress.typed) return refusal;
+  if (reason === undefined) progress.typed = true;
+  progress.statuses.push("failed");
+  return filledReport(input.step, progress, "not_attempted", answer.url, refusal);
+};
+
+/** The check a calling-code picker's refusal names (its failure detail's phase). */
+const callingCodeCheck = "calling_code";
+
+/**
+ * A step whose calling-code picker gets no code (`typedValues` gives none for a number that does
+ * not say its calling code, and a code is 1 to 3 digits), refused before anything is touched.
+ */
+const missingCallingCode = (step: AutofillStep<FillSlot>, values: readonly string[]) => {
+  const index = step.fields.findIndex(
+    (field, at) => isCallingCode(field) && !/^[0-9]{1,3}$/u.test(values[at] ?? ""),
+  );
+  return index === -1
+    ? undefined
+    : withCheck(refused("calling_code_missing", index), callingCodeCheck, {
+        picked: "no_calling_code",
+      });
+};
+
 /**
  * Fills the values into the step's fields, in order, and clicks its submit, on the stable primary tab or its inspected authentication popup,
  * judging every control again before each call acts. Kernel calls
  * focus and bind each field and click; the host inserts each value atomically into that original
  * node over its own encrypted DevTools socket (`keyboard`), or with `typing: "keyboard"` presses a
  * trusted key per character into it there for each slot but the `pastedSlots`, so no value but a
- * date of birth ever enters a Kernel call's script text or its request to Kernel's REST API. It reports per-field outcomes and never a
- * value. Once anything was typed, a call that fails or finds a control refused can no longer say
+ * date of birth or a phone's calling code ever enters a Kernel call's script text or its request
+ * to Kernel's REST API. It reports per-field outcomes and never a value. Once anything was typed, a call that fails or finds a control refused can no longer say
  * nothing reached the site: a lost answer is `uncertain`, a control refused before a field's typing
  * fails that field, and one refused before the click, or a submission refused as it fires, refuses
  * the submit. That click ran, though, so the report says so (`clicked`): the page's own handlers
@@ -973,7 +1087,12 @@ const afterFieldCall = (
  * under a country picker set to another country, is `changed`, with `cutShort` when its
  * `maxLength` is shorter than the number as typed, and the fill types nothing more and never
  * clicks the submit. A phone field whose step says `format: "national"` gets the number without
- * its calling code, as the host's `typedValues` gives it, and is read back against that. On a step
+ * its calling code, as the host's `typedValues` gives it, and is read back against that. A
+ * calling-code picker (`format: "calling_code"`) before it gets that calling code picked with the
+ * authoring library's own chooser, which must stick, before the box is typed; a step whose picker
+ * gets no code, or whose picker offers none or several options for it, is refused with nothing
+ * picked or typed (`calling_code_missing`, `calling_code_unoffered`, `calling_code_ambiguous`),
+ * and a choice that does not stick fails the picker's field with nothing typed after it. On a step
  * with fields and no submit, a
  * page that moves on once every field is typed sent what was typed itself (`page`), never a
  * refusal:
@@ -993,6 +1112,10 @@ const afterFieldCall = (
  * a code, whose submit call finds its submit or a field gone from the very document the host typed
  * in, gets the same looks, and when no new document comes is `refused` with `closedInPlace`: it may
  * have sent the code itself and closed in place, which only the sign-in's own check can tell.
+ * A step whose one field took a phone, whose box the page replaced in place once it was typed,
+ * goes on in the page's own phone box, which it judges as a fresh screen and never types into
+ * (`followPhoneSwap`); anything else stays the refusal of a field gone. Either way its report
+ * stands: a submit that stays disabled beside that box is never a reason to type again.
  * Guardian's refusals still come first: a control that moved off the site or changed how it
  * submits refuses the submit as before.
  * A value a host revealed for one origin (`revealedFor`) goes only into a field the host judges, as
@@ -1016,6 +1139,8 @@ export const fillAutofillStep = (input: FillInput): Effect.Effect<AutofillStepRe
     const crossing = crossingSelector(step);
     if (crossing !== undefined)
       return withCheck(refused("selector_unsupported", crossing), "selector_unsupported");
+    const missing = missingCallingCode(step, input.values);
+    if (missing !== undefined) return missing;
     const progress: FillProgress = {
       statuses: [],
       typed: false,
@@ -1035,6 +1160,17 @@ export const fillAutofillStep = (input: FillInput): Effect.Effect<AutofillStepRe
     }
     const typed =
       input.typedBefore === undefined ? undefined : [...input.typedBefore, ...input.values];
+    // A report from the page's own phone box stands as it is: the host never types the number
+    // again, into the box it bound or any that takes its place later.
+    let swap = false;
+    const swapped = (stop: Stop) =>
+      phoneSwapped(input, progress, stop, typed).pipe(
+        Effect.tap((report) =>
+          Effect.sync(() => {
+            swap = report !== undefined;
+          }),
+        ),
+      );
     const typeAgain = (fill: FillInput) =>
       Effect.gen(function* () {
         progress.statuses.length = 0;
@@ -1045,7 +1181,8 @@ export const fillAutofillStep = (input: FillInput): Effect.Effect<AutofillStepRe
         }
         return yield* submitStep(fill, progress, boxes, typed);
       });
-    const report = yield* submitStep(input, progress, boxes, typed);
+    const report = yield* submitStep(input, progress, boxes, typed, false, swapped);
+    if (swap) return report;
     // The page may enable its submit only on key presses: the host types every field again by keys.
     if (
       report.outcome === "filled" &&
@@ -1107,8 +1244,57 @@ export const resubmitAutofillStep = (input: CallInput): Effect.Effect<AutofillSt
     );
   });
 
+/**
+ * Presses a code screen's resend control, typing nothing. `input.step` is the screen's code
+ * fields with the control as its submit (`AutofillStep.resend`), as the host inspected them, and
+ * `apartFrom` the selectors of the screen's own submit, methods and dismiss. Each field that holds
+ * something, as a refused code may, is emptied first (`empty`), so nothing typed goes out with the
+ * press, even when the control submits the code's own form. Then the control is judged, guarded
+ * and clicked as a click again of a fill's submit is, with no look first and pressed from the
+ * keyboard when another element covers it, once the site enables it: the host calls again while
+ * the site keeps it disabled, as its timer does, for up to `waitMs`, and no longer once `stop` is
+ * raised, which refuses the press. Just before the click, each field must still hold nothing, else
+ * that field fails and nothing is clicked; and a control whose click reaches one of the fields or
+ * of the elements `apartFrom` names, whose document holds a password in any form, or whose click
+ * reaches a control that submits a form with a value in a text field, or a link or post to another
+ * origin, is refused (`resendChecksCode`). The report says what became of
+ * it, `clicked` when it went out and `stayed_disabled` when the site never enabled it in time,
+ * with no field filled; a control the host refuses is refused before any click.
+ */
+export const resendAutofillCode = (
+  input: CallInput & { readonly waitMs: number; readonly apartFrom: readonly string[] },
+): Effect.Effect<AutofillStepReport> =>
+  Effect.gen(function* () {
+    const { step } = input;
+    if (step.submit === undefined) return refused("not_found", "submit");
+    const crossing = crossingSelector(step);
+    if (crossing !== undefined)
+      return withCheck(refused("selector_unsupported", crossing), "selector_unsupported");
+    const progress: FillProgress = {
+      statuses: [],
+      typed: false,
+      check: [],
+      judged: input.inspection.targets,
+      judgment: input.inspection.judgment,
+      typedAt: randomUUID(),
+      typedIn: undefined,
+      trusted: new Set(),
+    };
+    const emptied = yield* fillCall(input, progress)({ kind: "empty" });
+    if (Either.isLeft(emptied)) return failedCall(progress, emptied.left, { mayMutate: false });
+    if ("refusal" in emptied.right) return emptied.right.refusal;
+    return yield* submitStep(
+      { ...input, enableMs: input.waitMs, resend: { apartFrom: input.apartFrom } },
+      progress,
+      [],
+      undefined,
+      true,
+    );
+  });
+
 /** The keyboard, typing each value key by key (`InsertionOptions.keys`). */
 const byKeys = (keyboard: CredentialKeyboard): CredentialKeyboard => ({
+  ...keyboard,
   insertText: (target, text, options) => keyboard.insertText(target, text, { ...options, keys: true }),
 });
 
@@ -1123,12 +1309,14 @@ const isBlocked = (report: AutofillStepReport) =>
 
 /**
  * The fields the host typed itself and that still count as filled, which a submit it clicks again
- * checks still hold something: never a date, which the authoring library fills into the page's
- * own controls.
+ * checks still hold something: never a date or a calling-code picker, which the authoring
+ * library fills into the page's own controls.
  */
 const typedFields = (step: AutofillStep<FillSlot>, progress: FillProgress) =>
   step.fields.flatMap((field, index) =>
-    field.slot !== "date_of_birth" && progress.statuses[index] === "filled" ? [index] : [],
+    field.slot !== "date_of_birth" && !isCallingCode(field) && progress.statuses[index] === "filled"
+      ? [index]
+      : [],
   );
 
 /**
@@ -1171,6 +1359,144 @@ const dismissNotice = (
     };
   });
 
+/** Whether a step's one field takes a phone: only its box may give way to a phone box. */
+const takesPhoneAlone = (step: AutofillStep<FillSlot>) => {
+  const [field, ...others] = step.fields;
+  return field?.slot === "phone" && others.length === 0 && !isCallingCode(field);
+};
+
+/**
+ * Whether a refusal may be a phone box taking the place of the box the host typed: the step's one
+ * field took a phone (`takesPhoneAlone`), its typing went through, and the submit call found it
+ * gone from the very document the host typed it in (`left`), not found anywhere else.
+ */
+const phoneBoxGone = (step: AutofillStep<FillSlot>, progress: FillProgress, stop: Stop) =>
+  takesPhoneAlone(step) &&
+  progress.statuses[0] === "filled" &&
+  stop.left === true &&
+  stop.refusal.reason === "not_found" &&
+  stop.refusal.target === 0;
+
+/**
+ * After `phoneBoxGone`: the step's fill goes on when the page put a phone box in the place of the
+ * box the host typed, and the host never types the number again. It judges the screen as a fresh
+ * one (`inspectAutofillStep`), by what marks a phone box (`swappedStep`), as a screen first reached
+ * after typing, with this inspection's trust. Only then a report follows; otherwise the reason it
+ * stopped, a finite word, with nothing clicked or typed:
+ * - `no_read_back`: the keyboard can't read a field back.
+ * - `no_phone_box`, `refused`: no one phone box shows, or the host refused what it found, on the
+ *   site, in its form or by its submit.
+ * - `other_kind`: its name, id or autocomplete names another kind of value (`namesNoOtherKind`).
+ * - `another_document`: it sits in another popup or in any other document than the one the host
+ *   typed in, by the document itself (`markDocument`), or it or the submit sit or send elsewhere
+ *   than the box and submit the host judged, on any judged property.
+ * - `value_gone`: it holds nothing.
+ * - `not_bound`: the host could not bind it to read it.
+ * - `calling_code`: a control anywhere in its document shows another calling code, one near it
+ *   names a country and shows none the host can read (`pickerBesideCode`), the number says none
+ *   while a control shows one, or the box holds the number's national digits alone, which say no
+ *   country, with no picker that shows the number's own calling code.
+ * - `value_changed`: it holds other digits than the number's, after its calling code or as its
+ *   national digits alone or after a trunk 0, or as typed for a number that says none
+ *   (`heldPhoneDigits`).
+ * Past all of them, the box holds what the host typed, so the host clicks the screen's submit, as
+ * a fill's own click is judged and guarded, with this phone box as the step's field.
+ */
+const followPhoneSwap = (
+  input: FillInput,
+  progress: FillProgress,
+  typed: readonly string[] | undefined,
+): Effect.Effect<AutofillStepReport | string> =>
+  Effect.gen(function* () {
+    const { inspection, keyboard, page } = input;
+    if (keyboard.readBack === undefined) return "no_read_back";
+    const step = swappedStep(input.step);
+    const found = yield* inspectAutofillStep({
+      step,
+      page,
+      siteOrigin: inspection.siteOrigin,
+      authenticationOrigins: inspection.authenticationOrigins,
+      trustSignInUrl: inspection.trustSignInUrl,
+      judgedBeforeTyping: [
+        ...new Set([...(inspection.judgedBeforeTyping ?? []), ...judgedOrigins(inspection)]),
+      ],
+    });
+    if ("outcome" in found) return found.reason === "not_found" ? "no_phone_box" : "refused";
+    const box = found.screen.fields[0];
+    const target = found.targets.fields[0];
+    if (box === undefined || target === undefined || !namesNoOtherKind(box)) return "other_kind";
+    if (
+      found.popupTargetId !== inspection.popupTargetId ||
+      changedProperties(progress.judged, found.targets) !== ""
+    )
+      return "another_document";
+    if (target.empty === true) return "value_gone";
+    const swapped: FillInput = { ...input, step, inspection: found };
+    const judged: FillProgress = {
+      ...progress,
+      check: [],
+      judged: found.targets,
+      judgment: found.judgment,
+    };
+    const number = input.values[0] ?? "";
+    // Each read takes its binding off the box, so each binds it afresh, and reads the pickers
+    // around it again with it.
+    const bind = Effect.gen(function* () {
+      const bindingKey = `__pomerado_autofill_${randomUUID()}`;
+      const bound = yield* fillCall(
+        swapped,
+        judged,
+      )({ kind: "bind", index: 0, bindingKey, code: callingCode(number) ?? null });
+      if (Either.isLeft(bound) || !("bound" in bound.right)) return "not_bound" as const;
+      if (!bound.right.bound) return "another_document" as const;
+      if (bound.right.picker === "other" || bound.right.picker === "unreadable")
+        return "calling_code" as const;
+      return {
+        field: {
+          targetId: found.popupTargetId,
+          bindingKey,
+          documentOrigin: judged.judged.fields[0]?.documentOrigin ?? "",
+        },
+        picker: bound.right.picker,
+      };
+    });
+    const forms = heldPhoneDigits(number);
+    const first = yield* bind;
+    if (typeof first === "string") return first;
+    const whole = yield* Effect.either(keyboard.readBack(first.field, forms.whole));
+    if (Either.isLeft(whole)) return "value_changed";
+    if (whole.right !== "kept") {
+      if (forms.national.length === 0) return "value_changed";
+      const again = yield* bind;
+      if (typeof again === "string") return again;
+      const national = yield* Effect.either(keyboard.readBack(again.field, forms.national));
+      if (Either.isLeft(national) || national.right !== "kept") return "value_changed";
+      // Its national digits alone say no country: only a picker that shows the number's own does.
+      if (again.picker !== "matches") return "calling_code";
+    }
+    judged.check = [0];
+    return yield* submitStep(swapped, judged, [], typed);
+  });
+
+/**
+ * A fill's submit call found a phone box gone (`phoneBoxGone`): the report of the fill's going on
+ * in the page's own phone box (`followPhoneSwap`), else its refusal as before, with why it did not
+ * go on. Undefined for any other refusal.
+ */
+const phoneSwapped = (
+  input: FillInput,
+  progress: FillProgress,
+  stop: Stop,
+  typed: readonly string[] | undefined,
+): Effect.Effect<AutofillStepReport | undefined> =>
+  Effect.gen(function* () {
+    if (!phoneBoxGone(input.step, progress, stop)) return undefined;
+    const followed = yield* followPhoneSwap(input, progress, typed);
+    if (typeof followed !== "string") return followed;
+    const refusal = withEvidence(stop.refusal, { phoneSwap: followed });
+    return stopped(input.step, progress, { ...stop, refusal }, "submit");
+  });
+
 /**
  * The step's submit, judged again, guarded and clicked once every field was typed
  * (`submitWhenEnabled`), and what became of it. `boxes` are the step's code boxes, each of which
@@ -1186,7 +1512,9 @@ const submitStep = (
   boxes: readonly number[],
   typed: readonly string[] | undefined,
   clickAgain = false,
-) =>
+  /** Asked about a refusal first: a report takes its place (`phoneSwapped`). */
+  onStop?: (stop: Stop) => Effect.Effect<AutofillStepReport | undefined>,
+): Effect.Effect<AutofillStepReport> =>
   Effect.gen(function* () {
     const { step } = input;
     const clicked = yield* submitWhenEnabled(
@@ -1199,8 +1527,16 @@ const submitStep = (
       return failedCall(progress, clicked.left, { mayMutate: hostSubmits(step) });
     const answer = clicked.right;
     if ("pageSent" in answer) return filledReport(step, progress, "page", answer.url);
-    if ("refusal" in answer || "checked" in answer)
-      return stopped(step, progress, answer, "submit");
+    if ("refusal" in answer) {
+      const followed = onStop === undefined ? undefined : yield* onStop(answer);
+      return followed ?? stopped(step, progress, answer, "submit");
+    }
+    if ("checked" in answer) return stopped(step, progress, answer, "submit");
+    if ("resendRefused" in answer)
+      return withCheck(refused("not_editable", "submit"), "resend", {
+        part: answer.resendRefused,
+        ...foundEvidence(answer.url, undefined, evidenceOrigins(input, progress)),
+      });
     if ("submission" in answer)
       return filledReport(
         step,
@@ -1223,7 +1559,7 @@ const submitStep = (
         "stayed_disabled",
         answer.url,
         withCheck(refused("not_editable", "submit"), "submit_disabled", {
-          waitedMs: submitEnableMs,
+          waitedMs: input.enableMs ?? submitEnableMs,
           ...foundEvidence(answer.url, undefined, evidenceOrigins(input, progress)),
         }),
       );

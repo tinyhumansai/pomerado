@@ -344,7 +344,10 @@ const contextOptions = (
 };
 
 const credential = (
-  request: Extract<typeof NativeWorkerRequest.Type, { readonly kind: "credential" }>,
+  request: Extract<
+    typeof NativeWorkerRequest.Type,
+    { readonly kind: "credential" | "credential_read_back" }
+  >,
   engine: BrowserEngine,
   context: BrowserContext,
   primaryTargetId: string,
@@ -437,6 +440,8 @@ const credential = (
       };
       // Camoufox crashes the tab on a synthetic keypress that page code dispatches.
       const keyboard = makeCredentialKeyboard(cdp, undefined, undefined, engine.syntheticKeypress);
+      if (request.kind === "credential_read_back")
+        return yield* keyboard.readBack(request.target, request.numbers);
       return yield* keyboard.insertText(
         request.target,
         request.text,
@@ -523,9 +528,9 @@ await Effect.runPromise(
                 kind: "failure",
                 id: request.id,
                 error:
-                  request.kind === "credential"
-                    ? "Credential insertion unavailable"
-                    : response.left.message,
+                  request.kind === "execute"
+                    ? response.left.message
+                    : "Credential insertion unavailable",
               },
         );
       }).pipe(semaphore.withPermits(1));

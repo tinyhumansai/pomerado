@@ -56,6 +56,17 @@ export const CredentialReadBack = Schema.Union(
   Schema.Literal("changed", "cut_short"),
 );
 
+/**
+ * What the host found in a bound field it read and typed nothing into
+ * (`CredentialKeyboard.readBack`): `kept`, its digits are one of the numbers; `changed`, they are
+ * none of them; `unread`, the field has no text value or left its document. Any other answer says
+ * why the host could not read the field.
+ */
+export const BoundReadBack = Schema.Union(
+  Schema.Literal("kept", "changed", "unread"),
+  InsertionRefusal,
+);
+
 /** What the host asks of an insertion besides typing. */
 export interface InsertionOptions {
   /**
@@ -95,6 +106,16 @@ export interface CredentialKeyboard {
     text: string,
     options?: InsertionOptions,
   ) => Effect.Effect<typeof CredentialReadBack.Type, Error>;
+  /**
+   * Reads back the field a call bound with `bindingKey`, typing nothing: whether its digits are one
+   * of `numbers`, each given whole (`BoundReadBack`). The numbers go as arguments on the private
+   * socket, as an insertion's text does, and only the finite answer comes back. A keyboard without
+   * it can't read a field back, so a host that needs one refuses.
+   */
+  readonly readBack?: (
+    target: CredentialTarget,
+    numbers: readonly string[],
+  ) => Effect.Effect<typeof BoundReadBack.Type, Error>;
 }
 
 /**
@@ -419,6 +440,21 @@ const findBinding = (
   });
 
 /**
+ * Page code, called on a bound field the host reads and types nothing into: it takes the binding
+ * off it, then answers whether the field's digits are one of `numbers` (`BoundReadBack`). A marker
+ * page code copied onto another element holds no binding, and is refused as the insertion refuses
+ * one.
+ */
+const readBoundField = `function(key, numbers) {
+  const binding = this[key];
+  this.removeAttribute(key);
+  delete this[key];
+  if (!binding) return "binding_not_in_world";
+  if (!this.isConnected || typeof this.value !== "string") return "unread";
+  return numbers.includes(this.value.replace(/[^0-9]/g, "")) ? "kept" : "changed";
+}`;
+
+/**
  * A phone field read back once the page had `phoneReadBackMs` to reformat it: `changed` or
  * `cut_short` when it kept other digits than the number's (`phoneDigitsCode`), else `inserted`.
  * The number goes in as an argument on the private socket, as the insertion's did, and only the
@@ -567,7 +603,7 @@ export const makeCredentialKeyboard = (
   bindingWorld?: CredentialBindingWorld,
   /** Whether typing key by key dispatches a keypress per character (`InsertionOptions.keys`). */
   keypress = true,
-): CredentialKeyboard => ({
+): Required<CredentialKeyboard> => ({
   insertText: (target, text, options) =>
     Effect.gen(function* () {
       const bound = yield* findBinding(cdp, target, bindingWorld);
@@ -582,6 +618,24 @@ export const makeCredentialKeyboard = (
             ? readBackPhone(cdp, bound, text)
             : Effect.succeed(inserted),
         ),
+        Effect.ensuring(
+          release(
+            command(cdp, bound.sessionId, "Runtime.releaseObject", { objectId: bound.objectId }),
+          ),
+        ),
+      );
+    }),
+  readBack: (target, numbers) =>
+    Effect.gen(function* () {
+      const bound = yield* findBinding(cdp, target, bindingWorld);
+      if (typeof bound === "string") return bound;
+      return yield* command(cdp, bound.sessionId, "Runtime.callFunctionOn", {
+        objectId: bound.objectId,
+        functionDeclaration: readBoundField,
+        arguments: [{ value: target.bindingKey }, { value: numbers }],
+        returnByValue: true,
+      }).pipe(
+        Effect.flatMap((reply) => answerOf(reply, BoundReadBack)),
         Effect.ensuring(
           release(
             command(cdp, bound.sessionId, "Runtime.releaseObject", { objectId: bound.objectId }),

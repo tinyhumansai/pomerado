@@ -59,12 +59,16 @@ const codePrompt = (site: string, notice: string | undefined, instruction: strin
   return `${opening}${cutTo(instruction, promptLimit - opening.length - closing.length)}${closing}`;
 };
 
-/** The question for a value the login does not hold; a code's with its screen's instruction. */
+/**
+ * The question for a value the login does not hold; a code's with its screen's instruction, and
+ * with `resend`, its offer of a new code (`allowResend`).
+ */
 const question = (
   asked: Asked,
   site: string,
   notice?: string,
   instruction?: string,
+  resend = false,
 ): Question => {
   const withNotice = (prompt: string) => (notice === undefined ? prompt : `${notice} ${prompt}`);
   // A code asked with a notice is asked again, so it asks for the newest code the site sent.
@@ -76,6 +80,7 @@ const question = (
       type: "secret",
       secretKind: "one_time_code",
       prompt: codePrompt(site, notice, instruction),
+      ...(resend ? { allowResend: true } : {}),
     };
   if (asked === "recovery_code")
     return {
@@ -121,6 +126,12 @@ const question = (
     ),
   };
 };
+
+/**
+ * Why a code ask got no code: the owner asked for a new one instead, on a question that offered a
+ * resend (`allowResend`), which the host presses before it asks again (`askedCode`).
+ */
+export const resendRequested = "resend_requested";
 
 /** Why the host could not get a value: the caller's question went unanswered or failed. */
 export class Unanswered {
@@ -174,8 +185,9 @@ const askedQuestions = (
   notice: string | undefined,
   offered: Question | undefined,
   instruction: string | undefined,
+  resend: boolean,
 ): Question[] => [
-  question(asked, site, notice, instruction),
+  question(asked, site, notice, instruction, resend),
   ...(offered !== undefined && asked !== "code" && asked !== "recovery_code" ? [offered] : []),
 ];
 
@@ -295,6 +307,8 @@ export const makeLoginFieldAsk = <E extends YieldableError>(dependencies: {
     codeBoxes?: number,
     /** A code screen's own instruction for the code, as the host read it (`codeInstruction`). */
     instruction?: string,
+    /** Whether the code question offers a resend, which comes back as `resendRequested`. */
+    resend = false,
   ): Effect.Effect<Unanswered | { slot: AskedSlot; value: string }, E> =>
     Effect.gen(function* () {
       const questions = askedQuestions(
@@ -303,6 +317,7 @@ export const makeLoginFieldAsk = <E extends YieldableError>(dependencies: {
         notice,
         offerSave ? saveOffer?.field : undefined,
         asked === "code" ? instruction : undefined,
+        asked === "code" && resend,
       );
       const response = yield* Effect.either(
         asker({
@@ -314,13 +329,23 @@ export const makeLoginFieldAsk = <E extends YieldableError>(dependencies: {
       );
       if (response._tag === "Left") return new Unanswered(response.left);
       const answer = response.right[questions[0]?.id ?? "code"];
+      if (answer?.type === "resend") return new Unanswered(resendRequested);
       if (answer?.type !== "text" && answer?.type !== "secret")
         return yield* fail("autofill.ask", { check: "answer_shape" });
       const kept = parsedAnswer(asked, answer.value);
       const misfit = !opaque && misfitCode(kept, codeBoxes);
       if (kept === undefined || misfit) {
         if (attempt < 2)
-          return yield* ask(asker, asked, notice, offerSave, attempt + 1, codeBoxes, instruction);
+          return yield* ask(
+            asker,
+            asked,
+            notice,
+            offerSave,
+            attempt + 1,
+            codeBoxes,
+            instruction,
+            resend,
+          );
         return misfit
           ? new Unanswered(codeDoesNotFit)
           : yield* fail("autofill.ask", { check: "answer_kind" });
