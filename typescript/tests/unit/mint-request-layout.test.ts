@@ -475,3 +475,34 @@ it("sends a request a provider refuses for a prompt-cache setting once more with
   expect(prewarm.bodies).toHaveLength(1);
   expect(counts).toMatchObject({ inputTokens: 0, cacheWriteTokens: 0 });
 });
+
+it("sends a request a gateway refuses without naming the setting, as OpenRouter does, once more without the prompt-cache settings", async () => {
+  const settings = /prompt_cache_(?:breakpoint|options)/;
+  const script = (index: number) =>
+    index === 0
+      ? [functionCall("read_source", { path: "src/tool.ts", offset: null, limit: null, paths: null }, "read")]
+      : [blocked];
+  // OpenRouter refuses `prompt_cache_options` with a 400 whose error names no parameter. It names
+  // the setting only in the body's top-level `metadata`, which the SDK drops.
+  const wire = wireMinter(script, undefined, (body) =>
+    settings.test(JSON.stringify(body))
+      ? { code: "invalid_prompt", message: "Invalid Responses API request" }
+      : undefined,
+  );
+  const f = await fixture(() => Promise.reject(new Error("Unused")), {
+    model: wire.model,
+    staticContext,
+    promptCacheKey: "synthetic-environment",
+  });
+  await f.run();
+  expect(wire.bodies).toHaveLength(3);
+  const [first, resent, second] = wire.bodies;
+  expect(JSON.stringify(first)).toMatch(settings);
+  const { prompt_cache_options: _settings, input: firstInput, ...firstRest } = first as Body;
+  const { input: resentInput, ...resentRest } = resent as Body;
+  expect(resentRest).toEqual(firstRest);
+  expect(resentInput.slice(1)).toEqual(firstInput.slice(1));
+  expect(JSON.stringify(resent)).not.toMatch(settings);
+  expect(JSON.stringify(second)).not.toMatch(settings);
+  expect(second?.["prompt_cache_key"]).toBe("synthetic-environment");
+});
