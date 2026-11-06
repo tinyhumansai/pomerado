@@ -230,6 +230,34 @@ const promptCacheSettingRefused = (error: unknown) =>
     (text) => typeof text === "string" && promptCacheSetting.test(text),
   );
 
+/**
+ * OpenRouter's refusal of a request it can't validate: a 400 `invalid_prompt` that names no
+ * parameter. It refuses a prompt-cache setting it doesn't take this way, naming the setting only in
+ * the body's `metadata`, which the SDK drops. Any other 400 passes through as it was.
+ */
+const unnamedRefusal = (error: unknown) =>
+  typeof error === "object" &&
+  error !== null &&
+  Reflect.get(error, "status") === 400 &&
+  Reflect.get(error, "code") === "invalid_prompt" &&
+  (Reflect.get(error, "param") ?? null) === null;
+
+/** An item with a cache breakpoint on one of its content parts. */
+const hasBreakpoint = (item: AgentInputItem) => {
+  if (item.type !== "unknown") return false;
+  const content: unknown = item.providerData?.["content"];
+  return (
+    Array.isArray(content) &&
+    content.some((part: unknown) => typeof part === "object" && part !== null && "prompt_cache_breakpoint" in part)
+  );
+};
+
+/** The request carries one of OpenAI's prompt-cache settings: options, or a breakpoint. */
+const carriesPromptCacheSettings = (request: ModelRequest) =>
+  request.modelSettings.promptCacheOptions !== undefined ||
+  request.modelSettings.providerData?.["prompt_cache_options"] !== undefined ||
+  (typeof request.input !== "string" && request.input.some(hasBreakpoint));
+
 const isPrewarm = (request: ModelRequest) => {
   const options: unknown = request.modelSettings.providerData?.["prompt_cache_options"];
   return typeof options === "object" && options !== null && Reflect.get(options, "prewarm") === true;
@@ -273,7 +301,9 @@ const withoutPromptCacheSettings = (request: ModelRequest): ModelRequest => {
  *
  * A request the provider refuses with a 400 that names one of the settings (the breakpoints, or
  * `prompt_cache_options` with its comparison and prewarm) goes once more without them, and every
- * later request of the mint goes without them. A prewarm is never sent again, since without them it
+ * later request of the mint goes without them. A request carrying them that a gateway refuses with a
+ * 400 naming no parameter, as OpenRouter does, goes once more without them too, and the later ones
+ * go without them only if that one is taken. A prewarm is never sent again, since without them it
  * would generate output: it resolves as one that cached nothing. Until a refusal, every request
  * passes through as the same object, and every other error as it was.
  */
@@ -293,9 +323,15 @@ export const promptCacheFallback = () => {
           try {
             return await model.getResponse(request);
           } catch (error) {
-            if (!promptCacheSettingRefused(error)) throw error;
+            if (promptCacheSettingRefused(error) || (unnamedRefusal(error) && isPrewarm(request))) {
+              refused.add(mint);
+              return sendWithoutSettings(request);
+            }
+            if (!unnamedRefusal(error) || !carriesPromptCacheSettings(request)) throw error;
+            // Only the request without the settings shows whether they were what was refused.
+            const response = await sendWithoutSettings(request);
             refused.add(mint);
-            return sendWithoutSettings(request);
+            return response;
           }
         },
         getStreamedResponse: (request: ModelRequest) =>
