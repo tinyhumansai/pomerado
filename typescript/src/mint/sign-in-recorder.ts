@@ -17,6 +17,7 @@ import {
   type SignedOutSnapshot,
 } from "../destinations/signed-in-marker.js";
 import {
+  callingCodesGated,
   SignInRecipe,
   signInRecipe,
   type SignInBrowser,
@@ -44,12 +45,14 @@ import {
   submitFilled,
   submittedLoginProof,
 } from "../runtime/autofill-state.js";
-import { makeAutofillValues, typedValues } from "../runtime/autofill-values.js";
+import { makeAutofillValues } from "../runtime/autofill-values.js";
+import { makeCodeResend, resendWaitMs } from "../runtime/code-resend.js";
 import { failureDetail, type FailureContextValue } from "../runtime/failure-detail.js";
 import type { InputAsker } from "../runtime/input-request.js";
 import { Unanswered } from "../runtime/login-field-asks.js";
 import {
   localSecretBroker,
+  maskedTypedValues,
   type RunSignInSecrets,
   type SignInReplayBrowser,
 } from "../runtime/sign-in-replay.js";
@@ -183,6 +186,7 @@ const maskedSelector = (step: Extract<SignInStep, { readonly fields: unknown }>)
     ...(step.submit === undefined ? [] : [step.submit]),
     ...(step.methods ?? []).map((option) => option.selector),
     ...(step.dismiss === undefined ? [] : [step.dismiss]),
+    ...(step.resend === undefined ? [] : [step.resend]),
   ].findIndex(holdsMask);
 
 /** A host call that failed, as the build's failure. */
@@ -237,7 +241,15 @@ export const makeSignInRecorder = (input: {
   readonly login: SignInLogin<MintFailure>;
   readonly ask: InputAsker;
   readonly secrets: RunSignInSecrets;
-  readonly review: (step: AutofillStep, seen: AutofillInspection) => Effect.Effect<void, Error>;
+  /**
+   * Guardian's review of a screen as the host found it; `resendControl`, the screen's resend
+   * control as found once it shows, just before the host presses it.
+   */
+  readonly review: (
+    step: AutofillStep,
+    seen: AutofillInspection,
+    resendControl?: AutofillInspection["screen"]["submit"],
+  ) => Effect.Effect<void, Error>;
   /** The site as a question names it: its host, without `www.`. */
   readonly site: string;
   /** The pages the build saw signed out, which a marker or a lock message must not show. */
@@ -245,7 +257,8 @@ export const makeSignInRecorder = (input: {
   /** How long a check waits for a marker drawn late; `markerSettle` unless a test shortens it. */
   readonly markerSettle?: MarkerSettle;
 }) => {
-  const { browser, login } = input;
+  const { login } = input;
+  const browser = callingCodesGated(input.browser);
   /** The build's sign-in state, as the shared rules read and keep it. */
   const h: AutofillHost = {
     reportCorrelation: undefined,
@@ -282,7 +295,12 @@ export const makeSignInRecorder = (input: {
     inspect: (step) => browser.inspect(step),
     // One-character code boxes take the code one character each, as the host types it.
     fill: (filling) =>
-      browser.fill({ ...filling, values: typedValues(filling.step, filling.values) }),
+      Effect.suspend(() =>
+        browser.fill({
+          ...filling,
+          values: maskedTypedValues(input.secrets, filling.step, filling.values),
+        }),
+      ),
     ...(browser.resubmit === undefined ? {} : { resubmit: browser.resubmit }),
     check: (indicator, screens, challengeScreens) =>
       browser.confirm(indicator, screens, challengeScreens ?? screens),
@@ -296,7 +314,10 @@ export const makeSignInRecorder = (input: {
     open: (url) => browser.open(url),
     markerVisible: (selector, page, popup) => browser.markerVisible(selector, page, popup),
     ...(browser.approvalNumber === undefined ? {} : { approvalNumber: browser.approvalNumber }),
+    ...(browser.resend === undefined ? {} : { resend: browser.resend }),
   };
+  /** Each code screen's presses of its resend control in this build (`makeCodeResend`). */
+  const resendPresses = new Map<string, number>();
 
   /** Sign-ins whose screens reached the site; a verified one publishes while it is the latest. */
   let signIns = 0;
@@ -406,14 +427,29 @@ export const makeSignInRecorder = (input: {
     }),
   });
 
-  /** The step's values from the held login, asking the owner for what it does not hold. */
+  /**
+   * The step's values from the held login, asking the owner for what it does not hold. A code
+   * screen's resend, when the step names one, is offered with its code question, and each press
+   * the owner's answers had the host make counts in `pressed`.
+   */
   const stepValues = (
     step: AutofillStep,
     credentials: WebsiteCredentials,
     opensSignIn: boolean,
     inspected: AutofillInspection,
+    pressed: { count: number },
   ) =>
     Effect.gen(function* () {
+      const resend = makeCodeResend({
+        hooks,
+        step,
+        presses: resendPresses,
+        waitMs: resendWaitMs,
+        pollMs: 250,
+        emit: (details) => emit(h, details),
+        // Guardian judges the control as it shows, which a timer may hide at the screen's review.
+        review: (found) => input.review(step, inspected, found.screen.submit),
+      });
       if (ambiguousRecoveredCode(h, step)) return new Unanswered("code_already_rejected");
       const codeRequests = {
         get current() {
@@ -438,9 +474,23 @@ export const makeSignInRecorder = (input: {
           rejectedCodes: new Set(h.autofillRejectedValues.current.code ?? []),
           codeRequests,
           ...(codeAgain === undefined ? {} : { codeAgain }),
+          ...(resend === undefined
+            ? {}
+            : {
+                resend: {
+                  ...resend,
+                  press: Effect.tap(resend.press, () => Effect.sync(() => pressed.count++)),
+                },
+              }),
         },
         inspected.screen.fields,
       );
+      // A review that denied the resend control fails the build, as a denied screen does.
+      const stopped = resend?.stopped?.();
+      if (stopped !== undefined)
+        return yield* Effect.fail(
+          stopped.cause instanceof Error ? stopped.cause : new Error("The resend review failed"),
+        );
       if (codeAgain !== undefined && !(filled instanceof Unanswered))
         h.autofillCodeAgain.current = undefined;
       return filled;
@@ -579,18 +629,30 @@ export const makeSignInRecorder = (input: {
       );
       if (held !== undefined && held.password === undefined && password !== -1)
         return shown(yield* refusedStep(h, "credential_unavailable", password, noPasswordNotice));
+      const pressed = { count: 0 };
       const valued =
         held === undefined
           ? { values: [] as string[], step }
-          : yield* stepValues(step, held, opens, inspected);
+          : yield* stepValues(step, held, opens, inspected, pressed);
       if (valued instanceof Unanswered) return yield* unansweredStep(h, valued);
       step = valued.step;
       filled = valued.values;
+      // A resend the owner asked for may have loaded the code screen anew: it is judged again,
+      // by the same checks and review as its first look.
+      const inspection = pressed.count === 0 ? inspected : yield* browser.inspect(step);
+      if (inspection !== inspected) noteInspection(step, inspection);
+      if ("outcome" in inspection)
+        return { report: inspection, result: { nextStep: notice(inspection) } };
+      if (inspection !== inspected) {
+        const split = codeBoxesRefusal(step, inspection);
+        if (split !== undefined) return { report: split, result: { nextStep: notice(split) } };
+        yield* input.review(step, inspection);
+      }
       const named = yield* stepIdentityRefusal(
         h,
         h.autofillSignIn.current,
         step,
-        inspected.page,
+        inspection.page,
         filled,
       );
       if (named !== undefined) return shown(named);
@@ -610,12 +672,12 @@ export const makeSignInRecorder = (input: {
       const { state, refund } =
         open === undefined ? openSignIn(at) : { state: open, refund: () => undefined };
       const reasked = reasksPassword(open, step, refills);
-      yield* armStep(state, step, inspected, filled, secretIn);
+      yield* armStep(state, step, inspection, filled, secretIn);
       if (reasked) noteRefill(state);
       afterSubmit = undefined;
-      const report = yield* hooks.fill({ step, values: filled, inspection: inspected });
+      const report = yield* hooks.fill({ step, values: filled, inspection });
       settleAutofillValues(h, step, previous, report);
-      screens.push(screenOf(step, inspected));
+      screens.push(screenOf(step, inspection));
       // A first screen that reached nothing leaves no sign-in open.
       if (!recordStep(state, step, report)) refund();
       else {

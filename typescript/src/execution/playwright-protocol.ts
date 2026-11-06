@@ -26,6 +26,17 @@ export const NativeWorkerRequest = Schema.Union(
     keys: Schema.optional(Schema.Literal(true)),
     trustedKeys: Schema.optional(Schema.Literal(true)),
   }),
+  /** A read of a bound field, typing nothing (`CredentialKeyboard.readBack`). */
+  Schema.Struct({
+    id: Schema.String,
+    kind: Schema.Literal("credential_read_back"),
+    target: Schema.Struct({
+      targetId: Schema.optional(Schema.String),
+      bindingKey: Schema.String,
+      documentOrigin: Schema.String,
+    }),
+    numbers: Schema.Array(Schema.String),
+  }),
   /** Starts holding what the context's pages show and its site answers, in place of any before. */
   Schema.Struct({ id: Schema.String, kind: Schema.Literal("watch_pages") }),
   /** Reads the pages and hands over what's held; `last` stops the watch. */

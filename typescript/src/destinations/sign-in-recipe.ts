@@ -8,6 +8,7 @@ import type {
 import {
   autofillRecipe,
   autofillRecipePath,
+  CallingCodeAutofillRecipe,
   DismissAutofillRecipe,
   KeyboardSubmitAutofillRecipe,
   KeySubmitAutofillRecipe,
@@ -16,20 +17,23 @@ import {
   PopupAutofillRecipe,
   PrivateIdentifierAutofillRecipe,
   publishedAutofillRecipe,
+  ResendAutofillRecipe,
   WildcardAutofillRecipe,
   WorkspaceAutofillRecipe,
   type AutofillRecipeOrigins,
   type AutofillRecipeStep,
 } from "./autofill-recipe.js";
-import type {
-  AutofillField,
-  AutofillInspection,
-  AutofillRefusal,
-  AutofillScreens,
-  AutofillSignedIn,
-  AutofillSignedInCheck,
-  AutofillStep,
-  AutofillStepReport,
+import { refused } from "./autofill-refusal.js";
+import {
+  isCallingCode,
+  type AutofillField,
+  type AutofillInspection,
+  type AutofillRefusal,
+  type AutofillScreens,
+  type AutofillSignedIn,
+  type AutofillSignedInCheck,
+  type AutofillStep,
+  type AutofillStepReport,
 } from "./autofill-step.js";
 import type { CredentialRejectedField, WebsiteCredentials } from "../runtime/authentication.js";
 import { recordedScreenPage } from "../runtime/workspace-origin.js";
@@ -52,8 +56,8 @@ export const SignInRecipeV3 = Schema.Struct({
   ),
 );
 /**
- * A recipe this host reads: version 1, 2, 4, 5, 6, 7, 8, 9 or 10 as every host writes it, or
- * this host's version 3.
+ * A recipe this host reads: version 1, 2, 4, 5, 6, 7, 8, 9, 10, 11 or 12 as every host writes it,
+ * or this host's version 3.
  */
 export const SignInRecipe = Schema.Union(
   LegacyAutofillRecipe,
@@ -66,6 +70,8 @@ export const SignInRecipe = Schema.Union(
   KeyboardSubmitAutofillRecipe,
   PrivateIdentifierAutofillRecipe,
   NationalPhoneAutofillRecipe,
+  CallingCodeAutofillRecipe,
+  ResendAutofillRecipe,
 );
 export type SignInRecipe = typeof SignInRecipe.Type;
 export type SignInRecipeStep = AutofillRecipeStep;
@@ -76,12 +82,12 @@ export const resolvedPage = (step: SignInRecipeStep, workspace: string | undefin
     ? undefined
     : recordedScreenPage(step, workspace);
 
-const knownVersions: readonly unknown[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+const knownVersions: readonly unknown[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12];
 
 /**
  * A published recipe file read back: the recipe, `unknown_version` for a version this host does
- * not know, else `invalid`. Version 1, 2, 4, 5, 6, 7, 8, 9 and 10 decode as every host reads
- * them; version 3 is read only here.
+ * not know, else `invalid`. Version 1, 2, 4, 5, 6, 7, 8, 9, 10, 11 and 12 decode as every host
+ * reads them; version 3 is read only here.
  */
 export const decodeSignInRecipe = (text: string): SignInRecipe | "invalid" | "unknown_version" => {
   const shared = publishedAutofillRecipe(new Map([[autofillRecipePath, text]]));
@@ -124,6 +130,8 @@ export interface RecordedSignInStep {
   readonly refills?: SignInRecipeStep["refills"];
   /** The covering notice's own control the host clicked on this screen. */
   readonly dismiss?: string | undefined;
+  /** A code screen's own control that asks the site to send a new code. */
+  readonly resend?: string | undefined;
   /** The page the step ran on, origin and path only. */
   readonly page: string;
   /** The segments of `page`'s path written as `*`, which any one segment matches. */
@@ -183,10 +191,11 @@ const inStepOrder = (step: SignInRecipeStep): SignInRecipeStep => ({
   ...(step.submitVia === undefined ? {} : { submitVia: step.submitVia }),
   ...(step.methods === undefined ? {} : { methods: step.methods }),
   ...(step.dismiss === undefined ? {} : { dismiss: step.dismiss }),
+  ...(step.resend === undefined ? {} : { resend: step.resend }),
 });
 
 /**
- * A recipe as `auth-fill.json` holds it: `version`, then version 4's to 10's `workspace`, then each
+ * A recipe as `auth-fill.json` holds it: `version`, then version 4's to 12's `workspace`, then each
  * screen in `recipeStep`'s key order (a workspace screen's `origin` first), indented two spaces,
  * with no final newline. The same recipe is the same bytes from any
  * host that writes it this way.
@@ -195,13 +204,9 @@ export const signInRecipeText = (recipe: SignInRecipe) =>
   JSON.stringify(
     {
       version: recipe.version,
-      ...((recipe.version !== 4 &&
-        recipe.version !== 5 &&
-        recipe.version !== 6 &&
-        recipe.version !== 7 &&
-        recipe.version !== 8 &&
-        recipe.version !== 9 &&
-        recipe.version !== 10) ||
+      ...(recipe.version === 1 ||
+      recipe.version === 2 ||
+      recipe.version === 3 ||
       recipe.workspace === undefined
         ? {}
         : { workspace: { parent: recipe.workspace.parent } }),
@@ -240,6 +245,20 @@ export interface SignInBrowser<E> {
     readonly inspection: AutofillInspection;
   }) => Effect.Effect<AutofillStepReport>;
   /**
+   * Presses a code screen's resend control, typing nothing (`resendAutofillCode`): the step's code
+   * fields, emptied first, and the control as its submit, waited on for up to `waitMs` while the
+   * site keeps it disabled and `stop`, when given, isn't raised, never one of the elements
+   * `apartFrom` names (the screen's own submit, methods and dismiss). A browser without it never
+   * offers a resend.
+   */
+  readonly resend?: (input: {
+    readonly step: AutofillStep;
+    readonly inspection: AutofillInspection;
+    readonly waitMs: number;
+    readonly apartFrom: readonly string[];
+    readonly stop?: AbortSignal;
+  }) => Effect.Effect<AutofillStepReport>;
+  /**
    * Checks the minter's signed-in indicator on the page: `screens` are every screen the build
    * filled, `challengeScreens` the current sign-in's, whose recorded challenges count.
    * `openOrigin`, a same-site origin such as the login's workspace origin, is where the
@@ -253,7 +272,33 @@ export interface SignInBrowser<E> {
   ) => Effect.Effect<AutofillSignedInCheck, E>;
   /** The configured sign-in origins off the site. */
   readonly authenticationOrigins: readonly string[];
+  /**
+   * Whether `fill` picks a phone's calling code in a step's calling-code picker
+   * (`format: "calling_code"`) with the authoring library's own chooser, as core's fill does. A
+   * browser without it has such a step refused at its inspection (`callingCodesGated`).
+   */
+  readonly picksCallingCodes?: true;
 }
+
+/**
+ * `browser`, or a replay's hooks, with its inspection refusing a step that names a calling-code
+ * picker, as not editable at the picker, when its fill can't pick a calling code
+ * (`SignInBrowser.picksCallingCodes`, `AutofillHooks.picksCallingCodes`), as a host before version
+ * 11 refuses such a picker: nothing is picked or typed, and a fill of its own never gets the
+ * picker's code to type. A build's recorder and every replay apply it.
+ */
+export const callingCodesGated = <B extends Pick<SignInBrowser<unknown>, "inspect" | "picksCallingCodes">>(
+  browser: B,
+): B => {
+  if (browser.picksCallingCodes === true) return browser;
+  return {
+    ...browser,
+    inspect: (step: AutofillStep) => {
+      const picker = step.fields.findIndex(isCallingCode);
+      return picker === -1 ? browser.inspect(step) : Effect.succeed(refused("not_editable", picker));
+    },
+  };
+};
 
 /** The identifier kinds a login question offers, as `CurrentLoginStep` names them. */
 const loginIdentifierKinds = ["username", "email", "phone", "account_number"] as const;

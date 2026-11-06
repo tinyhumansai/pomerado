@@ -37,9 +37,9 @@ import {
   type RegisteredEntity,
   type SecretBroker,
 } from "./autofill-state.js";
-import { typedValues } from "./autofill-values.js";
+import { nationalValues, typedValues } from "./autofill-values.js";
 import { logicalRejectedField } from "./autofill-rejection.js";
-import type { InputAsker } from "./input-request.js";
+import { type InputAsker, phoneShaped } from "./input-request.js";
 import { bareCode, codeDoesNotFit, fitsCodeBoxes } from "./login-field-asks.js";
 import { makeRunLogin } from "./run-login.js";
 import { trustedUrl } from "./sign-in-origins.js";
@@ -85,6 +85,23 @@ const reasonMessages = new Map([
       "revealed for where it was, so the value wasn't typed and the run stopped before the tool " +
       "ran. Run the tool again.",
   ],
+  [
+    "calling_code_missing",
+    "The phone number for this sign-in doesn't say its country calling code, so the sign-in " +
+      "couldn't pick its country in the website's calling-code picker, and nothing was typed. Run " +
+      "the tool again with the number in international form, starting with + and its calling code.",
+  ],
+  [
+    "calling_code_unoffered",
+    "The website's calling-code picker offers no country for the phone number's calling code, so " +
+      "nothing was typed and the run stopped before the tool ran.",
+  ],
+  [
+    "calling_code_ambiguous",
+    "The website's calling-code picker lists more than one country for the phone number's " +
+      "calling code, so the sign-in couldn't tell which to pick, and nothing was typed: a guess " +
+      "could send the sign-in code to someone else's phone.",
+  ],
 ]);
 
 /** Why a run could not sign in, value-free. The run fails with it and never runs signed out. */
@@ -93,9 +110,12 @@ export class SignInRunFailed extends Data.TaggedError("SignInRunFailed")<{
    * `CredentialsRejected`: the site rejected a value given for the sign-in, once its corrections
    * ran out or for a value that is never corrected. `NeedsInput`: a question the sign-in needs
    * went unanswered, or a screen typed nothing of the host's reveal (`reveal_refused`,
-   * `code_does_not_fit_boxes`, `revealed_origin_changed`). `RecipeFailed`: the recorded sign-in
-   * no longer matches the site, or its entry page did not load. `MissingRecipe`: the
-   * integration's recipe cannot be read.
+   * `code_does_not_fit_boxes`, `revealed_origin_changed`), or of a phone number that says no
+   * calling code for its screen's calling-code picker (`calling_code_missing`). `RecipeFailed`:
+   * the recorded sign-in no longer matches the site, or its entry page did not load, or its
+   * calling-code picker offers no option, or several, for the number's calling code
+   * (`calling_code_unoffered`, `calling_code_ambiguous`). `MissingRecipe`: the integration's
+   * recipe cannot be read.
    */
   readonly code: "CredentialsRejected" | "NeedsInput" | "RecipeFailed" | "MissingRecipe";
   /** A finite reason: the rejected field, the replay's reason, or why the recipe is unreadable. */
@@ -145,12 +165,25 @@ export type WorkspaceOriginEvent =
 /**
  * What the local host masks: each value a sign-in types, and a text checked for one. A value that
  * may be a `phone` number, as any identifier may, also counts in the forms a site writes a number
- * back in, when it has a phone's shape.
+ * back in, when it is written as a number.
  */
 export interface RunSignInSecrets {
   readonly register: (value: string, kind?: "phone") => void;
   readonly assertAbsent: (text: string) => Effect.Effect<void, unknown>;
 }
+
+/**
+ * The values a screen's fill types (`typedValues`), each `national` field's digits masked as they
+ * are typed: a short number's say too little to mask in any other grouping.
+ */
+export const maskedTypedValues = (
+  secrets: RunSignInSecrets,
+  step: Parameters<typeof typedValues>[0],
+  values: readonly string[],
+) => {
+  for (const digits of nationalValues(step, values)) secrets.register(digits, "phone");
+  return typedValues(step, values);
+};
 
 /**
  * A host's own handles for a run's sign-in answers, such as a phone number or a code it keeps out
@@ -159,10 +192,11 @@ export interface RunSignInSecrets {
  * A value that is no handle of the host's comes back as it is. Pomerado masks each value it gets
  * back, in the forms it is typed in. Only a run's sign-in reveals: a build's types its answers as
  * given.
- * - Any failure, defect or empty answer refuses, and that screen types nothing; an interrupted
- *   reveal interrupts the sign-in. A value is typed only in a document of the origin it was
- *   revealed for, so a field the page moves to another origin before it is typed is refused, and
- *   the run fails `NeedsInput` (`revealed_origin_changed`), as a run to try again.
+ * - Any failure, defect or empty answer refuses, and that screen types nothing, as does a value
+ *   for a phone field without a phone's shape (`phoneShaped`), as what comes back is no handle;
+ *   an interrupted reveal interrupts the sign-in. A value is typed only in a document of the
+ *   origin it was revealed for, so a field the page moves to another origin before it is typed
+ *   is refused, and the run fails `NeedsInput` (`revealed_origin_changed`), as a run to try again.
  * - It may be called more than once for one value, for each screen and origin that types it and
  *   again when a screen is filled again, so it gives the same answer each time.
  * - The engine's checks of an answer as it is asked see the handle. A code's fit to a screen's
@@ -176,11 +210,12 @@ export type RevealSignInValue = (value: string, origin: string) => Effect.Effect
 
 /**
  * Why a screen's fill stopped short on what the host revealed: the host refused to reveal a value
- * there, its reveal failed, died or gave no text, or the inspection found no document for the
- * field (`reveal_refused`); the code it revealed does not fill the screen's one-character code
- * boxes (`codeDoesNotFit`), and the screen typed nothing; or the page moved a field to another
- * origin after its value was revealed, and it was not typed (`revealed_origin_changed`). The run
- * then fails `NeedsInput` with it.
+ * there, its reveal failed, died or gave no text, the inspection found no document for the field,
+ * or a phone field's value has no phone's shape (`phoneShaped`), whose digits a picker or a
+ * `national` field would take apart (`reveal_refused`); the code it revealed
+ * does not fill the screen's one-character code boxes (`codeDoesNotFit`), and the screen typed
+ * nothing; or the page moved a field to another origin after its value was revealed, and it was
+ * not typed (`revealed_origin_changed`). The run then fails `NeedsInput` with it.
  */
 type RevealRefusal = "reveal_refused" | typeof codeDoesNotFit | "revealed_origin_changed";
 
@@ -245,9 +280,12 @@ const revealedValues = (
         shown.set(key, revealed);
         secrets.register(revealed);
       }
-      // Each field's own form, as one handle may fill fields that take it differently.
-      for (const form of revealedForms(input.step.fields[index], revealed)) secrets.register(form);
       const field = input.step.fields[index];
+      if (field?.slot === "phone" && !phoneShaped(revealed))
+        return { refused: "reveal_refused", target: index };
+      // Each field's own form, as one handle may fill fields that take it differently.
+      const kind = field?.slot === "phone" ? "phone" : undefined;
+      for (const form of revealedForms(field, revealed)) secrets.register(form, kind);
       if (field !== undefined && isIdentifier(field.slot)) secrets.register(revealed, "phone");
       values.push(revealed);
       revealedFor.push(origin);
@@ -311,6 +349,7 @@ const replayHooks = <E>(
       settle,
     );
   const readNumber = browser.approvalNumber;
+  const pressResend = browser.resend;
   return {
     inspect: (step) => browser.inspect(step).pipe(Effect.mapError(failed)),
     // One-character code boxes take the code one character each, as the host types it. A host's
@@ -318,7 +357,12 @@ const replayHooks = <E>(
     // and the fill types it only in the origin it was revealed for.
     fill: (input) =>
       revealing === undefined
-        ? browser.fill({ ...input, values: typedValues(input.step, input.values) })
+        ? Effect.suspend(() =>
+            browser.fill({
+              ...input,
+              values: maskedTypedValues(secrets, input.step, input.values),
+            }),
+          )
         : Effect.suspend(() => {
             revealing.refused = undefined;
             return revealedValues(input, revealing.reveal, secrets);
@@ -344,6 +388,14 @@ const replayHooks = <E>(
               return Effect.succeed(revealRefusalReport(revealed.refused, revealed.target));
             }),
           ),
+    // The replay refuses a calling-code picker's screen unless the browser's fill picks the code.
+    ...(browser.picksCallingCodes === true ? { picksCallingCodes: true as const } : {}),
+    // A resend types nothing, so it reveals nothing.
+    ...(pressResend === undefined
+      ? {}
+      : {
+          resend: (input: Parameters<typeof pressResend>[0]) => pressResend.call(browser, input),
+        }),
     check: (indicator, screens, challengeScreens, at) =>
       browser.confirm(indicator, screens, challengeScreens ?? screens, at?.origin).pipe(
         Effect.catchAll(() =>
@@ -481,6 +533,9 @@ const afterRejection = (
   Effect.gen(function* () {
     const { reason } = replayed;
     if (reason === "code_rejected") return yield* rejected("code");
+    // The number given says no calling code: another answer may do, never another build.
+    if (reason === "calling_code_missing")
+      return yield* new SignInRunFailed({ code: "NeedsInput", reason });
     if (reason === "extra_rejected")
       return yield* rejected(replayed.rejectedFields?.[0] ?? "password");
     if (reason !== "password_rejected" && reason !== "username_rejected")

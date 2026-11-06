@@ -155,6 +155,13 @@ export const SecretQuestion = Schema.Struct({
     "billing_postal_code",
   ),
   maxLength: Schema.optional(Length),
+  /**
+   * Only on the host's own sign-in code question (`one_time_code`, from a `system` request): the
+   * screen has a control that asks the site to send a new code, so the answer may be
+   * `{ resend: true }` instead of a code (`ResendAnswer`). The host then waits for the site to
+   * enable the control, presses it once and asks again for the newest code.
+   */
+  allowResend: Schema.optional(Schema.Boolean),
 });
 export type SecretKind = typeof SecretQuestion.Type.secretKind;
 /** A website login. Only the host raises it, and its answer goes only to the credential store. */
@@ -250,6 +257,16 @@ export const InputRequest = Schema.Struct({
     { message: () => "only the host asks for a login" },
   ),
   Schema.filter(
+    (request) =>
+      !request.questions.some(
+        (question) =>
+          question.type === "secret" &&
+          question.allowResend === true &&
+          (request.source !== "system" || question.secretKind !== "one_time_code"),
+      ),
+    { message: () => "only the host's own one-time code question offers a resend" },
+  ),
+  Schema.filter(
     (request) => {
       const save = request.savedLoginFieldSave;
       if (save === undefined) return true;
@@ -296,6 +313,8 @@ const MultiChoiceAnswer = Schema.Union(
     note: Schema.optional(Text),
   }),
 );
+/** The answer to a code question that offers a resend (`allowResend`): send a new code. */
+export const ResendAnswer = Schema.Struct({ resend: Schema.Literal(true) });
 const ConfirmAnswer = Schema.Struct({
   confirmed: Schema.Boolean,
   text: Schema.optional(Schema.String.pipe(Schema.maxLength(maximumAnswerLength))),
@@ -306,6 +325,34 @@ const ConfirmAnswer = Schema.Struct({
  */
 export const LoginDecline = Schema.Literal("no_account", "public_only");
 export type LoginDecline = typeof LoginDecline.Type;
+
+/** `value` without the invisible marks a number copied from a contact or a page may carry. */
+export const unmarkedNumber = (value: string) => value.replaceAll(/\p{Cf}/gu, "");
+/**
+ * Whether `value` has a phone number's shape, its invisible marks aside: at least 7 digits with
+ * spaces, dots, dashes or brackets, after a `+` if it has one, which a bracket may open.
+ */
+export const phoneShaped = (value: string) => {
+  const written = unmarkedNumber(value).trim();
+  return /^\(?\s*\+?[\d\s().-]+$/u.test(written) && written.replace(/\D/gu, "").length >= 7;
+};
+/**
+ * Whether `value` is written as a number, whatever marks stand between its digits, and so is no
+ * host's handle, name or email address: it holds no letter, or starts with a `+` and a digit, with
+ * only marks between them. A lead of `00` says nothing with a letter: `001a2b` may be a handle.
+ */
+export const writtenAsNumber = (value: string) => {
+  const written = unmarkedNumber(value);
+  return !/\p{L}/u.test(written) || /^[\s(]*\+[^\p{L}\p{N}]*\d/u.test(written);
+};
+/**
+ * Whether a login's answer of the phone kind can't be used: it is written as a number
+ * (`writtenAsNumber`) but not as a phone (`phoneShaped`), such as digits grouped by slashes, a
+ * number with an extension or digits in another script. A field would take other digits than the
+ * number's. A value that isn't written as a number may be a host's handle, which only its reveal
+ * can tell, so it stands, and what its reveal returns must be `phoneShaped`.
+ */
+export const unshapedPhone = (value: string) => writtenAsNumber(value) && !phoneShaped(value);
 
 export const CredentialAnswer = Schema.Struct({
   identifierKind: Schema.optional(Schema.Literal("username", "email", "phone", "account_number")),
@@ -357,6 +404,8 @@ export type ValidAnswer =
   | { readonly type: "text"; readonly value: string }
   | { readonly type: "confirm"; readonly value: typeof ConfirmAnswer.Type }
   | { readonly type: "secret"; readonly value: string }
+  /** A code question's `{ resend: true }`, where it offers one (`allowResend`): a new code. */
+  | { readonly type: "resend"; readonly value: typeof ResendAnswer.Type }
   | { readonly type: "credential"; readonly value: CredentialAnswer };
 export type ValidAnswers = Readonly<Record<string, ValidAnswer>>;
 
@@ -372,7 +421,11 @@ export class InvalidAnswer extends Data.TaggedError("InvalidAnswer")<{
     | "selection_bounds"
     | "too_long"
     | "username_not_allowed"
-    | "password_required";
+    | "password_required"
+    /** The word resend, on a one-time code question that offers no resend (`allowResend`). */
+    | "resend_not_offered"
+    /** A login of the phone kind written as a number, but not as a phone (`unshapedPhone`). */
+    | "phone_unshaped";
 }> {}
 
 const decodeAs = <A, I>(schema: Schema.Schema<A, I>, value: unknown) =>
@@ -441,8 +494,23 @@ const validateOne = (
     }
     case "text":
     case "secret": {
+      // A code question that offers a resend takes the request for a new code instead.
+      if (question.type === "secret" && Either.isRight(decodeAs(ResendAnswer, value)))
+        return question.allowResend === true
+          ? Either.right({ type: "resend", value: { resend: true } })
+          : invalid("unexpected_answer");
       const decoded = decodeAs(Text, value);
       if (Either.isLeft(decoded)) return invalid("malformed");
+      // The word resend is never a one-time code: it asks for a new one where the question
+      // offers that, and is refused where it does not, so it is never typed as the code.
+      if (
+        question.type === "secret" &&
+        question.secretKind === "one_time_code" &&
+        decoded.right.trim().toLowerCase() === "resend"
+      )
+        return question.allowResend === true
+          ? Either.right({ type: "resend", value: { resend: true } })
+          : invalid("resend_not_offered");
       if (decoded.right.length > (question.maxLength ?? maximumAnswerLength))
         return invalid("too_long");
       return Either.right({ type: question.type, value: decoded.right });
@@ -480,6 +548,9 @@ const validateOne = (
           return invalid("unoffered_option");
         if (identifierKinds.length === 0 && decoded.right.identifierKind !== undefined)
           return invalid("unexpected_answer");
+        const { username } = decoded.right;
+        if (kind === "phone" && username !== undefined && unshapedPhone(username))
+          return invalid("phone_unshaped");
         if (password && decoded.right.password === undefined) return invalid("password_required");
         if (!password && decoded.right.password !== undefined) return invalid("unexpected_answer");
         return Either.right({ type: "credential", value: decoded.right });

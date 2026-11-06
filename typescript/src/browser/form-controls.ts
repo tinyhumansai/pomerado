@@ -241,7 +241,8 @@ const formControlTypeKeys = (control, keys, timeout) =>
   formControlKeys(control, keys, formControlPauses(keys), { timeout }).catch(() => {
     throw formControlFailure("not_committed");
   });
-const formControlChooseNative = async (control, wanted, timeout) => {
+// pick chooses among the options, each with its label and value folded (formControlPick).
+const formControlChooseNative = async (control, wanted, timeout, pick = formControlPick) => {
   const options = await control.evaluate((select) =>
     Array.from(select.options).map((option, index) => ({
       index,
@@ -252,7 +253,7 @@ const formControlChooseNative = async (control, wanted, timeout) => {
     undefined,
     { timeout },
   );
-  const picked = formControlPick(
+  const picked = pick(
     options.map((option) => ({ ...option, label: formControlText(option.label), value: formControlText(option.value) })),
     wanted,
   );
@@ -298,7 +299,7 @@ const formControlOptions = (listbox) =>
       disabled: option.getAttribute("aria-disabled") === "true",
     })),
   );
-const formControlChooseCustom = async (control, wanted, timeout) => {
+const formControlChooseCustom = async (control, wanted, timeout, pick = formControlPick) => {
   const until = Date.now() + timeout;
   const frame = await formControlFrame(control, { timeout });
   if ((await control.getAttribute("aria-expanded", { timeout })) !== "true") await control.click({ timeout });
@@ -327,7 +328,7 @@ const formControlChooseCustom = async (control, wanted, timeout) => {
     const before = options.length;
     options = await formControlOptions(listbox);
     if (options.length !== before) stuck = 0;
-    picked = formControlPick(
+    picked = pick(
       options.map((option) => ({ ...option, label: formControlText(option.label), value: formControlText(option.value) })),
       wanted,
     );

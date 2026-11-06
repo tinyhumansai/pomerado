@@ -19,6 +19,7 @@ import { Deadline } from "../../src/runtime/deadline.js";
 import { executeKernelOperation } from "../../src/runtime/kernel-operation-run.js";
 import { runLocalOperation, type LocalOperationFailure } from "../../src/execution/local-operation.js";
 import { createLocalWorkspace } from "../../src/execution/local-workspace.js";
+import { expectPhoneSwapThroughWorker } from "./phone-swap-fixture.js";
 import { projectBrowser } from "./project-browser.js";
 
 const native = <A>(
@@ -675,6 +676,10 @@ test("original autofill uses native trusted input and refuses a stale field bind
       ),
     ).toBe("");
   });
+});
+
+test("native autofill reads back a phone box that took the bound field's place, through the worker", async () => {
+  await native(expectPhoneSwapThroughWorker);
 });
 
 test("native autofill preserves an approved cross-site frame binding", async () => {

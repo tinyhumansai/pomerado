@@ -193,6 +193,8 @@ const makeReplaySession = <E extends YieldableError, V extends string, L extends
     checkedOn: undefined as string | undefined,
     /** Whether a recorded screen on its exact origin (the shared host) sent these. */
     exactSent: { identifier: false, credentials: false },
+    /** Each code screen's presses of its resend control so far (`makeCodeResend`). */
+    resends: new Map<string, number>(),
   };
   const { sibling, resolvedSteps, matchesRecorded } = workspaceScreens(input, progress);
   const outcome = (reason: string): AutofillReplayOutcome<V> => ({

@@ -277,7 +277,7 @@ const signIn = (input: {
   readonly fake: ReturnType<typeof shop>;
   readonly recipe: SignInRecipe;
   readonly ask: InputAsker;
-  readonly reveal: RevealSignInValue;
+  readonly reveal?: RevealSignInValue;
   readonly secrets?: ReturnType<typeof makeRunSecrets>;
 }) => {
   const secrets = input.secrets ?? makeRunSecrets();
@@ -294,7 +294,7 @@ const signIn = (input: {
     }),
     ask: input.ask,
     secrets,
-    reveal: input.reveal,
+    ...(input.reveal === undefined ? {} : { reveal: input.reveal }),
     site,
     siteOrigin: www,
     markerSettle: { within: Duration.millis(20), interval: Duration.millis(5) },
@@ -452,6 +452,7 @@ describe("the forms of a revealed value the run masks", () => {
     expect(await Effect.runPromise(run)).toEqual({ alreadySignedIn: false });
     expect(fake.fills[0]?.values).toEqual(["9812345678"]);
     expect(secrets.redact("9812345678")).toBe("[private]");
+    expect(secrets.redact("98123 45678")).toBe("[private]");
   });
 
   it("masks a number revealed for a username field in each form a page writes it", async () => {
@@ -472,6 +473,63 @@ describe("the forms of a revealed value the run masks", () => {
     expect(secrets.redact("+91 98123 45678, 98123-45678")).toBe("[private], [private]");
   });
 
+  it("masks a number outside the phone shape revealed for a username field, in each form a page writes it", async () => {
+    const secrets = makeRunSecrets();
+    const options = { loginFields: [{ selector: "#member", accepts: ["username"] }] };
+    const fake = shop(options);
+    const recipe = shopRecipe(options);
+    const { reveal } = host({ sec_phone: "0170/5550100" });
+    const run = signIn({ fake, recipe, ask: owner().ask, reveal, secrets });
+    expect(await Effect.runPromise(run)).toEqual({ alreadySignedIn: false });
+    expect(fake.fills[0]?.values).toEqual(["0170/5550100"]);
+    expect(secrets.redact("0170 5550100, 170-5550100")).toBe("[private], [private]");
+  });
+
+  it.each([
+    ["a phone field", undefined, "+49 170/5550100"],
+    ["a phone field, with no calling code", undefined, "0170/5550100"],
+    ["a national field", [national], "+49 170/5550100"],
+    ["a national field, with no calling code", [national], "0170/5550100"],
+    // A revealed value is no handle, so a letter says it can't be a phone number.
+    ["a phone field, with a letter after 00", undefined, "00 91 98123 45678 ext 12"],
+    ["a phone field, with a letter after +(", undefined, "+(91) 98123 45678 ext 12"],
+    ["a phone field, with a letter and no lead", undefined, "0170 5550100 ext 12"],
+    ["a national field, with a letter after 00", [national], "00 91 98123 45678 ext 12"],
+    ["a phone field, by what is no number at all", undefined, "sec_other"],
+  ])("types nothing of a number outside the phone shape revealed for %s", async (_name, loginFields, revealed) => {
+    const options = loginFields === undefined ? {} : { loginFields };
+    const fake = shop(options);
+    const recipe = shopRecipe(options);
+    const { reveal } = host({ sec_phone: revealed });
+    const failed = await Effect.runPromise(
+      Effect.flip(signIn({ fake, recipe, ask: owner().ask, reveal })),
+    );
+    expect(failed).toEqual(new SignInRunFailed({ code: "NeedsInput", reason: "reveal_refused" }));
+    expect(fake.fills).toEqual([]);
+  });
+
+  it("gives a picker's screen no calling code for an answer with a letter after 00", async () => {
+    const number = "00 91 98123 45678 ext 12";
+    const picker = { selector: "#country", accepts: ["phone"], format: "calling_code" };
+    const options = { loginFields: [picker, national] };
+    const fake = shop(options);
+    const browser = { ...fake.browser, picksCallingCodes: true as const };
+    const recipe = { ...shopRecipe(options), version: 11 } as unknown as SignInRecipe;
+    const ask = makeInputAsker((request) =>
+      Effect.succeed(
+        Object.fromEntries(
+          request.questions.map((question) => [
+            question.id,
+            question.type === "credential" ? { username: number, saveLogin: false } : code,
+          ]),
+        ) as InputAnswers,
+      ),
+    );
+    await Effect.runPromise(Effect.either(signIn({ fake: { ...fake, browser }, recipe, ask })));
+    // The fill refuses a picker with no code before it touches anything (`calling_code_missing`).
+    expect(fake.fills[0]?.values).toEqual(["", number]);
+  });
+
   it("masks each field's own form when one handle fills fields of two kinds", async () => {
     const secrets = makeRunSecrets();
     const options = { loginFields: [{ selector: "#member", accepts: ["username"] }, national] };
@@ -485,6 +543,72 @@ describe("the forms of a revealed value the run masks", () => {
       revealedFor: [www, www],
     });
     expect(secrets.redact(`${phone} 9812345678`)).toBe("[private] [private]");
+  });
+
+  it("masks a number a calling-code picker's screen takes in each form a page writes it, and not its code", async () => {
+    const secrets = makeRunSecrets();
+    const picker = { selector: "#country", accepts: ["phone"], format: "calling_code" };
+    const options = { loginFields: [picker, national] };
+    const fake = shop(options);
+    const browser = { ...fake.browser, picksCallingCodes: true as const };
+    const recipe = { ...shopRecipe(options), version: 11 } as unknown as SignInRecipe;
+    const run = signIn({
+      fake: { ...fake, browser },
+      recipe,
+      ask: owner().ask,
+      reveal: host().reveal,
+      secrets,
+    });
+    expect(await Effect.runPromise(run)).toEqual({ alreadySignedIn: false });
+    expect(fake.fills[0]?.values).toEqual(["91", "9812345678"]);
+    expect(secrets.redact("+91 98123 45678, 98123-45678, 098123 45678")).toBe(
+      "[private], [private], [private]",
+    );
+    expect(secrets.redact("India (+91)")).toBe("India (+91)");
+  });
+
+  it.each([
+    ["revealed", { reveal: host({ sec_phone: "+298 555012" }).reveal, answer: "sec_phone" }],
+    ["answered with no reveal", { answer: "+298 555012" }],
+  ])("masks a short number a picker's screen takes, %s, and not its code", async (_name, by) => {
+    const secrets = makeRunSecrets();
+    const picker = { selector: "#country", accepts: ["phone"], format: "calling_code" };
+    const options = { loginFields: [picker, national] };
+    const fake = shop(options);
+    const browser = { ...fake.browser, picksCallingCodes: true as const };
+    const recipe = { ...shopRecipe(options), version: 11 } as unknown as SignInRecipe;
+    const ask = makeInputAsker((request) =>
+      Effect.succeed(
+        Object.fromEntries(
+          request.questions.map((question) => [
+            question.id,
+            question.type === "credential"
+              ? { username: by.answer, saveLogin: false }
+              : code,
+          ]),
+        ) as InputAnswers,
+      ),
+    );
+    const run = signIn({ fake: { ...fake, browser }, recipe, ask, secrets, ...by });
+    expect(await Effect.runPromise(run)).toEqual({ alreadySignedIn: false });
+    expect(fake.fills[0]?.values).toEqual(["298", "555012"]);
+    expect(secrets.redact("+298 55 50 12, 555012")).toBe("[private], [private]");
+    expect(secrets.redact("Faroe Islands (+298)")).toBe("Faroe Islands (+298)");
+  });
+
+  it("masks a short number's revealed digits only where no digit adjoins them", async () => {
+    const secrets = makeRunSecrets();
+    const picker = { selector: "#country", accepts: ["phone"], format: "calling_code" };
+    const options = { loginFields: [picker, national] };
+    const fake = shop(options);
+    const browser = { ...fake.browser, picksCallingCodes: true as const };
+    const recipe = { ...shopRecipe(options), version: 11 } as unknown as SignInRecipe;
+    const { reveal } = host({ sec_phone: "+298 5550" });
+    const run = signIn({ fake: { ...fake, browser }, recipe, ask: owner().ask, reveal, secrets });
+    expect(await Effect.runPromise(run)).toEqual({ alreadySignedIn: false });
+    expect(fake.fills[0]?.values).toEqual(["298", "5550"]);
+    expect(secrets.redact("+298 55 50, 5550")).toBe("[private], [private]");
+    expect(secrets.redact("order 955505")).toBe("order 955505");
   });
 
   it("masks a revealed date of birth in each whole-date layout a page may show it in", async () => {
@@ -777,6 +901,16 @@ describe("the fill of values revealed for an origin", () => {
   it("refuses a date the page moved to another origin, before the call that fills it", async () => {
     const step: AutofillStep = { fields: [{ selector: "#birth-date", slot: "date_of_birth" }] };
     const { report, calls } = fill(step, ["1990-04-12"], [moved(login)], [www]);
+    expect(await report).toMatchObject({ outcome: "refused", reason: "credential_target_refused" });
+    // Only the call that found the field moved, which did nothing.
+    expect(calls).toHaveLength(1);
+  });
+
+  it("refuses a calling-code picker the page moved to another origin, before the call that picks", async () => {
+    const step: AutofillStep = {
+      fields: [{ selector: "#country", slot: "phone", accepts: ["phone"], format: "calling_code" }],
+    };
+    const { report, calls } = fill(step, ["91"], [moved(login)], [www]);
     expect(await report).toMatchObject({ outcome: "refused", reason: "credential_target_refused" });
     // Only the call that found the field moved, which did nothing.
     expect(calls).toHaveLength(1);

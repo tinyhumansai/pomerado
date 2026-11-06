@@ -34,7 +34,11 @@ import type { SignInVersionFinding } from "./sign-in-version.js";
 import {
   AutofillPopup,
   AutofillApproval,
+  callingCodeFits,
+  callingCodeMessage,
   DateOfBirthFormat,
+  resendFits,
+  resendMessage,
   IdentifierKinds,
   maximumCodeBoxes,
   maximumStepFields,
@@ -668,7 +672,8 @@ export const SignInStep = Schema.Union(
       Schema.Union(
         // An identifier field lists every kind it accepts; the host picks what it sends. A
         // private identifier is accepted alone, with the site's own label for its field. One that
-        // accepts a phone and keeps only the local number names `format: "national"`.
+        // accepts a phone and keeps only the local number names `format: "national"`, and the
+        // calling-code picker before it `format: "calling_code"`.
         Schema.Struct({
           selector: SignInSelector,
           accepts: Schema.Array(IdentifierKinds).pipe(
@@ -685,7 +690,7 @@ export const SignInStep = Schema.Union(
         }).pipe(
           Schema.filter(privateIdentifierFits, { message: () => privateIdentifierMessage }),
           Schema.filter((field) => field.format === undefined || field.accepts.includes("phone"), {
-            message: () => "only a field that accepts a phone names format national",
+            message: () => "only a field that accepts a phone names a phone format",
           }),
         ),
         // A date of birth names how the field takes it, or the one part a dropdown takes. A
@@ -709,6 +714,7 @@ export const SignInStep = Schema.Union(
       Schema.maxItems(maximumStepFields + maximumCodeBoxes),
       Schema.filter(stepFieldsFit, { message: () => stepFieldsMessage }),
       Schema.filter(onePrivateIdentifier, { message: () => onePrivateIdentifierMessage }),
+      Schema.filter(callingCodeFits, { message: () => callingCodeMessage }),
     ),
     submit: Schema.optional(SignInSelector),
     /**
@@ -735,6 +741,13 @@ export const SignInStep = Schema.Union(
      * field. Never a submit, a field or a control of the sign-in's own form.
      */
     dismiss: Schema.optional(SignInSelector),
+    /**
+     * On a code screen, its own control that asks the site to send a new code, such as "Resend
+     * code" or "Send again". The host presses it only when the owner answers the code question by
+     * asking for a new code, once the site enables it, and runs do the same. Never the step's
+     * submit, a field, a method or its dismiss.
+     */
+    resend: Schema.optional(SignInSelector),
   }).pipe(
     Schema.filter((step) => step.fields.length > 0 || step.submit !== undefined, {
       message: () => "a sign-in step fills a field or clicks a control",
@@ -747,6 +760,7 @@ export const SignInStep = Schema.Union(
           !(step.methods ?? []).some((option) => option.selector === step.dismiss)),
       { message: () => "dismiss names the covering notice's own control, none of the step's" },
     ),
+    Schema.filter(resendFits, { message: () => resendMessage }),
     Schema.filter(
       (step) =>
         step.submitKey === undefined ||

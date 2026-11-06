@@ -1,9 +1,14 @@
 import { createInterface, emitKeypressEvents } from "node:readline";
 import { Effect } from "effect";
 import { makeInputAsker } from "./callback.js";
-import { InputRequestFailure, publicOptionLabel } from "../runtime/input-request.js";
+import {
+  InputRequestFailure,
+  phoneShaped,
+  publicOptionLabel,
+  unshapedPhone,
+} from "../runtime/input-request.js";
 import type { CurrentLoginStep, InputAnswers, Question } from "../runtime/input-request.js";
-import { emailShaped, phoneShaped } from "../runtime/login-values.js";
+import { emailShaped } from "../runtime/login-values.js";
 
 /**
  * The owner pressed Ctrl-C or Ctrl-D, or closed the input, at a question. It stays `NoResponse` for
@@ -191,35 +196,55 @@ const answerQuestion = (question: Question): Effect.Effect<unknown, InputRequest
     switch (question.type) {
       case "text":
         return yield* line("> ");
-      case "secret":
-        return yield* line("> ", true);
+      case "secret": {
+        // A code question that offers a resend takes the word resend as the request for one; one
+        // that offers none says so and asks again, so the word is never typed as the code.
+        if (question.allowResend === true)
+          process.stderr.write("Type resend to have the site send a new code.\n");
+        for (;;) {
+          const typed = yield* line("> ", true);
+          if (typed.trim().toLowerCase() !== "resend") return typed;
+          if (question.allowResend === true) return { resend: true };
+          if (question.secretKind !== "one_time_code") return typed;
+          process.stderr.write("No new code can be asked for here. Type the code the site sent.\n");
+        }
+      }
       case "credential": {
         // A login that offers identifier kinds is asked for by them, and its answer says its kind.
         const kinds = question.currentStep?.identifierKinds ?? [];
         const label = kinds.length === 0 ? "Username" : identifierLabel(kinds);
-        const username =
-          question.fields === "username_password"
-            ? yield* line(
-                question.allowDecline === true
-                  ? `${label} (leave empty to go on without signing in): `
-                  : `${label}: `,
-              )
-            : undefined;
-        // An empty username, where the question offers it, declines the login.
-        if (question.allowDecline === true && username?.trim() === "")
-          return { declined: "public_only", saveLogin: false };
-        const identifierKind =
-          username === undefined || kinds.length === 0
-            ? undefined
-            : (identifierKindOf(username, kinds) ?? (yield* askKind(kinds)));
-        const login = {
-          ...(identifierKind === undefined ? {} : { identifierKind }),
-          ...(username === undefined ? {} : { username }),
-        };
-        // A sign-in that types no password, such as by a phone number and a code, asks for none.
-        if (question.currentStep?.password === false) return { ...login, saveLogin: false };
-        const password = yield* line("Password: ", true);
-        return { ...login, password, saveLogin: false };
+        // A phone number the host can't use is asked again, as validation would end the login.
+        for (;;) {
+          const username =
+            question.fields === "username_password"
+              ? yield* line(
+                  question.allowDecline === true
+                    ? `${label} (leave empty to go on without signing in): `
+                    : `${label}: `,
+                )
+              : undefined;
+          // An empty username, where the question offers it, declines the login.
+          if (question.allowDecline === true && username?.trim() === "")
+            return { declined: "public_only", saveLogin: false };
+          const identifierKind =
+            username === undefined || kinds.length === 0
+              ? undefined
+              : (identifierKindOf(username, kinds) ?? (yield* askKind(kinds)));
+          if (identifierKind === "phone" && username !== undefined && unshapedPhone(username)) {
+            process.stderr.write(
+              "Write the phone number with an optional leading + and the country code, at least 7 digits, and only spaces, dots, dashes or brackets between them.\n",
+            );
+            continue;
+          }
+          const login = {
+            ...(identifierKind === undefined ? {} : { identifierKind }),
+            ...(username === undefined ? {} : { username }),
+          };
+          // A sign-in that types no password, such as by a phone number and a code, asks for none.
+          if (question.currentStep?.password === false) return { ...login, saveLogin: false };
+          const password = yield* line("Password: ", true);
+          return { ...login, password, saveLogin: false };
+        }
       }
       case "confirm": {
         const reply = (yield* line("[y/N] ")).trim().toLowerCase();

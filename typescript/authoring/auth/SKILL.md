@@ -149,7 +149,7 @@ its text. The host rereads the question before privately filling the answer. No 
 you, Guardian, generated code or the recipe. One-time and recovery codes keep their own slots.
 
 Every selector a `signInStep` sends, in `fields`, `submit`, `methods`, `questionSelector`,
-`dismiss`, `rejectedMarkers`, `matchSelector` and `signedIn`, is a Playwright selector string, not a locator call as probes and
+`dismiss`, `resend`, `rejectedMarkers`, `matchSelector` and `signedIn`, is a Playwright selector string, not a locator call as probes and
 the examples write. Prefer a stable `#id`, `[name=...]` or `data-testid=` selector. A role selector
 writes its options as attributes:
 
@@ -179,9 +179,17 @@ attribute.
     the label, type and placeholder. The host sends a kind the login holds (username first, then email, phone and
     account number) or asks the caller once for one it accepts. If it refuses the step as
     `identifier_conflict`, the answer was not this login's: send the step again to ask again.
-    For a phone box that keeps only the local number and has no country picker, or a picker that
-    already shows the number's country as the screen loads, prefer adding `format: "national"` to
-    that field: the host then types the number without its calling code.
+    For a phone box that keeps only the local number and has no country picker, prefer adding
+    `format: "national"` to that field: the host then types the number without its calling code.
+    When a calling-code picker sits before such a box, a select or a dropdown whose options show
+    their codes, such as `+91` or `India (+91)`, name the picker as its own field before the box,
+    `accepts: ["phone"]` with `format: "calling_code"`, and the box with `format: "national"`
+    (its select, or the control that opens its list, never an option). The host picks the option
+    for the number's own calling code, checks it stuck, then types the national number. It types
+    nothing for a number that doesn't say its calling code, or a picker with no option, or several,
+    for it. A box that a page replaces with a phone box once digits are typed is the box the page
+    shows first: name that one, with the kinds it accepts, and the host follows the phone box by
+    itself, reading back that it holds the number before it clicks the submit.
   - `slot: "password"` for the password.
   - `slot: "code"` for a one-time or authenticator code. A saved authenticator seed answers it;
     otherwise the host asks the caller for the code. Never ask for a code yourself. A code split
@@ -195,7 +203,11 @@ attribute.
     `code_boxes_incomplete`, typing nothing: its `codeBoxes` says how many boxes the screen shows
     and which ones the step named; send the step again with all of them. When a code screen asks
     the person to do something, such as call a number or approve in an app, prefer naming the
-    element with that instruction as the code field's `questionSelector`.
+    element with that instruction as the code field's `questionSelector`. When a code screen has
+    its own control that asks the site to send a new code, such as "Resend code" or "Send again",
+    name it as the step's `resend`, on a step whose every field takes a code, even while the page
+    keeps it disabled, and never press it yourself: the host presses it only when the owner
+    answers the code question by asking for a new code, once the site enables it.
   - `slot: "date_of_birth"` for a date of birth, with `format`, how the field takes it, read from
     its placeholder, label, input mask or hint: `MM/DD/YYYY`, `DD/MM/YYYY`, `M/D/YYYY`,
     `D/M/YYYY`, `MM-DD-YYYY`, `DD-MM-YYYY`, `DD.MM.YYYY`, `YYYY-MM-DD`, `YYYY/MM/DD`, `MMDDYYYY`,

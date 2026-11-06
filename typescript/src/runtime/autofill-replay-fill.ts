@@ -22,7 +22,8 @@ import { Unanswered } from "./login-field-asks.js";
 import { credentialUnavailable } from "./autofill-fresh-values.js";
 import type { ReplaySession } from "./autofill-replay-session.js";
 import type { RejectedMarker } from "../destinations/autofill-recipe.js";
-import type { AutofillLogin } from "./autofill-values.js";
+import type { AutofillLogin, CodeResend } from "./autofill-values.js";
+import { makeCodeResend, resendWaitMs } from "./code-resend.js";
 import {
   emptyReplayFields,
   refillRefused,
@@ -124,9 +125,55 @@ const closedInPlace = <E extends YieldableError, V extends string, L extends Aut
   });
 
 /**
+ * Whether a code screen inspected again after a resend press is still the screen this fill
+ * admitted at its first look: on the same origin, in the same popup, with its controls in a frame
+ * of the same origin and its code fields split across boxes as they were, which its code was asked
+ * for. Anything else is a screen changed, as a first look on another origin is.
+ */
+const sameScreen = (first: AutofillInspection, again: AutofillInspection) => {
+  const origin = URL.parse(first.page)?.origin;
+  const boxes = (inspection: AutofillInspection) =>
+    JSON.stringify(inspection.screen.fields.map((field) => field.codeBox ?? null));
+  return (
+    origin !== undefined &&
+    URL.parse(again.page)?.origin === origin &&
+    again.screen.origin === first.screen.origin &&
+    again.popupTargetId === first.popupTargetId &&
+    boxes(again) === boxes(first)
+  );
+};
+
+/**
+ * A code screen's resend for its step, when it names one the hooks can press (`makeCodeResend`),
+ * with the session's count of each screen's presses, and how many this fill's asks pressed.
+ */
+const screenResend = <E extends YieldableError, V extends string, L extends AutofillLogin>(
+  session: ReplaySession<E, V, L>,
+  step: AutofillStep,
+): { readonly resend: CodeResend; readonly pressed: { count: number } } | undefined => {
+  const resend = makeCodeResend({
+    hooks: session.hooks,
+    step,
+    presses: session.progress.resends,
+    waitMs: session.timing.resendWaitMs ?? resendWaitMs,
+    pollMs: session.timing.pollMs,
+    emit: session.input.emit,
+  });
+  if (resend === undefined) return undefined;
+  const pressed = { count: 0 };
+  return {
+    pressed,
+    resend: { ...resend, press: Effect.tap(resend.press, () => Effect.sync(() => pressed.count++)) },
+  };
+};
+
+/**
  * One observed screen: admitted by the host, filled and submitted. Why it did not complete, or
  * undefined. `planned` is the recorded screen's `refills`. A code screen that closed in place
- * counts as sent only once the marker shows (`closedInPlace`).
+ * counts as sent only once the marker shows (`closedInPlace`). A code screen whose resend the
+ * owner had the host press is inspected again before it is filled, since the press may have
+ * loaded it anew (`screenResend`), and filled only while it is still the screen first admitted
+ * (`sameScreen`).
  */
 export const runReplayStep = <E extends YieldableError, V extends string, L extends AutofillLogin>(
   session: ReplaySession<E, V, L>,
@@ -161,6 +208,7 @@ export const runReplayStep = <E extends YieldableError, V extends string, L exte
       planned,
     );
     if (refused !== undefined) return refused;
+    const resend = screenResend(session, asked);
     const resolved = yield* valuesFor(
       input,
       values,
@@ -172,6 +220,7 @@ export const runReplayStep = <E extends YieldableError, V extends string, L exte
         codeRequests,
         rejectedValues: retryState.rejectedValues,
         correctionRequests: retryState.correctionRequests,
+        ...(resend === undefined ? {} : { resend: resend.resend }),
       },
       inspection.screen.fields,
       // A code screen the recipe never recorded that refused a code may want one the site sent
@@ -186,6 +235,18 @@ export const runReplayStep = <E extends YieldableError, V extends string, L exte
           : yield* input.failures.unanswered(resolved.cause, resolved.field);
     // The kinds the fields were sent as: an answer to a field that accepts several decides.
     const { values: filled, step, recoveryCodes } = resolved;
+    if (resend !== undefined && resend.pressed.count > 0) {
+      const again = yield* hooks.inspect(step);
+      if ("outcome" in again) {
+        yield* input.hosted?.settleRecoveryCodes?.(recoveryCodes, false) ?? Effect.void;
+        return again.reason;
+      }
+      if (!sameScreen(inspection, again)) {
+        yield* input.hosted?.settleRecoveryCodes?.(recoveryCodes, false) ?? Effect.void;
+        return "screen_changed" as const;
+      }
+      inspection = again;
+    }
     noteCodeValues(rejectedCodes, step, filled);
     if (yield* input.hosted?.identifierConflict?.(step, filled) ?? Effect.succeed(false)) {
       yield* input.hosted?.settleRecoveryCodes?.(recoveryCodes, false) ?? Effect.void;

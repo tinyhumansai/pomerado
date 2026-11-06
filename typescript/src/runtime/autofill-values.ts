@@ -1,16 +1,21 @@
 import { Effect } from "effect";
 import type { YieldableError } from "effect/Cause";
-import type {
-  AutofillField,
-  AutofillStep,
-  AutofillStepRequest,
-  FillSlot,
-  IdentifierKind,
+import {
+  type AutofillField,
+  type AutofillStep,
+  type AutofillStepRequest,
+  type FillSlot,
+  identifierPreference,
+  type IdentifierKind,
 } from "../destinations/autofill-step.js";
-import { nationalDigits, wholeDateLayouts } from "../destinations/login-field-formats.js";
+import {
+  callingCode,
+  nationalDigits,
+  wholeDateLayouts,
+} from "../destinations/login-field-formats.js";
 import type { WebsiteCredentials } from "./authentication.js";
 import { correctionTriesLeft } from "./credential-prompts.js";
-import type { InputAsker } from "./input-request.js";
+import { type InputAsker, unmarkedNumber, writtenAsNumber } from "./input-request.js";
 import {
   chosenKind,
   heldField,
@@ -201,16 +206,43 @@ const boxedCode = (found: Found, boxes: number): Found => {
     : new Unanswered(codeDoesNotFit);
 };
 
-/** The values with each `national` phone field's number written without its calling code. */
-const localValues = (step: Pick<AutofillStep<FillSlot>, "fields">, values: readonly string[]) =>
-  step.fields.some((field) => field.slot === "phone" && field.format === "national")
-    ? values.map((value, index) => {
-        const field = step.fields[index];
-        return field?.slot === "phone" && field.format === "national"
-          ? (nationalDigits(value) ?? value)
-          : value;
-      })
-    : values;
+/** Whether a field takes an identifier, any of which may be a number. */
+const takesIdentifier = (slot: FillSlot) =>
+  (identifierPreference as readonly FillSlot[]).includes(slot);
+
+/**
+ * The values with each identifier field's number without the invisible marks it may have been
+ * pasted with (`unmarkedNumber`), each `national` field's written without its calling code, and
+ * each `calling_code` picker's as that code alone, or nothing for a number that does not say it,
+ * which the fill refuses before it types anything (`calling_code_missing`). An identifier not
+ * written as a number keeps its marks, as a joiner may be a letter's own. The very list when that
+ * changes nothing: a host empties a private answer in its own list once the fill is over.
+ */
+const localValues = (step: Pick<AutofillStep<FillSlot>, "fields">, values: readonly string[]) => {
+  const local = values.map((value, index) => {
+    const field = step.fields[index];
+    if (field === undefined || !takesIdentifier(field.slot)) return value;
+    if (field.slot !== "phone") return writtenAsNumber(value) ? unmarkedNumber(value) : value;
+    const number = unmarkedNumber(value);
+    if (field.format === "national") return nationalDigits(number) ?? number;
+    return field.format === "calling_code" ? (callingCode(number) ?? "") : number;
+  });
+  return local.some((value, index) => value !== values[index]) ? local : values;
+};
+
+/**
+ * The digits each `national` phone field of a screen takes (`localValues`), which it types and a
+ * page may then show alone.
+ */
+export const nationalValues = (
+  step: Pick<AutofillStep<FillSlot>, "fields">,
+  values: readonly string[],
+) =>
+  step.fields.flatMap((field, index) => {
+    const national = field.slot === "phone" && field.format === "national";
+    const digits = national ? nationalDigits(values[index] ?? "") : undefined;
+    return digits === undefined ? [] : [digits];
+  });
 
 /**
  * The values as the host types them: a screen with as many code fields as its code has characters,
@@ -220,7 +252,9 @@ const localValues = (step: Pick<AutofillStep<FillSlot>, "fields">, values: reado
  * refusal rules out is the code. A phone field whose step says `format: "national"` takes the
  * digits after the number's calling code (`nationalDigits`), which its read-back then checks; a
  * number saved without its calling code is typed as saved, since nothing says which digits are
- * the calling code.
+ * the calling code. A calling-code picker (`format: "calling_code"`) takes the number's calling
+ * code alone (`callingCode`), which the fill picks in it, or nothing when the number does not say
+ * it.
  */
 export const typedValues = (
   step: Pick<AutofillStep<FillSlot>, "fields">,
@@ -236,6 +270,21 @@ export const typedValues = (
     return box === -1 ? value : (characters[box] ?? value);
   });
 };
+
+/**
+ * A code screen's resend control the owner may ask the host to press (`AutofillStep.resend`): how
+ * many presses the screen has left, and the press, which says whether it went through. It never
+ * fails: a press that could not go through answers false.
+ */
+export interface CodeResend {
+  readonly left: () => number;
+  readonly press: Effect.Effect<boolean>;
+  /**
+   * Set once a press was stopped before it went out by a check of the control that failed, such
+   * as a build's review of it, with that failure: the code question then ends unanswered with it.
+   */
+  readonly stopped?: () => { readonly cause: unknown } | undefined;
+}
 
 /** What the host holds of a login for one step's values. */
 export interface AutofillLogin {
@@ -265,6 +314,11 @@ export interface AutofillLogin {
    * which the owner is asked for the code with.
    */
   readonly codeInstruction?: string;
+  /**
+   * The code screen's resend control, when it has one and the host can press it: the code
+   * question offers a resend while presses are left (`askedCode`).
+   */
+  readonly resend?: CodeResend | undefined;
   /** Whether an asked field may be kept with the login, with the owner's yes (`SaveOffer`). */
   readonly offerSave?: boolean;
   /** Whether a corrected answer to a rejected field may be kept, with the owner's yes. */
@@ -405,7 +459,8 @@ export const makeAutofillValues = <
   /**
    * A private identifier, such as a national identity number or a PIN that is itself the sign-in
    * identifier: the record's, the owner's answer, else asked by the field's label with the save
-   * offer, and masked like a password.
+   * offer, and masked like a password, but for one of a few digits alone, which as any identifier
+   * of so few counts only as a whole token (`digitToken`).
    */
   const privateIdentifierValue = (field: AutofillField, login: AutofillLogin) =>
     Effect.gen(function* () {

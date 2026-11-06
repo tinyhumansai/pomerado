@@ -24,6 +24,7 @@ import { primaryPageCode } from "../../src/runtime/host-execute.js";
 import { resetPageCode } from "../../src/runtime/start-state.js";
 import { waitCode } from "../../src/browser/wait.js";
 import { startFileSite } from "./file-fixture.js";
+import { expectPhoneSwapThroughWorker } from "./phone-swap-fixture.js";
 
 const firefox = <A>(run: (executor: PlaywrightExecutor) => Promise<A>): Promise<A> =>
   Effect.runPromise(
@@ -121,6 +122,10 @@ test("Firefox autofill inserts by trusted input and refuses a stale field bindin
       ),
     ).toBe("");
   });
+});
+
+test("Firefox autofill reads back a phone box that took the bound field's place, through the worker", async () => {
+  await firefox(expectPhoneSwapThroughWorker);
 });
 
 test("Firefox autofill types a credential by trusted keys, one per character", async () => {

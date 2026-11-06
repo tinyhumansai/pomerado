@@ -3,6 +3,7 @@ import { Worker } from "node:worker_threads";
 import type { Browser, BrowserContextOptions, BrowserServer } from "playwright";
 import { Cause, Effect, Exit, Fiber, ParseResult, Schema, type Scope } from "effect";
 import {
+  BoundReadBack,
   CredentialReadBack,
   type CredentialKeyboard,
 } from "../destinations/credential-keyboard.js";
@@ -587,6 +588,11 @@ export const makePlaywrightExecutor = (
           options?.trustedKeys === true ? 15 + Array.from(text).length : 15,
         ).pipe(
           Effect.flatMap((value) => Schema.decodeUnknown(CredentialReadBack)(value)),
+          Effect.mapError(asError),
+        ),
+      readBack: (target, numbers) =>
+        call({ kind: "credential_read_back", target, numbers }, 15).pipe(
+          Effect.flatMap((value) => Schema.decodeUnknown(BoundReadBack)(value)),
           Effect.mapError(asError),
         ),
     };

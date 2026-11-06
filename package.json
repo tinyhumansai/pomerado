@@ -136,6 +136,11 @@
       "import": "./dist/typescript/src/destinations/autofill-page-code.js",
       "default": "./dist/typescript/src/destinations/autofill-page-code.js"
     },
+    "./core/destinations/autofill-phone-swap": {
+      "types": "./dist/typescript/src/destinations/autofill-phone-swap.d.ts",
+      "import": "./dist/typescript/src/destinations/autofill-phone-swap.js",
+      "default": "./dist/typescript/src/destinations/autofill-phone-swap.js"
+    },
     "./core/destinations/autofill-recipe": {
       "types": "./dist/typescript/src/destinations/autofill-recipe.d.ts",
       "import": "./dist/typescript/src/destinations/autofill-recipe.js",
@@ -655,6 +660,11 @@
       "types": "./dist/typescript/src/runtime/challenge.d.ts",
       "import": "./dist/typescript/src/runtime/challenge.js",
       "default": "./dist/typescript/src/runtime/challenge.js"
+    },
+    "./core/runtime/code-resend": {
+      "types": "./dist/typescript/src/runtime/code-resend.d.ts",
+      "import": "./dist/typescript/src/runtime/code-resend.js",
+      "default": "./dist/typescript/src/runtime/code-resend.js"
     },
     "./core/runtime/context": {
       "types": "./dist/typescript/src/runtime/context.d.ts",

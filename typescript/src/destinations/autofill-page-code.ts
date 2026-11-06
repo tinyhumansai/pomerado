@@ -7,6 +7,8 @@ import { pageCode, primaryPageCode } from "../runtime/host-execute.js";
 import { hostOnSiteSource } from "../runtime/same-site.js";
 import { submissionGuardCode } from "./autofill-submission-guard.js";
 import { holdsFocusCode } from "./field-focus-code.js";
+import { phoneReadBackMs } from "./credential-keyboard.js";
+import { namesCallingCode, shownCallingCodes, withoutCallingCodes } from "./login-field-formats.js";
 import { pageControlsCode } from "./page-controls.js";
 
 /**
@@ -145,9 +147,10 @@ return {
 };`;
 
 /**
- * One call of a step's fill, after its inspection. None carries a value but a date's: the host
- * types every other value itself over its own DevTools socket, into the field `focus` left focused. `check` names the field the host typed just before, which must now hold
- * something, so typing that went to another element never leads to a click.
+ * One call of a step's fill, after its inspection. None carries a value but a date's and a phone's
+ * calling code: the host types every other value itself over its own DevTools socket, into the
+ * field `focus` left focused. `check` names the field the host typed just before, which must now
+ * hold something, so typing that went to another element never leads to a click.
  * - `focus`: empties the field when it holds something and focuses it, then reads that the field
  *   itself holds the focus, inside a shadow root too (`holdsFocusCode`), and names the tag of the
  *   element that holds it otherwise.
@@ -190,12 +193,47 @@ export type AutofillFillCall =
        * types the fresh code.
        */
       readonly emptyBoxes?: readonly number[];
+      /**
+       * Marks the document the field sits in, under the fill's id (`typedAt`), so a later `bind`
+       * call can tell that very document from any other, whatever its place or origin reads as.
+       */
+      readonly markDocument?: true;
     }
   | {
       readonly kind: "date";
       readonly index: number;
       readonly iso: string;
       readonly format: DateOfBirthFormat;
+    }
+  | {
+      /**
+       * Picks a phone's calling code in a calling-code picker (`callingCodeChoiceCode`): `code` is
+       * its digits alone, never the number, so this call's code holds that code.
+       */
+      readonly kind: "calling_code";
+      readonly index: number;
+      readonly code: string;
+    }
+  | {
+      /**
+       * Empties each of the step's fields that holds something, last first, by its own value
+       * setter and an input event, with no focus and no key, as `emptyBoxes` does: before a code
+       * screen's resend, so nothing typed goes out with it. Lengths only, never a value.
+       */
+      readonly kind: "empty";
+    }
+  | {
+      /**
+       * Binds a field for the host's read-back over its own socket, as a focus call binds one, with
+       * no focus and nothing emptied, and reads any calling-code picker beside it
+       * (`pickerBesideCode`) against `code`, a phone number's calling code when it says one. It
+       * binds and reads nothing in any other document than the one the focus call marked
+       * (`markDocument`). This call's code holds that code alone, never the number.
+       */
+      readonly kind: "bind";
+      readonly index: number;
+      readonly bindingKey: string;
+      readonly code: string | null;
     }
   | {
       readonly kind: "submit";
@@ -225,6 +263,11 @@ export type AutofillFillCall =
       /** Only look: a call that finds the step's fields clicks nothing and answers `none`. */
       readonly look?: true;
       /**
+       * Only read the submit: a call that finds it disabled answers `disabled` as any submit call
+       * does, and one that finds it enabled clicks nothing and answers `none`.
+       */
+      readonly enabledRead?: true;
+      /**
        * The step's code boxes, by field index: its code fields the host typed one character each,
        * when it typed two or more. Each must still hold exactly one character before the click.
        */
@@ -240,6 +283,19 @@ export type AutofillFillCall =
        * click is `blocked`, so a covering notice is dismissed first.
        */
       readonly pressCovered?: true;
+      /**
+       * A code screen's resend press (`resendAutofillCode`), whose submit is its resend control:
+       * before the click every field of the step holds nothing (lengths only); its click reaches
+       * none of them, and none of the elements `apartFrom` names in its frame, the screen's own
+       * submit, methods and dismiss; its document holds no password in any form, as one an earlier
+       * screen typed may still be; the form a control its click reaches submits, if any, holds no
+       * value in a text field a person could have typed; and its click reaches no link or post to
+       * another origin (`resendRefused`). So nothing typed goes out with the press's own post, it
+       * presses no other control of the screen, and neither a link nor a post it reaches leaves
+       * the origin. A page's own script may still send what it reads or go where it likes, as it
+       * may on any click.
+       */
+      readonly resend?: { readonly apartFrom: readonly string[] };
     };
 
 /** How long the read of the page's alerts before a submit's click may hold the click back. */
@@ -307,7 +363,7 @@ const readsOnly = ${JSON.stringify(call.kind === "submit")} && fields.length > 0
 // emptied every box itself.
 const looking = ${JSON.stringify(call.kind === "submit" && call.look === true)};
 const codeLook = looking && ${JSON.stringify(call.kind === "submit" && call.pressCovered !== true)} && fields.length > 0 && codeSlots.every(Boolean);
-${call.kind === "submit" ? pageSentCode : call.kind === "dismiss" ? "" : "await keep(typedAt, primary.url());"}
+${call.kind === "submit" ? pageSentCode : call.kind === "dismiss" || call.kind === "empty" || call.kind === "bind" ? "" : "await keep(typedAt, primary.url());"}
 for (const check of ${JSON.stringify(check)}) {
   // Its length only, never its value.
   const holding = fields[check].locator.evaluate(
@@ -474,6 +530,55 @@ const noticeCoverCode = `(element, own, scroll) => {
 }`;
 
 /**
+ * Page code, as statements for a function to open with: `pageParent`, `parentOf`, `ancestry` and
+ * `clickReach`, every element a click of `element` may reach (`dismissCode`, `resendChecksCode`).
+ * A selector may name what a control holds or a label for it, so the element alone says too
+ * little: a click at its centre lands on whatever it holds there, what a slot among them is
+ * assigned included, and bubbles along the path a click takes, through a slot it is assigned to,
+ * and a label among them clicks its control, which bubbles in turn. An image counts the areas of
+ * its map, since one of them takes the click. A label that holds both a box and the element counts
+ * the box, though a browser skips a label's click from a button inside it: refusing is the safe
+ * side.
+ */
+const clickReachCode = `// Open shadow roots count as part of their host: a host holds what its root holds, and a slot what
+  // is assigned to it.
+  const pageParent = (node) => (node.parentNode instanceof ShadowRoot ? node.parentNode.host : node.parentNode);
+  const parentOf = (node) => node.assignedSlot ?? pageParent(node);
+  const ancestry = (node, parent = parentOf) => {
+    const chain = [];
+    for (let at = node; at instanceof Element; at = parent(at)) chain.push(at);
+    return chain;
+  };
+  const within = (root) => {
+    const found = [];
+    const walk = (scope) => {
+      const assigned = scope instanceof HTMLSlotElement ? scope.assignedElements({ flatten: true }) : [];
+      for (const child of [...assigned, ...scope.children]) {
+        found.push(child);
+        if (child.shadowRoot !== null) walk(child.shadowRoot);
+        walk(child);
+      }
+    };
+    if (root.shadowRoot !== null) walk(root.shadowRoot);
+    walk(root);
+    return found;
+  };
+  const mapAreas = (node) => {
+    if (!(node instanceof HTMLImageElement) || !node.useMap.startsWith("#")) return [];
+    const name = node.useMap.slice(1);
+    const map = [...node.getRootNode().querySelectorAll("map")].find((each) => each.name === name || each.id === name);
+    return [...(map?.querySelectorAll("area") ?? [])];
+  };
+  const clickReach = (element) => {
+    const held = [...ancestry(element), ...within(element)];
+    return [
+      ...held,
+      ...held.flatMap(mapAreas),
+      ...held.flatMap((node) => (node instanceof HTMLLabelElement && node.control !== null ? ancestry(node.control) : [])),
+    ];
+  };`;
+
+/**
  * Page code for a `dismiss` call: finds the selector's one visible match across the primary tab's
  * frames (`locate`); none, or several, is `not_shown` or `ambiguous`, and nothing is clicked. A
  * match is refused (`part`) when it is one of the step's controls in its frame, holds one or sits in
@@ -508,34 +613,16 @@ for (const control of submit === null ? fields : [...fields, submit]) {
   if (handle !== null && noticeFrame !== null && (await handle.ownerFrame()) === noticeFrame) own.push(handle);
 }
 const verdict = await notice.locator.evaluate((element, own) => {
-  // Open shadow roots count as part of their host: a host holds what its root holds.
-  const parentOf = (node) => (node.parentNode instanceof ShadowRoot ? node.parentNode.host : node.parentNode);
+  ${clickReachCode}
   const holds = (outer, inner) => {
     for (let node = inner; node !== null; node = parentOf(node)) if (node === outer) return true;
     return false;
   };
-  const ancestry = (node) => {
-    const chain = [];
-    for (let at = node; at instanceof Element; at = parentOf(at)) chain.push(at);
-    return chain;
-  };
-  const within = (root) => {
-    const found = [];
-    const walk = (scope) => {
-      for (const child of scope.children) {
-        found.push(child);
-        if (child.shadowRoot !== null) walk(child.shadowRoot);
-        walk(child);
-      }
-    };
-    if (root.shadowRoot !== null) walk(root.shadowRoot);
-    walk(root);
-    return found;
-  };
+  // By the page's own parents: a browser ties a control to no form it is only slotted into.
   const formOf = (control) =>
     "form" in control && control.form instanceof HTMLFormElement
       ? control.form
-      : (ancestry(control).find((node) => node instanceof HTMLFormElement) ?? null);
+      : (ancestry(control, pageParent).find((node) => node instanceof HTMLFormElement) ?? null);
   if (own.some((control) => holds(control, element) || holds(element, control)))
     return { part: "sign_in_control", cancel: null };
   // The covering notice that holds it, read only for a control in the sign-in's form or one that
@@ -545,13 +632,7 @@ const verdict = await notice.locator.evaluate((element, own) => {
   const form = formOf(element);
   const inSignInForm = form !== null && own.some((control) => formOf(control) === form);
   if (inSignInForm && covering() === null) return { part: "sign_in_form", cancel: null };
-  // What a click of it may reach: the element, what holds it and what it holds, since a click at
-  // its centre lands on whatever it holds there, and the control a label among them clicks.
-  const held = [...ancestry(element), ...within(element)];
-  const reached = [
-    ...held,
-    ...held.flatMap((node) => (node instanceof HTMLLabelElement && node.control !== null ? [node.control] : [])),
-  ];
+  const reached = clickReach(element);
   if (own.some((control) => reached.includes(control))) return { part: "sign_in_control", cancel: null };
   const submits = (node) =>
     ((node instanceof HTMLButtonElement && node.type === "submit") ||
@@ -668,8 +749,362 @@ if (navigated && noticeFrame !== null) {
 await notice.locator.waitFor({ state: "hidden", timeout: 2000 }).catch(() => undefined);
 return { dismiss: "clicked", ...(emptied ? { emptied } : {}), url: primary.url() };`;
 
+/**
+ * Page code: `chooseCallingCode` picks a calling code (its digits) in a picker with the authoring
+ * library's own chooser, a native select's or a custom dropdown's (`formControlsCode`): the one
+ * option whose label names it with its `+` (`namesCallingCode`), or whose value is it with its
+ * `+`. An option whose label or value shows another code is none, whichever names this one, since
+ * the site may post the other. Options that share a label and a value are one, as a list that
+ * repeats a country among its favourites does. None, several or a disabled one throws, having
+ * picked nothing; a picker that is neither throws `control_unsupported`. A moment after the
+ * choice, as long as the host gives a phone's read-back (`phoneReadBackMs`), the picker must still
+ * hold it: a select's chosen option is that option, by its label and value. Any other control is
+ * judged by its own words whenever it has any, and by its `aria-label` or `title` only when it has
+ * none, as one that shows a flag alone: they name the code, or say just the chosen option's words
+ * with any code left out, as a control that shows only the country does. A country whose name only
+ * holds the chosen one's or sits inside it, as South Sudan and Sudan do, is not that choice, and
+ * its words, `aria-label` or `title` naming another code, or saying another option of the list,
+ * refuse it, so a stale `title` never stands for the choice. Otherwise it throws `not_committed`,
+ * as a page that puts its picker back does.
+ */
+const callingCodeChoiceCode = String.raw`const shownCallingCodes = ${String(shownCallingCodes)};
+const namesCallingCode = ${String(namesCallingCode)};
+const withoutCallingCodes = ${String(withoutCallingCodes)};
+const otherCallingCode = (text, code) => shownCallingCodes(text).some((shown) => shown !== code);
+// The options the pick chose among, as the list last showed them.
+let callingCodeOptions = [];
+const callingCodePick = (options, wanted) => {
+  callingCodeOptions = options;
+  const code = wanted[0].slice(1);
+  const named = options.filter(
+    (option) =>
+      !otherCallingCode(option.label, code) &&
+      !otherCallingCode(option.value, code) &&
+      (namesCallingCode(option.label, code) || option.value === wanted[0]),
+  );
+  const distinct = named.filter(
+    (option, at) => named.findIndex((other) => other.label === option.label && other.value === option.value) === at,
+  );
+  if (distinct.length === 0) return { failure: "option_missing" };
+  if (distinct.length > 1) return { failure: "option_ambiguous" };
+  return distinct[0].disabled ? { failure: "option_disabled" } : { option: distinct[0] };
+};
+const chooseCallingCode = async (control, code) => {
+  const wanted = ["+" + code];
+  const shape = await formControlShape(control, { timeout: 5000 });
+  if (shape !== "select" && shape !== "combobox") throw formControlFailure("control_unsupported");
+  const chosen = shape === "select"
+    ? await formControlChooseNative(control, wanted, 5000, callingCodePick)
+    : await formControlChooseCustom(control, wanted, 5000, callingCodePick);
+  await new Promise((resolve) => setTimeout(resolve, ${phoneReadBackMs}));
+  const shown = await control.evaluate((element) => {
+    if (element instanceof HTMLSelectElement) {
+      const option = element.selectedOptions[0];
+      return { option: option === undefined ? null : [(option.label || option.textContent || "").trim(), option.value] };
+    }
+    const own = element instanceof HTMLInputElement ? element.value : element.textContent;
+    return { texts: [own ?? "", element.getAttribute("aria-label") ?? "", element.getAttribute("title") ?? ""] };
+  }, undefined, { timeout: ${elementReadMs} });
+  if ("option" in shown) {
+    if (shown.option === null || shown.option[0] !== chosen.label || shown.option[1] !== chosen.value)
+      throw formControlFailure("not_committed");
+    return;
+  }
+  // A text's words with every calling code it shows left out, as one string.
+  const bare = (text) =>
+    formControlText(withoutCallingCodes(text))
+      .split(/[^\p{L}\p{N}]+/u)
+      .filter(Boolean)
+      .join(" ");
+  const label = bare(chosen.label);
+  const others = new Set(
+    callingCodeOptions.map((option) => bare(option.label)).filter((words) => words !== "" && words !== label),
+  );
+  const saysOther = (text) => otherCallingCode(text, code) || others.has(bare(text));
+  const saysChoice = (text) => namesCallingCode(text, code) || (label !== "" && bare(text) === label);
+  const [own, ariaLabel, title] = shown.texts;
+  const ownWords = bare(own) !== "" || shownCallingCodes(own).length > 0;
+  if (shown.texts.some(saysOther) || !(ownWords ? [own] : [ariaLabel, title]).some(saysChoice))
+    throw formControlFailure("not_committed");
+};
+`;
+
+/**
+ * Page code, on a phone box: what the calling-code pickers around it show, against `code`, the
+ * number's own calling code, or null. It reads the visible selects, buttons, text boxes,
+ * dropdowns and focusable elements of the box's whole document, open shadow roots included, never
+ * the box, what holds it, or a list's own options. A control's codes are those its chosen option,
+ * words, `aria-label` or `title` name (`shownCallingCodes`), or a text box's that holds a calling
+ * code alone. Near the box means in its form, or for a box in no form in the nearest of its next
+ * four ancestors that holds a control. Any control near it, and anywhere in the document one that
+ * looks like a calling-code picker (a select, a combobox or popup, or one whose name, id,
+ * `aria-label`, `autocomplete` or `title` says country, region, dial or calling code), that names
+ * another code than `code` is `other`; a plain button or text far from the box, such as a support
+ * number, is none. Else a control near it that names `code` is `matches`, and one near it that
+ * names no code but says country so is `unreadable`, since it may be set to another country.
+ * Otherwise `none`. It returns that word alone, never what a control holds.
+ */
+const pickerBesideCode = `(element, code) => {
+  const shownCallingCodes = ${String(shownCallingCodes)};
+  const shows = (control) =>
+    control.getClientRects().length > 0 && getComputedStyle(control).visibility !== "hidden";
+  const kinds = 'select, button, input, [role="combobox"], [role="button"], [aria-haspopup]:not([aria-haspopup="false"]), [tabindex]';
+  const boxTypes = ["", "text", "tel", "search", "button"];
+  const candidate = (control) =>
+    control !== element &&
+    !control.contains(element) &&
+    !element.contains(control) &&
+    control.matches(kinds) &&
+    (!(control instanceof HTMLInputElement) || boxTypes.includes((control.getAttribute("type") ?? "").toLowerCase())) &&
+    control.closest('[role="listbox"], [role="menu"], datalist') === null &&
+    shows(control);
+  // Each control under root, into every open shadow root, over a bounded number of nodes.
+  const within = (root) => {
+    const found = [];
+    const roots = [root];
+    let nodes = 0;
+    while (roots.length > 0 && nodes < 20000)
+      for (const node of roots.pop().querySelectorAll("*")) {
+        if (++nodes > 20000) break;
+        if (candidate(node)) found.push(node);
+        if (node.shadowRoot) roots.push(node.shadowRoot);
+      }
+    return found;
+  };
+  const named = (control) =>
+    /country|region|dial|calling|tel-country-code/i.test(
+      ["name", "id", "aria-label", "autocomplete", "title"].map((attribute) => control.getAttribute(attribute) ?? "").join(" "),
+    );
+  const pickerLike = (control) =>
+    control instanceof HTMLSelectElement ||
+    control.matches('[role="combobox"], [aria-haspopup]:not([aria-haspopup="false"])') ||
+    named(control);
+  const codes = (control) => {
+    if (control instanceof HTMLSelectElement) {
+      const option = control.selectedOptions[0];
+      return option === undefined ? [] : [option.label || option.textContent || "", option.value].flatMap(shownCallingCodes);
+    }
+    // A text box counts only when it holds a calling code alone, as one that takes the code does.
+    if (control instanceof HTMLInputElement && control.type !== "button")
+      return /^\\s*\\+\\d{1,4}\\s*$/.test(control.value) ? shownCallingCodes(control.value) : [];
+    // Its own words, never those of a list or select it holds.
+    const own = control.cloneNode(true);
+    for (const list of own.querySelectorAll('select, option, datalist, [role="listbox"], [role="option"]')) list.remove();
+    return [
+      control instanceof HTMLInputElement ? control.value : (own.textContent ?? ""),
+      control.getAttribute("aria-label") ?? "",
+      control.getAttribute("title") ?? "",
+    ].flatMap(shownCallingCodes);
+  };
+  let near = [];
+  const form = "form" in element && element.form instanceof HTMLFormElement ? element.form : element.closest("form");
+  if (form !== null) near = within(form);
+  else
+    for (let up = element.parentElement, level = 0; up !== null && level < 4 && near.length === 0; up = up.parentElement, level++)
+      near = within(up);
+  const nearBox = new Set(near);
+  for (const control of within(element.ownerDocument)) {
+    if (!nearBox.has(control) && !pickerLike(control)) continue;
+    const shown = codes(control);
+    if (shown.length > 0 && (code === null || shown.some((each) => each !== code))) return "other";
+  }
+  let matched = false;
+  for (const control of near) {
+    const shown = codes(control);
+    if (shown.length === 0) {
+      if (named(control)) return "unreadable";
+    } else if (code === null || shown.some((each) => each !== code)) return "other";
+    else matched = true;
+  }
+  return matched ? "matches" : "none";
+}`;
+
+/** Page code, a statement for a function that reads a resend's reach: what submits a form. */
+const resendSubmitsCode = `const submits = (node) =>
+      ((node instanceof HTMLButtonElement && node.type === "submit") ||
+        (node instanceof HTMLInputElement && (node.type === "submit" || node.type === "image"))) &&
+      node.form !== null;`;
+
+/**
+ * Page code for a resend press's submit call, before its click (`AutofillFillCall`'s `resend`): a
+ * field that still holds something fails the check, with its index; a control whose click may
+ * reach (`clickReachCode`) one of the step's fields or of the elements `apartFrom` names in its
+ * frame refuses as `same_control`, one whose document holds a password anywhere, by its type or
+ * its autocomplete, as `password_held`, one whose click may reach a control that submits a form
+ * with a value in a text field a person could have typed, as `value_held`, and one whose click may
+ * reach a link or a post to another origin, as `other_origin`. Lengths only, never a value; a read
+ * that fails refuses.
+ */
+const resendChecksCode = (apartFrom: readonly string[]) => `for (const [index, field] of fields.entries()) {
+  const empty = await field.locator
+    .evaluate((element) => typeof element.value === "string" && element.value.length === 0, undefined, { timeout: ${elementReadMs} })
+    .catch(() => false);
+  if (!empty) return { checked: false, field: index, url: primary.url() };
+}
+const resendControl = await submit.locator.elementHandle({ timeout: 5000 });
+const resendFrame = await resendControl.ownerFrame();
+for (const { locator } of fields) {
+  const handle = await locator.elementHandle({ timeout: 5000 });
+  if ((await handle.ownerFrame()) !== resendFrame) continue;
+  const reaches = await resendControl
+    .evaluate((element, other) => {
+      ${clickReachCode}
+      return clickReach(element).includes(other);
+    }, handle)
+    .catch(() => true);
+  if (reaches) return { resendRefused: "same_control", url: primary.url() };
+}
+for (const selector of ${JSON.stringify(apartFrom)}) {
+  const same = await resendFrame
+    .locator(selector)
+    .evaluateAll((elements, control) => {
+      ${clickReachCode}
+      const reached = clickReach(control);
+      return elements.some((element) => reached.includes(element));
+    }, resendControl)
+    .catch(() => true);
+  if (same) return { resendRefused: "same_control", url: primary.url() };
+}
+// Any password the control's document holds, in any form or none, open shadow roots included, as
+// its own script may post any of them: by its type, or by its autocomplete once the site's own
+// toggle shows it as text. A document too large to read through refuses.
+const passwordHeld = await resendControl
+  .evaluate((element) => {
+    const password = (input) =>
+      input.type === "password" ||
+      (input.getAttribute("autocomplete") ?? "")
+        .toLowerCase()
+        .split(/\\s+/)
+        .some((token) => token === "current-password" || token === "new-password");
+    const roots = [element.ownerDocument];
+    let nodes = 0;
+    while (roots.length > 0) {
+      for (const node of roots.pop().querySelectorAll("*")) {
+        if (++nodes > 20000) return true;
+        if (node instanceof HTMLInputElement && node.value.length > 0 && password(node)) return true;
+        if (node.shadowRoot) roots.push(node.shadowRoot);
+      }
+    }
+    return false;
+  })
+  .catch(() => true);
+if (passwordHeld) return { resendRefused: "password_held", url: primary.url() };
+// What the click's own post would send: a value in a named text field of each form a control it
+// may reach submits, as an earlier screen may leave one typed there. A hidden, read-only or
+// disabled field holds what the site wrote, a box with no name posts nothing, and a click that
+// reaches no such control posts none of it. A box the site itself filled, or a hidden captcha's
+// textarea, reads the same as one a person typed, so it refuses too: refusing is the safe side.
+const valueHeld = await resendControl
+  .evaluate((element) => {
+    ${clickReachCode}
+    ${resendSubmitsCode}
+    const notText = ["hidden", "checkbox", "radio", "file", "range", "color", "submit", "image", "button", "reset"];
+    return clickReach(element)
+      .filter(submits)
+      .some((control) =>
+        [...control.form.elements].some(
+          (field) =>
+            (field instanceof HTMLTextAreaElement ||
+              (field instanceof HTMLInputElement && !notText.includes(field.type))) &&
+            field.name !== "" &&
+            field.value.length > 0 &&
+            !field.readOnly &&
+            !field.matches(":disabled"),
+        ),
+      );
+  })
+  .catch(() => true);
+if (valueHeld) return { resendRefused: "value_held", url: primary.url() };
+// A link or a post the click may reach that leaves the control's origin: a submit goes by its own
+// formaction, else its form's action. What's inspected reads a link only on the element itself and
+// a form only around it, so one that holds it, a label's or one named by \`form\` counts only here.
+// An address that is a script stays: a page's own handler runs it, and what it sends is the page's.
+const otherOrigin = await resendControl
+  .evaluate((element) => {
+    ${clickReachCode}
+    ${resendSubmitsCode}
+    // Read through the form's own getter: a control named "action" shadows the property.
+    const formAction = Object.getOwnPropertyDescriptor(HTMLFormElement.prototype, "action").get;
+    const address = (node) => {
+      if (submits(node)) return node.getAttribute("formaction") ?? formAction.call(node.form);
+      if (node.localName !== "a" && node.localName !== "area") return null;
+      return node.getAttribute("href") ?? node.getAttributeNS("http://www.w3.org/1999/xlink", "href");
+    };
+    return clickReach(element).some((node) => {
+      const at = address(node);
+      if (at === null) return false;
+      const to = new URL(at, element.ownerDocument.baseURI);
+      return to.protocol !== "javascript:" && to.origin !== self.origin;
+    });
+  })
+  .catch(() => true);
+if (otherOrigin) return { resendRefused: "other_origin", url: primary.url() };`;
+
+/** A resend press's submit call that refused its control before the click (`resendChecksCode`). */
+export const ResendRefusedAnswer = Schema.Struct({
+  resendRefused: Schema.Literal("same_control", "password_held", "value_held", "other_origin"),
+  url: Schema.String,
+});
+
+/** What a calling-code call answers when it threw: a reason `chooseCallingCode` gives, else `failed`. */
+const callingCodeFailures = [
+  "option_missing",
+  "option_disabled",
+  "option_ambiguous",
+  "control_unsupported",
+  "listbox_missing",
+  "not_committed",
+] as const;
+/** A calling-code call's answer: the code picked, or why not (`callingCodeFailures`). */
+export const CallingCodeAnswer = Schema.Struct({
+  calling: Schema.Literal("chosen", ...callingCodeFailures, "failed"),
+  url: Schema.String,
+  document: Schema.optional(Schema.Number),
+});
+/**
+ * A bind call's answer: the field bound, and what any picker beside it shows; `bound` false for a
+ * field in any other document than the one the host typed in.
+ */
+export const BoundFieldAnswer = Schema.Struct({
+  bound: Schema.Boolean,
+  picker: Schema.Literal("none", "matches", "other", "unreadable"),
+  url: Schema.String,
+});
+
 const fillCallBody = (call: AutofillFillCall) => {
   if (call.kind === "dismiss") return dismissCode(call.selector);
+  if (call.kind === "bind")
+    return `const picker = await fields[${call.index}].locator.evaluate((element, [key, code, typedIn]) => {
+  // Only the very document the host typed in: a frame's may read as the same place and origin.
+  if (element.ownerDocument[typedIn] !== true) return null;
+  // Keep this binding in Patchright's isolated world, inaccessible to page code, as a focus call's.
+  const binding = { document: element.ownerDocument, frame: element.ownerDocument.defaultView };
+  Object.defineProperty(element, key, { value: binding, configurable: true });
+  element.setAttribute(key, "");
+  return (${pickerBesideCode})(element, code);
+}, [${JSON.stringify(call.bindingKey)}, ${JSON.stringify(call.code)}, typedAt], { timeout: ${elementReadMs} }, true);
+return { bound: picker !== null, picker: picker ?? "none", url: primary.url() };`;
+  if (call.kind === "empty")
+    return `let cleared = 0;
+for (const { locator } of [...fields].reverse()) {
+  const held = await locator.evaluate((element) => {
+    if (!(element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) || element.value.length === 0) return false;
+    const prototype = element instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+    Object.getOwnPropertyDescriptor(prototype, "value").set.call(element, "");
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+    return true;
+  }, undefined, { timeout: ${elementReadMs} });
+  if (held) cleared += 1;
+}
+return { cleared, url: primary.url() };`;
+  if (call.kind === "calling_code")
+    return `try {
+  await chooseCallingCode(fields[${call.index}].locator, ${JSON.stringify(call.code)});
+  return { calling: "chosen", url: primary.url(), document: await documentStart() };
+} catch (error) {
+  const reason = error instanceof Error && error.name === "FormControlFailure" ? error.message : "failed";
+  return { calling: ${JSON.stringify(callingCodeFailures)}.includes(reason) ? reason : "failed", url: primary.url() };
+}`;
   if (call.kind === "focus")
     return `const field = fields[${call.index}].locator;
 const fieldLocated = located.fields[${call.index}];
@@ -691,7 +1126,7 @@ try {
   // Keep this original-node binding in Patchright's isolated world, inaccessible to page code.
   // The tag of the element that holds the focus instead, if another does: the deepest one, read
   // through open shadow roots; a closed root shows only its host.
-  const activeTag = await field.evaluate((element, [key, questionRequired]) => {
+  const activeTag = await field.evaluate((element, [key, questionRequired, documentMark]) => {
     const holdsFocus = ${holdsFocusCode};
     if (!holdsFocus(element)) {
       let active = element.ownerDocument.activeElement;
@@ -702,9 +1137,10 @@ try {
     Object.defineProperty(element, key, { value: binding, configurable: true });
     // Transfer the guard through this frame's isolated world; no value is involved.
     if (questionRequired) Object.defineProperty(element.ownerDocument.defaultView, key, { value: binding, configurable: true });
+    if (documentMark !== null) Object.defineProperty(element.ownerDocument, documentMark, { value: true, configurable: true });
     element.setAttribute(key, "");
     return null;
-  }, [${JSON.stringify(call.bindingKey)}, question !== undefined], { timeout: ${elementReadMs} }, true);
+  }, [${JSON.stringify(call.bindingKey)}, question !== undefined, ${call.markDocument === true ? "typedAt" : "null"}], { timeout: ${elementReadMs} }, true);
   if (activeTag === null && question !== undefined) {
     await question.locator.evaluate((element, { key, text }) => {
       const scope = element.ownerDocument.defaultView;
@@ -737,6 +1173,8 @@ try {
   return `${call.look === true ? "return { submit: \"none\", url: primary.url() };\n" : ""}if (submit === null) return { submit: "none", url: primary.url() };
 // Disabled as Playwright's own click judges it, read where page code cannot redefine the answer.
 if (await submit.locator.isDisabled({ timeout: 5000 })) return { submit: "disabled", url: primary.url() };
+${call.enabledRead === true ? 'return { submit: "none", url: primary.url() };' : ""}
+${call.resend === undefined ? "" : resendChecksCode(call.resend.apartFrom)}
 const guardKey = ${JSON.stringify(call.guardKey)};
 const guardCall = ${JSON.stringify(call.guardCall)};
 const secretMatch = ${JSON.stringify(call.secretMatch)};
@@ -1040,6 +1478,7 @@ finally { await authTargetSession.detach(); }
 ${fill === undefined ? "" : `if (popupTargetId !== ${JSON.stringify(fill.popupTargetId)}) return {error:"target_changed", target:"popup"};`}`
 }
 ${formControlsCode}
+${fill?.call.kind === "calling_code" ? callingCodeChoiceCode : ""}
 ${locateCode}
 ${documentStartCode}
 const observed = ${JSON.stringify(observed)};
