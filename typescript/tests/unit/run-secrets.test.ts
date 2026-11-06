@@ -443,6 +443,32 @@ describe("a phone number", () => {
     expect(secrets.redact("912345")).toBe("9[private]5");
   });
 
+  // A JSON number counts as source does, whatever the value's phone patterns can say of it.
+  it.each(["98765 00000", "(987) 650-0000", "09876500000"])(
+    "masks a JSON number that holds the login %s behind its calling code",
+    (login) => {
+      expect(Effect.runSync(phone(login).json({ mobile: 919876500000 }))).toEqual({
+        mobile: "[private]",
+      });
+    },
+  );
+
+  it("masks a one-time code a JSON number holds", () => {
+    const secrets = makeRunSecrets();
+    secrets.register("482915");
+    expect(Effect.runSync(secrets.json({ code: 482915 }))).toEqual({ code: "[private]" });
+  });
+
+  it("leaves a JSON number a short value only turns up inside", () => {
+    expect(Effect.runSync(phone("5550123").json({ id: 1762000005550123 }))).toEqual({
+      id: 1762000005550123,
+    });
+    const secrets = makeRunSecrets();
+    secrets.register("482915");
+    const numbers = { at: 1762482915000, before: 9482915, after: 4829151, count: 3 };
+    expect(Effect.runSync(secrets.json(numbers))).toEqual(numbers);
+  });
+
   it("masks a JSON number that holds it", () => {
     const secrets = phone("+919876543210");
     expect(

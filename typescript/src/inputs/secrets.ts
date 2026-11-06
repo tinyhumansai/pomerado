@@ -190,12 +190,15 @@ export const makeRunSecrets = () => {
       redacted.slice(0, redacted.length - splitPrefix(redacted)),
     );
   };
+  /** Whether `text` holds a registered value, a short form only as a whole token. */
+  const holds = (text: string) =>
+    holdsPhone(text) ||
+    ordered().some(([secret, token]) =>
+      token === undefined ? text.includes(secret) : token.test(text),
+    );
   const assertAbsent = (text: string) =>
     Effect.suspend(() =>
-      holdsPhone(text) ||
-      ordered().some(([secret, token]) =>
-        token === undefined ? text.includes(secret) : token.test(text),
-      )
+      holds(text)
         ? Effect.fail(new Error("Source contains a caller-supplied secret"))
         : Effect.void,
     );
@@ -206,8 +209,8 @@ export const makeRunSecrets = () => {
         const seen = new WeakSet<object>();
         const visit = (item: unknown): unknown => {
           if (typeof item === "string") return redact(item);
-          // A site's JSON may hold the number as a number.
-          if (typeof item === "number" && holdsPhone(String(item))) return "[private]";
+          // A site's JSON may hold a value as a number, such as a phone number or a code.
+          if (typeof item === "number" && holds(String(item))) return "[private]";
           if (item === null || typeof item !== "object") return item;
           if (seen.has(item)) throw new Error("Observation must be JSON serializable");
           seen.add(item);
