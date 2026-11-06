@@ -37,6 +37,10 @@ export const NativeWorkerRequest = Schema.Union(
     }),
     numbers: Schema.Array(Schema.String),
   }),
+  /** Starts holding what the context's pages show and its site answers, in place of any before. */
+  Schema.Struct({ id: Schema.String, kind: Schema.Literal("watch_pages") }),
+  /** Reads the pages and hands over what's held; `last` stops the watch. */
+  Schema.Struct({ id: Schema.String, kind: Schema.Literal("read_pages"), last: Schema.Boolean }),
 );
 export const NativeWorkerReply = Schema.Union(
   Schema.Struct({
@@ -50,6 +54,13 @@ export const NativeWorkerReply = Schema.Union(
   Schema.Struct({ kind: Schema.Literal("response"), id: Schema.String, value: Schema.Unknown }),
   Schema.Struct({ kind: Schema.Literal("failure"), id: Schema.String, error: Schema.String }),
 );
+/** What a page watch hands over at a read (`PagesSeen`). */
+export const PagesRead = Schema.Struct({
+  answered: Schema.Array(Schema.String),
+  links: Schema.Array(Schema.String),
+  texts: Schema.Array(Schema.String),
+  partial: Schema.Boolean,
+});
 export const PlaywrightLibrary = Schema.Literal("playwright", "patchright");
 export type PlaywrightLibrary = typeof PlaywrightLibrary.Type;
 /** The browsers the native executor drives. */

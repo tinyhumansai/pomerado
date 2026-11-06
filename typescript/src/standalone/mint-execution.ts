@@ -165,6 +165,8 @@ const executeAuthentication = (
         ? step.result
         : { step: yield* afterSubmit(step.report), ...step.result };
     yield* context.observe;
+    // The host fills this step, so no script's browser call reads the screen it left.
+    if (state.pagesRead !== undefined) yield* state.pagesRead;
     return {
       executionId: id,
       status: "completed" as const,
@@ -645,6 +647,7 @@ const authoredExecution = (
                     }
                   : {}),
                 ...(runFiles === undefined ? {} : { files: runFiles }),
+                ...(state.pagesRead === undefined ? {} : { afterBrowserCall: state.pagesRead }),
               }).pipe(
                 Effect.map((result) => ({
                   ...result,

@@ -7,7 +7,8 @@
 // without hooks that changes, a started hook that fires late or twice or outlasts the run's
 // deadline, even one that can't be stopped, a progress hook that misses a browser call, stops the
 // run when the page can't be read or fails a call that ran when it breaks, a progress read that
-// outlasts its browser call, and an operation that sees the host's own environment.
+// outlasts its browser call, an after-call read that misses a browser call or runs for a call that
+// never ran, and an operation that sees the host's own environment.
 import { Effect } from "effect";
 import { expect, it, vi } from "vitest";
 import { runLocalOperation } from "../../src/execution/local-operation.js";
@@ -75,7 +76,13 @@ const recordingBrowser = (pages: () => unknown = () => [["https://shop.example/"
   };
 };
 
-const run = (source: string, browser: object, hooks?: OperationHooks, timeoutMs?: number) =>
+const run = (
+  source: string,
+  browser: object,
+  hooks?: OperationHooks,
+  timeoutMs?: number,
+  afterBrowserCall?: Effect.Effect<void>,
+) =>
   Effect.runPromise(
     Effect.scoped(
       Effect.gen(function* () {
@@ -88,6 +95,7 @@ const run = (source: string, browser: object, hooks?: OperationHooks, timeoutMs?
           browser: browser as never,
           ...(timeoutMs === undefined ? {} : { timeoutMs }),
           ...(hooks === undefined ? {} : { hooks }),
+          ...(afterBrowserCall === undefined ? {} : { afterBrowserCall }),
         }).pipe(Effect.either);
       }),
     ),
@@ -396,6 +404,44 @@ it("keeps a browser call that ran when the progress hook breaks", async () => {
   );
   expect(result).toMatchObject({ _tag: "Right", right: { output: { placed: true } } });
   expect(site.calls.map((call) => call.name)).toEqual(["one", "progress"]);
+}, 30_000);
+
+it("runs the host's after-call read after each of the script's browser calls, before its next", async () => {
+  const site = recordingBrowser();
+  const order: string[] = [];
+  const browser = {
+    ...site.browser,
+    executeResponse: (code: string) =>
+      site.browser.executeResponse(code).pipe(Effect.tap(() => order.push(named(code)))),
+  };
+  const result = await run(
+    write(`    await call("return 'one';");
+    await call("return 'two';");
+    return { placed: false };`),
+    browser,
+    undefined,
+    undefined,
+    Effect.sync(() => order.push("read")),
+  );
+  expect(result).toMatchObject({ _tag: "Right", right: { output: { placed: false } } });
+  expect(order).toEqual(["one", "read", "two", "read"]);
+}, 30_000);
+
+it("runs no after-call read for a browser call the host refused", async () => {
+  const site = recordingBrowser();
+  let reads = 0;
+  await run(
+    write(`    enteringCommit("place-order", ${JSON.stringify(report)});
+    await call("return 'click';").catch(() => undefined);
+    return { placed: false };`),
+    site.browser,
+    { commit: () => Effect.fail(new Error("Refused")) },
+    undefined,
+    Effect.sync(() => {
+      reads += 1;
+    }),
+  );
+  expect(reads).toBe(0);
 }, 30_000);
 
 const AsyncFunction = Object.getPrototypeOf(async () => undefined).constructor as new (

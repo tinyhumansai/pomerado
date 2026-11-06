@@ -4,6 +4,7 @@ import { createPomerado } from "../../src/standalone/pomerado.js";
 import type { PomeradoMintRequest } from "../../src/standalone/contracts.js";
 import { makeInputAsker } from "../../src/inputs/callback.js";
 import type { InputRequest } from "../../src/runtime/input-request.js";
+import type { MintHooks } from "../../src/runtime/operation-hooks.js";
 import type { PlaywrightOptions } from "../../src/execution/playwright-execute.js";
 import type { FileLimits } from "../../src/runtime/files.js";
 import {
@@ -45,6 +46,8 @@ export const mint = async (options: {
   readonly fileLimits?: FileLimits;
   /** The login the account holds when it has no password. */
   readonly passwordless?: PomeradoMintRequest["passwordless"];
+  /** The host's hooks into the mint. */
+  readonly hooks?: MintHooks;
 }) => {
   const requests: ModelRequest[] = [];
   const asked: InputRequest[] = [];
@@ -69,13 +72,16 @@ export const mint = async (options: {
           ),
           timeoutMs: options.timeoutMs ?? 60_000,
         });
-        return yield* service.mint({
-          url: options.url,
-          intent: options.intent ?? "Read the fixture heading",
-          effect: options.effect,
-          input: options.input ?? {},
-          ...(options.passwordless === undefined ? {} : { passwordless: options.passwordless }),
-        });
+        return yield* service.mint(
+          {
+            url: options.url,
+            intent: options.intent ?? "Read the fixture heading",
+            effect: options.effect,
+            input: options.input ?? {},
+            ...(options.passwordless === undefined ? {} : { passwordless: options.passwordless }),
+          },
+          options.hooks,
+        );
       }),
     ),
   );

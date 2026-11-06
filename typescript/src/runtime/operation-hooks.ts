@@ -21,9 +21,54 @@ export interface EnteredCommit {
 }
 
 /**
+ * What the browser saw since the last report, for a host that compares accounts: only what the
+ * site answered and its pages showed, so a value that shows on one account alone stands out. Each
+ * address, link and line comes once a run, masked by the session's secrets. The fork keeps none of
+ * it: a host that wants the whole of what a run saw puts the reports together itself.
+ */
+export interface PagesSeen {
+  /**
+   * The http and https addresses the site answered with success, whole: every page and every
+   * request of a page, whatever its host, and each route a page moved to in a document that was
+   * answered with success. An address that redirected, failed or was refused isn't one.
+   */
+  readonly answered: readonly string[];
+  /** The http and https addresses the pages' links point to, each resolved, shown or not. */
+  readonly links: readonly string[];
+  /**
+   * The pages' words, a line each: their text, hidden and inline data included but no script or
+   * style, what names an element, each field's value but a password's, a card's or a one-time
+   * code's, and each accessible name.
+   */
+  readonly texts: readonly string[];
+  /**
+   * What the reports hold is less than the browser showed: a read failed, there was too much to
+   * hold, page code opened a context of its own or, on the last report, a frame never answered. A
+   * page that answers late isn't: what it says comes in a later report. A host that needs all of
+   * it treats the run as unread.
+   */
+  readonly partial: boolean;
+}
+
+/** A host's hooks into one mint. Each is optional, and a mint without them runs as before. */
+export interface MintHooks {
+  /**
+   * What the browser saw (`PagesSeen`), from before the first page until the call ends: after each
+   * browser call the operation's code makes, when that shows anything new, and once more before
+   * the call returns or fails, a failed one included, so nothing comes after it. A page that loads
+   * inside a browser call counts too, but for its fields' values, which only a read between calls
+   * takes, as a call may be typing; one that changes without loading shows as the next read finds
+   * it. A hook that fails, throws or dies hears no more of that report, and the run goes on. A
+   * last report the hook doesn't finish within seconds goes on alone, after the call returned. The
+   * script's next call waits for this as it does for `progress`, so a host keeps it short.
+   */
+  readonly seen?: (pages: PagesSeen) => Effect.Effect<void>;
+}
+
+/**
  * A host's hooks into one operation run. Each is optional, and a run without them runs as before.
  */
-export interface OperationHooks {
+export interface OperationHooks extends MintHooks {
   /**
    * Once, before the child starts the operation's script, so before the runtime's first sign-in
    * check. It counts against the run's time: a run whose deadline passes first fails without

@@ -42,6 +42,7 @@ if (import.meta.url.endsWith(".ts"))
 const { makeCredentialKeyboard } = await import("../destinations/credential-keyboard.js");
 const { NativeWorkerOptions, NativeWorkerRequest } = await import("./playwright-protocol.js");
 const { browserEngine } = await import("./browser-engine.js");
+const { watchPages } = await import("./pages-watch.js");
 
 const asError = (cause: unknown): Error =>
   cause instanceof Error ? cause : new Error("Native browser worker failed", { cause });
@@ -504,6 +505,7 @@ await Effect.runPromise(
       ...(attached === undefined ? { contextId: target.browserContextId } : {}),
     });
     const semaphore = yield* Effect.makeSemaphore(1);
+    let pages: ReturnType<typeof watchPages> | undefined;
     port.on("message", (value: unknown) => {
       const handle = Effect.gen(function* () {
         const request = yield* Schema.decodeUnknown(NativeWorkerRequest)(value).pipe(
@@ -519,6 +521,17 @@ await Effect.runPromise(
               resultLimit,
               request.watch,
             );
+          if (request.kind === "watch_pages") {
+            pages?.stop();
+            pages = watchPages(context);
+            return null;
+          }
+          if (request.kind === "read_pages") {
+            const watch = pages;
+            if (watch === undefined) return yield* Effect.fail(new Error("No pages are watched"));
+            if (request.last) pages = undefined;
+            return yield* promise(() => watch.read(request.last));
+          }
           return yield* credential(request, engine, context, target.targetId);
         }).pipe(Effect.either);
         port.postMessage(
@@ -528,9 +541,9 @@ await Effect.runPromise(
                 kind: "failure",
                 id: request.id,
                 error:
-                  request.kind === "execute"
-                    ? response.left.message
-                    : "Credential insertion unavailable",
+                  request.kind === "credential" || request.kind === "credential_read_back"
+                    ? "Credential insertion unavailable"
+                    : response.left.message,
               },
         );
       }).pipe(semaphore.withPermits(1));

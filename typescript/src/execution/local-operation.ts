@@ -120,9 +120,15 @@ export interface LocalOperationOptions {
    * `CommitRefused` once the host refused a step, even after its script returned, and no held
    * call goes through once the run is decided. A step whose report fails the host's own check of
    * it, or one the child marks without entering it through the host, is refused without asking
-   * the hook. Absent, the run goes as before.
+   * the hook. Absent, the run goes as before. `seen` needs the session's browser, so the caller
+   * that holds it runs that read, as `afterBrowserCall`.
    */
-  readonly hooks?: OperationHooks;
+  readonly hooks?: Omit<OperationHooks, "seen">;
+  /**
+   * Runs after each browser call of the script that the browser answered, and the script's next
+   * call waits for it. It can't fail, so the call stands whatever it does.
+   */
+  readonly afterBrowserCall?: Effect.Effect<void>;
 }
 export interface LocalOperationJournal {
   readonly effect: "not_sent" | "possible" | "verified";
@@ -296,9 +302,10 @@ const handleRequest = (
         hold,
         browser.executeResponse(message.body.code, message.body.timeout_sec),
       );
-      return progress === undefined
-        ? call
-        : call.pipe(Effect.tap(() => reportProgress(browser, progress)));
+      return call.pipe(
+        Effect.tap(() => (progress === undefined ? Effect.void : reportProgress(browser, progress))),
+        Effect.tap(() => options.afterBrowserCall ?? Effect.void),
+      );
     }
     if (
       message.kind === "file_place" ||

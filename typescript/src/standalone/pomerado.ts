@@ -4,6 +4,7 @@ import type { Pomerado, PomeradoOptions } from "./contracts.js";
 import { makeSession, type StandaloneSession } from "./session.js";
 import { requestContext } from "./request-context.js";
 import { mintRequest } from "./mint-host.js";
+import { watchingPages } from "./pages-seen.js";
 import { runOperation, signInOnly } from "./run-operation.js";
 import { requestSite } from "./request-context.js";
 import { issueFileHandles } from "../mint/file-handles.js";
@@ -23,10 +24,11 @@ export type {
 /**
  * A session's calls. Each holds the session until it ends, so they run one at a time: a save never
  * lands between a run's browser calls, and one interrupted while it waits leaves the browser alone.
- * `ask`, `reveal` and a run's hooks are called while a call holds it, so they call none of these.
+ * `ask`, `reveal` and a mint's and a run's hooks are called while a call holds it, so they call none
+ * of these.
  */
 export const sessionCalls = (session: StandaloneSession): Pomerado => {
-  const mint: Pomerado["mint"] = (request) =>
+  const mint: Pomerado["mint"] = (request, hooks) =>
     session.mutex.withPermits(1)(
       Effect.scoped(
         Effect.gen(function* () {
@@ -43,6 +45,11 @@ export const sessionCalls = (session: StandaloneSession): Pomerado => {
                       ),
                   ),
                 );
+          // From before the request's first page, as the host compares all that this account saw.
+          const pagesRead =
+            hooks?.seen === undefined
+              ? undefined
+              : yield* watchingPages(session.browser, session.secrets, hooks.seen);
           // The build sees each of the caller's files as a handle, never its reference.
           const issued = yield* issueFileHandles(
             request.input ?? {},
@@ -55,7 +62,7 @@ export const sessionCalls = (session: StandaloneSession): Pomerado => {
             ...(passwordless === undefined ? {} : { passwordless }),
           };
           const context = yield* requestContext(session, handled);
-          return yield* mintRequest(session, context, handled, issued.handles);
+          return yield* mintRequest(session, context, handled, issued.handles, pagesRead);
         }),
       ),
     );

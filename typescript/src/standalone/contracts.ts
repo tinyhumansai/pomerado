@@ -12,7 +12,7 @@ import type { InputAsker } from "../runtime/input-request.js";
 import type { FileLimits } from "../runtime/files.js";
 import type { ListCursorKeys } from "../runtime/list-cursor.js";
 import { ScriptQuestionDeclarations } from "../runtime/script-input.js";
-import type { OperationHooks } from "../runtime/operation-hooks.js";
+import type { MintHooks, OperationHooks } from "../runtime/operation-hooks.js";
 import type { RevealSignInValue } from "../runtime/sign-in-replay.js";
 import type { SavedSession, SavedSessionStorage } from "../runtime/start-state.js";
 export interface PomeradoOptions {
@@ -117,13 +117,20 @@ export type LocalMintOutcome = MintOutcome & {
 
 /**
  * A session's calls. Each takes the session and holds it until it ends, so they run one at a time,
- * and a run's hooks, `ask` and `reveal` are called while it is held. They must not call any of the
+ * and a mint's and a run's hooks, `ask` and `reveal` are called while it is held. They must not call any of the
  * session's calls, `saveSession` included: each waits for the call in progress, so it would wait
  * for the call it is inside, forever or until that call's deadline. A host saves before or after
  * a run.
  */
 export interface Pomerado {
-  readonly mint: (request: PomeradoMintRequest) => Effect.Effect<LocalMintOutcome, Error>;
+  /**
+   * Builds and publishes a tool for the request. `hooks.seen` hears what the browser saw from
+   * before the request's first page until the mint ends, on every step and live test (`MintHooks`).
+   */
+  readonly mint: (
+    request: PomeradoMintRequest,
+    hooks?: MintHooks,
+  ) => Effect.Effect<LocalMintOutcome, Error>;
   /**
    * Runs a minted artifact on `url` with no Guardian review and no model request. Guardian
    * reviewed the artifact when it was minted. `intent`, `effect` and `authenticationOrigins` are
@@ -139,7 +146,8 @@ export interface Pomerado {
     request: Omit<PomeradoRequest, "effect"> & { readonly effect?: "read" | "write" },
     /**
      * The host's hooks into this run (`OperationHooks`): when its code starts, the pages after
-     * each browser call, and each commit step, whose click waits for the host to accept it.
+     * each browser call, what the browser saw from before its sign-in until it ends, and each
+     * commit step, whose click waits for the host to accept it.
      */
     hooks?: OperationHooks,
   ) => Effect.Effect<unknown, Error>;

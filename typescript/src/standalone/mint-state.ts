@@ -160,6 +160,8 @@ export const mintState = (
   request: PomeradoMintRequest,
   /** The handles the request's input holds where the caller's files stood. */
   fileHandles: FileHandles,
+  /** The read a host's `seen` hook hears from, run after each browser call. */
+  pagesRead?: Effect.Effect<void>,
 ) =>
   Effect.gen(function* () {
     const { options, ask, browser, secrets } = session;
@@ -359,6 +361,7 @@ export const mintState = (
       authoring,
       handles,
       fileHandles,
+      pagesRead,
       deadline,
       mintAsk,
       runs,

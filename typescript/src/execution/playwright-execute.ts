@@ -9,6 +9,7 @@ import {
 } from "../destinations/credential-keyboard.js";
 import { BrowserExecuteResponse, type BrowserExecute } from "../runtime/browser-execution.js";
 import type { HostExecute } from "../runtime/host-execute.js";
+import type { PagesSeen } from "../runtime/operation-hooks.js";
 import { browserEngine, type BrowserEngine } from "./browser-engine.js";
 import {
   BrowserName,
@@ -17,6 +18,7 @@ import {
   NativeWorkerOptions,
   NativeWorkerReply,
   NativeWorkerRequest,
+  PagesRead,
   PlaywrightLibrary,
 } from "./playwright-protocol.js";
 
@@ -136,6 +138,10 @@ export interface PlaywrightExecutor {
   readonly sessionId: string;
   readonly targetId: string;
   readonly executeResponse: BrowserExecute;
+  /** Starts holding what the pages show and the site answers, in place of any watch before it. */
+  readonly watchPages: Effect.Effect<void, Error>;
+  /** Hands over what's held since the last read, unmasked; `last` stops the watch. */
+  readonly readPages: (last: boolean) => Effect.Effect<PagesSeen, Error>;
   /** Runs page code as `executeResponse` does, watching which of `values` it types `where`. */
   readonly watchTyping: (
     values: readonly string[],
@@ -531,6 +537,14 @@ export const makePlaywrightExecutor = (
         Effect.flatMap((response) => Schema.decodeUnknown(BrowserExecuteResponse)(response)),
         Effect.mapError(asError),
       );
+    // The worker bounds its read well within this call's time. Neither is ever cut off, since
+    // interrupting a browser call stops the browser, which a read must never do to a run.
+    const watchPages = Effect.uninterruptible(call({ kind: "watch_pages" }, 10)).pipe(Effect.asVoid);
+    const readPages = (last: boolean) =>
+      Effect.uninterruptible(call({ kind: "read_pages", last }, 10)).pipe(
+        Effect.flatMap((pages) => Schema.decodeUnknown(PagesRead)(pages)),
+        Effect.mapError(asError),
+      );
     const watchTyping = (
       values: readonly string[],
       where: (frameUrl: string) => boolean,
@@ -586,6 +600,8 @@ export const makePlaywrightExecutor = (
       sessionId: randomUUID(),
       targetId: ready.targetId,
       executeResponse,
+      watchPages,
+      readPages,
       watchTyping,
       execute,
       keyboard,
