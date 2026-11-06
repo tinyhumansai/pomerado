@@ -11,6 +11,7 @@ import { test, expect } from "@playwright/test";
 import type { ModelProvider } from "@openai/agents";
 import { Effect } from "effect";
 import { chromium, firefox } from "playwright";
+import { readFrameCode } from "../../src/execution/pages-watch.js";
 import { firefoxPrefs } from "../../src/execution/playwright-execute.js";
 import { createPomerado } from "../../src/standalone/pomerado.js";
 import type { PomeradoOptions } from "../../src/standalone/contracts.js";
@@ -18,7 +19,11 @@ import { RunOutcomeFailure } from "../../src/standalone/run-report.js";
 import { SignInRunFailed } from "../../src/runtime/sign-in-replay.js";
 import { makeInputAsker } from "../../src/inputs/callback.js";
 import type { InputRequest } from "../../src/runtime/input-request.js";
-import type { EnteredCommit, OperationHooks } from "../../src/runtime/operation-hooks.js";
+import type {
+  EnteredCommit,
+  OperationHooks,
+  PagesSeen,
+} from "../../src/runtime/operation-hooks.js";
 import {
   call,
   execution,
@@ -589,6 +594,8 @@ const phoneShop = async (
     readonly codeInPassword?: boolean;
     /** What the code screen says of the number it received, in its text and in its field's label. */
     readonly echo?: (phone: string) => readonly [text: string, label: string];
+    /** The code screen's address and a link on it hold the number it received. */
+    readonly echoInAddress?: boolean;
   } = {},
 ) => {
   const directory = await mkdtemp(join(tmpdir(), "pomerado-phone-shop-"));
@@ -623,8 +630,10 @@ const phoneShop = async (
         const path = new URL(request.url ?? "/", "https://shop.test").pathname;
         const form = new URLSearchParams(body);
         if (request.method === "POST" && path === "/send-code") {
-          received.phones.push(form.get("phone") ?? "");
-          response.writeHead(303, { Location: "/verify" });
+          const phone = form.get("phone") ?? "";
+          received.phones.push(phone);
+          const to = options.echoInAddress === true ? `?to=${encodeURIComponent(phone)}` : "";
+          response.writeHead(303, { Location: `/verify${to}` });
           response.end();
           return;
         }
@@ -661,7 +670,7 @@ const phoneShop = async (
             : `<label>Code ${echoed?.[1] ?? ""} <input name="code" ${options.codeInPassword === true ? 'type="password"' : ""} inputmode="numeric" autocomplete="one-time-code"></label>`;
           html(
             response,
-            `${echoed === undefined ? "" : `<p>We sent a code to ${echoed[0]}</p>`}<form method="post" action="/verify">${fields}<button>Verify</button></form>`,
+            `${echoed === undefined ? "" : `<p>We sent a code to ${echoed[0]}</p>`}${options.echoInAddress === true ? `<a href="/resend?to=${encodeURIComponent(received.phones.at(-1) ?? "")}">Send it again</a>` : ""}<form method="post" action="/verify">${fields}<button>Verify</button></form>`,
           );
           return;
         }
@@ -1391,3 +1400,530 @@ for (const [what, passwordless] of [
     expect(refused.message).toContain("passwordless must name");
     expect(calls).toEqual([]);
   });
+
+/** What a host heard through its `seen` hook, put together as a host would. */
+const hearing = () => {
+  const reports: PagesSeen[] = [];
+  return {
+    reports,
+    hooks: {
+      seen: (pages: PagesSeen) =>
+        Effect.sync(() => {
+          reports.push(pages);
+        }),
+    },
+    answered: () => reports.flatMap((pages) => pages.answered),
+    links: () => reports.flatMap((pages) => pages.links),
+    texts: () => reports.flatMap((pages) => pages.texts),
+  };
+};
+
+/**
+ * A signed-in account's pages: words the page shows, hides and holds as data, an address that moves,
+ * one that fails, requests that pass and fail, a frame, a shadow root and a pop-up.
+ */
+const accountSite = () =>
+  startSite((request, response) => {
+    const path = new URL(request.url ?? "/", "http://site.test").pathname;
+    if (path === "/old") {
+      response.writeHead(302, { Location: "/moved" });
+      response.end();
+    } else if (path === "/missing") {
+      response.statusCode = 404;
+      html(response, "<h1>Nothing here</h1>");
+    } else if (path === "/api/cart") {
+      response.setHeader("Content-Type", "application/json");
+      response.end("{}");
+    } else if (path === "/api/other") {
+      response.statusCode = 403;
+      response.end("no");
+    } else if (path === "/moved")
+      html(response, `<h1>Moved here</h1><a id="on" href="/missing">Go on</a>`);
+    else if (path === "/popup") html(response, "<h1>Popup words</h1>");
+    else if (path === "/frame")
+      html(response, `<p>Inside the frame</p><a href="/framed-link">Framed</a>`);
+    else if (path === "/elsewhere")
+      html(response, `<p>Words of another origin</p><a href="/elsewhere-link">Elsewhere link</a>`);
+    else if (path === "/account")
+      html(
+        response,
+        `<title>Your account</title><meta name="description" content="Account overview">
+<h1>Hi <b>Asha</b> Rao</h1>
+<button><div>Add to</div><div>cart</div></button>
+<button aria-label="Close dialog">x</button>
+<img alt="Store logo" src="/logo.png">
+<input placeholder="Search products">
+<input aria-label="Street" value="12 Park Lane">
+<input type="hidden" name="saved" value="Saved Address One">
+<input type="password" aria-label="Password" value="hunter-two-2" data-kept="hunter-two-3">
+<input autocomplete="cc-number" aria-label="Card number" value="4111 1111 1111 1111" data-card="4242 4242 4242 4242" aria-valuetext="5555 5555 5555 4444">
+<input autocomplete="one-time-code" aria-label="Code" value="246810">
+<textarea autocomplete="cc-csc" aria-label="Security code">Security value 737</textarea>
+<textarea>Leave at the door</textarea>
+<div hidden>Hidden <span>note</span></div>
+<div data-props='{"customer":"Data Attribute Name"}'></div>
+<template><p>Template words</p><a href="/template-link">T</a></template>
+<script type="application/json">{"greeting":"Inline data words"}</script>
+<script>const never = "Script words";</script>
+<style>.never::after { content: "Style words"; }</style>
+<a href="/orders/o-1">Order one</a>
+<a href="https://other.test/away">Elsewhere</a>
+<a href="mailto:help@site.test">Mail</a>
+<div hidden><a href="/hidden-link">Hidden link</a></div>
+<div id="host"></div>
+<iframe src="/frame"></iframe>
+<iframe src="http://localhost:${new URL(`http://${request.headers.host ?? ""}`).port}/elsewhere"></iframe>
+<script>
+document.getElementById("host").attachShadow({ mode: "open" }).innerHTML =
+  '<button>Shadow button</button><a href="/shadow-link">S</a>';
+fetch("/api/cart");
+fetch("/api/other");
+</script>`,
+      );
+    else html(response, "<title>Shop</title><h1>Shop</h1>");
+  });
+
+/** Walks the account's pages: its first call passes through two pages, as a build's code may. */
+const walkAccount = `import { Schema } from "effect";
+import { defineOperation } from "../runtime/index.js";
+export default defineOperation(
+  { name: "walk_account", input: Schema.Struct({}), output: Schema.Struct({ done: Schema.Boolean }) },
+  async ({ kernel, sessionId }) => {
+    const call = async (code) => {
+      const answered = await kernel.browsers.playwright.execute(sessionId, { code, timeout_sec: 20 });
+      if (!answered.success) throw new Error(String(answered.error));
+    };
+    await call(\`
+      const at = (path) => new URL(path, page.url()).href;
+      await page.goto(at("/old"));
+      await page.locator("#on").click();
+      await page.waitForURL("**/missing");
+      await page.evaluate(() => history.pushState({}, "", "/after-missing"));
+    \`);
+    await call(\`
+      await page.goto(new URL("/account", page.url()).href);
+      await page.waitForLoadState("networkidle");
+    \`);
+    await call(\`
+      await page.evaluate(() => {
+        history.pushState({}, "", "/spa/route");
+        location.hash = "#/hash/route";
+      });
+    \`);
+    await call(\`
+      const [popup] = await Promise.all([
+        context.waitForEvent("page"),
+        page.evaluate(() => { window.open("/popup"); }),
+      ]);
+      await popup.waitForLoadState("load");
+    \`);
+    await call(\`await page.goto(new URL("/orders/o-1", page.url()).href);\`);
+    return { done: true };
+  },
+);`;
+
+test("a run tells the host's seen hook the addresses the site answered, each page's links, its text and its accessible names", async () => {
+  test.setTimeout(90_000);
+  const site = await accountSite();
+  const calls: string[] = [];
+  const heard = hearing();
+  try {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const pomerado = yield* session(calls);
+          return yield* pomerado.run(
+            artifact(walkAccount),
+            { url: site.url, intent: "Walk the account", effect: "read", input: {} },
+            heard.hooks,
+          );
+        }),
+      ),
+    );
+
+    const at = (path: string) => `${site.origin}${path}`;
+    expect(heard.answered()).toEqual(
+      expect.arrayContaining(
+        [
+          "/",
+          "/moved",
+          "/account",
+          "/api/cart",
+          "/logo.png",
+          "/frame",
+          "/spa/route",
+          "/spa/route#/hash/route",
+          "/popup",
+          // A page's link first, then a page the site answered.
+          "/orders/o-1",
+        ].map(at),
+      ),
+    );
+    const elsewhere = at("/elsewhere").replace("127.0.0.1", "localhost");
+    expect(heard.answered()).toContain(elsewhere);
+    for (const path of ["/old", "/missing", "/after-missing", "/api/other"])
+      expect(heard.answered()).not.toContain(at(path));
+
+    expect(heard.links()).toEqual(
+      expect.arrayContaining([
+        at("/orders/o-1"),
+        "https://other.test/away",
+        at("/hidden-link"),
+        at("/template-link"),
+        at("/shadow-link"),
+        at("/framed-link"),
+        at("/elsewhere-link").replace("127.0.0.1", "localhost"),
+      ]),
+    );
+    expect(heard.links().join(" ")).not.toContain("mailto:");
+
+    for (const line of [
+      "Your account",
+      "Account overview",
+      "Hi Asha Rao",
+      "Add to cart",
+      "Close dialog",
+      "Store logo",
+      "Search products",
+      "Street",
+      "12 Park Lane",
+      "Saved Address One",
+      "Leave at the door",
+      "Hidden note",
+      `{"customer":"Data Attribute Name"}`,
+      "Template words",
+      `{"greeting":"Inline data words"}`,
+      "Shadow button",
+      "Inside the frame",
+      "Words of another origin",
+      "Card number",
+      "Code",
+      "Security code",
+      "Moved here",
+      "Nothing here",
+      "Popup words",
+    ])
+      expect(heard.texts()).toContain(line);
+    const words = heard.texts().join("\n");
+    for (const never of [
+      "Script words",
+      "Style words",
+      "hunter-two",
+      "1111",
+      "4242",
+      "5555",
+      "246810",
+      "Security value",
+    ])
+      expect(words).not.toContain(never);
+    expect(heard.reports.some((pages) => pages.partial)).toBe(false);
+    expect(calls).toEqual([]);
+  } finally {
+    await site.close();
+  }
+});
+
+test("a host's seen hook that dies leaves the run as it was, and hears the last pages of a run that fails", async () => {
+  test.setTimeout(60_000);
+  const site = await accountSite();
+  const calls: string[] = [];
+  const failing = artifact(`import { Schema } from "effect";
+import { defineOperation } from "../runtime/index.js";
+export default defineOperation(
+  { name: "fail_late", input: Schema.Struct({}), output: Schema.Struct({ done: Schema.Boolean }) },
+  async ({ kernel, sessionId }) => {
+    await kernel.browsers.playwright.execute(sessionId, {
+      code: "await page.goto(new URL('/moved', page.url()).href);",
+      timeout_sec: 10,
+    });
+    throw new Error("The tool gave up");
+  },
+);`);
+  const heard = hearing();
+  try {
+    const outcome = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const pomerado = yield* session(calls);
+          const dying = yield* pomerado.run(
+            artifact(readShop),
+            { url: site.url, intent: "Read the shop", effect: "read", input: {} },
+            { seen: () => Effect.die(new Error("The hook broke")) },
+          );
+          const failed = yield* pomerado
+            .run(
+              failing,
+              { url: site.url, intent: "Fail late", effect: "read", input: {} },
+              heard.hooks,
+            )
+            .pipe(Effect.either);
+          return { dying, failed };
+        }),
+      ),
+    );
+
+    expect(outcome.dying).toEqual({ heading: "Shop" });
+    expect(outcome.failed._tag).toBe("Left");
+    expect(heard.texts()).toContain("Moved here");
+  } finally {
+    await site.close();
+  }
+});
+
+/** Reads the shop's heading. */
+const readShop = `import { Schema } from "effect";
+import { defineOperation } from "../runtime/index.js";
+export default defineOperation(
+  { name: "read_shop", input: Schema.Struct({}), output: Schema.Struct({ heading: Schema.String }) },
+  async ({ kernel, sessionId }) => {
+    const read = await kernel.browsers.playwright.execute(sessionId, {
+      code: "return await page.locator('h1').innerText();",
+      timeout_sec: 10,
+    });
+    if (!read.success) throw new Error(String(read.error));
+    return { heading: String(read.result) };
+  },
+);`;
+
+test("what one run saw stays out of the next run's reports, its output and its artifact", async () => {
+  test.setTimeout(60_000);
+  const site = await accountSite();
+  const calls: string[] = [];
+  const first = hearing();
+  const second = hearing();
+  const walked = artifact(walkAccount);
+  const before = JSON.stringify(walked);
+  try {
+    const outputs = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const pomerado = yield* session(calls);
+          const request = { url: site.url, intent: "Read", effect: "read", input: {} } as const;
+          return [
+            yield* pomerado.run(walked, request, first.hooks),
+            yield* pomerado.run(artifact(readShop), request, second.hooks),
+          ];
+        }),
+      ),
+    );
+
+    expect(first.texts()).toContain("Saved Address One");
+    expect(second.texts()).toContain("Shop");
+    expect(second.texts()).not.toContain("Saved Address One");
+    expect(second.answered()).not.toContain(`${site.origin}/account`);
+    expect(JSON.stringify(outputs)).not.toContain("Saved Address One");
+    expect(JSON.stringify(walked)).toBe(before);
+  } finally {
+    await site.close();
+  }
+});
+
+test("a mint tells the host's seen hook what its steps and live tests saw, and keeps none of it", async () => {
+  test.setTimeout(120_000);
+  const site = await startSite((request, response) => {
+    const path = new URL(request.url ?? "/", "http://site.test").pathname;
+    if (path === "/deals") html(response, "<h1>Deals</h1><p>Planted Deal Words</p>");
+    else
+      html(
+        response,
+        `<title>Shop</title><h1>Shop</h1><p>Planted Page Words</p><a href="/deals">Deals</a><img src="/logo.png">`,
+      );
+  });
+  const heard = hearing();
+  try {
+    const { built, requests } = await mint({
+      effect: "read",
+      url: site.url,
+      guardian: recordingGuardian(),
+      intent: "Read the page's heading",
+      timeoutMs: 600_000,
+      hooks: heard.hooks,
+      turns: [
+        () =>
+          patch({
+            "src/tool.mjs": searchHeading,
+            "test/cases.json": headingCases("lamp", "chair"),
+          }),
+        ...testAndPublish,
+      ],
+    });
+
+    expect(built.build, JSON.stringify(built)).toBe("published");
+    expect(heard.answered()).toEqual(
+      expect.arrayContaining([site.url, `${site.origin}/logo.png`]),
+    );
+    expect(heard.links()).toContain(`${site.origin}/deals`);
+    expect(heard.texts()).toEqual(expect.arrayContaining(["Shop", "Planted Page Words", "Deals"]));
+    expect(heard.reports.some((pages) => pages.partial)).toBe(false);
+    expect(JSON.stringify(built)).not.toContain("Planted Page Words");
+    expect(JSON.stringify(requests)).not.toContain("Planted Page Words");
+  } finally {
+    await site.close();
+  }
+});
+
+test("a mint's seen hook hears a number and a code masked, in each address, link and line", async () => {
+  test.setTimeout(180_000);
+  const shop = await phoneShop({
+    echo: (typed) => [typed, "98765 43210"],
+    echoInAddress: true,
+  });
+  const heard = hearing();
+  try {
+    await mint({
+      effect: "read",
+      url: `${shop.origin}/login`,
+      guardian: recordingGuardian(),
+      intent: "Read the account's heading",
+      timeoutMs: 600_000,
+      browser: { context: shop.context },
+      passwordless: byPhone,
+      hooks: heard.hooks,
+      answer: (request) =>
+        Object.fromEntries(
+          request.questions.map((question) => [
+            question.id,
+            question.type === "credential"
+              ? { username: "+919876543210", saveLogin: false }
+              : "424242",
+          ]),
+        ),
+      turns: [
+        () => patch({ "src/tool.mjs": searchHeading, "explore/body.mjs": readBody }),
+        phoneStep("national"),
+        ...phoneSignInTurns.slice(1, 3),
+        () => [said("Stop here.")],
+      ],
+    });
+
+    expect(shop.received).toEqual({ phones: ["9876543210"], codes: ["424242"] });
+    expect(heard.texts()).toContain("We sent a code to [private]");
+    expect(heard.answered()).toContain(`${shop.origin}/verify?to=[private]`);
+    expect(heard.links()).toContain(`${shop.origin}/resend?to=[private]`);
+    const reports = JSON.stringify(heard.reports);
+    for (const form of ["9876543210", "98765 43210", "424242"])
+      expect(reports).not.toContain(form);
+  } finally {
+    await shop.close();
+  }
+});
+
+test("a page behind a pop-up holds up one read, and the host hears it once the pop-up closes, with nothing lost", async () => {
+  test.setTimeout(60_000);
+  const site = await startSite((_request, response) =>
+    html(
+      response,
+      `<h1 id="shown">Before the question</h1><button id="ask" onclick="confirm('Sure?'); document.getElementById('shown').textContent = 'After the question';">Ask</button>`,
+    ),
+  );
+  const calls: string[] = [];
+  const heard = hearing();
+  try {
+    const output = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const pomerado = yield* session(calls);
+          return yield* pomerado.run(
+            artifact(`import { Schema } from "effect";
+import { defineOperation } from "../runtime/index.js";
+export default defineOperation(
+  { name: "ask_page", input: Schema.Struct({}), output: Schema.Struct({ done: Schema.Boolean }) },
+  async ({ kernel, sessionId, decideDialog }) => {
+    const raised = await kernel.browsers.playwright.execute(sessionId, {
+      code: \`
+        const shown = new Promise((resolve) => page.once("dialog", (dialog) => {
+          globalThis.dialog = dialog;
+          resolve({ type: dialog.type(), message: dialog.message(), url: page.url() });
+        }));
+        void page.click("#ask").catch(() => {});
+        return await shown;
+      \`,
+      timeout_sec: 10,
+    });
+    if (!raised.success) throw new Error(String(raised.error));
+    await decideDialog({ step: "ask", ...raised.result });
+    const closed = await kernel.browsers.playwright.execute(sessionId, {
+      code: "await globalThis.dialog.dismiss();",
+      timeout_sec: 10,
+    });
+    if (!closed.success) throw new Error(String(closed.error));
+    return { done: true };
+  },
+);`),
+            { url: site.url, intent: "Ask the page", effect: "read", input: {} },
+            heard.hooks,
+          );
+        }),
+      ),
+    );
+
+    expect(output).toEqual({ done: true });
+    expect(heard.texts()).toEqual(
+      expect.arrayContaining(["Before the question", "After the question"]),
+    );
+    expect(heard.reports.some((pages) => pages.partial)).toBe(false);
+  } finally {
+    await site.close();
+  }
+});
+
+test("a frame's read takes a field's value only between calls, and a form's own fields don't stop it", async ({
+  page,
+}) => {
+  await page.setContent(`<form id="f">
+<input name="attributes" value="Named attributes">
+<input name="nodeType" value="Named type">
+<input name="childNodes" value="Named children">
+<input name="tagName" value="Named tag">
+<input name="shadowRoot" value="Named shadow">
+<input type="hidden" value="Kept hidden value">
+<textarea>Typed in a box</textarea>
+<a href="https://shop.test/form-link">In the form</a>
+<p>Form words</p>
+</form>
+<img name="body"><img name="documentElement"><img name="baseURI">
+<p>Page words</p>`);
+  await page.evaluate(() => {
+    const field = document.querySelector("input");
+    if (field !== null) field.value = "Typed so far";
+    Reflect.deleteProperty(URL, "parse");
+  });
+
+  const read = (values: boolean) =>
+    page.evaluate(readFrameCode(values)) as Promise<{
+      readonly lines: readonly string[];
+      readonly links: readonly string[];
+      readonly cut: boolean;
+    }>;
+  const between = await read(true);
+  expect(between.cut).toBe(false);
+  expect(between.lines).toEqual(
+    expect.arrayContaining([
+      "Form words",
+      "Page words",
+      "Kept hidden value",
+      "Typed so far",
+      "Typed in a box",
+    ]),
+  );
+  expect(between.lines).toContain("Named attributes");
+  expect(between.links).toEqual(["https://shop.test/form-link"]);
+
+  const loading = await read(false);
+  expect(loading.cut).toBe(false);
+  expect(loading.lines).toContain("Form words");
+  for (const value of ["Typed so far", "Kept hidden value", "Typed in a box"])
+    expect(loading.lines.join("\n")).not.toContain(value);
+});
+
+test("a frame's read takes no script from a page that isn't drawn yet", async ({ page }) => {
+  await page.setContent(`<style>body { display: none; }</style><p>Waiting words</p>
+<script>const never = "Script words";</script>`);
+
+  const { lines } = (await page.evaluate(readFrameCode(true))) as {
+    readonly lines: readonly string[];
+  };
+  expect(lines).toContain("Waiting words");
+  expect(lines.join("\n")).not.toContain("Script words");
+  expect(lines.join("\n")).not.toContain("display");
+});

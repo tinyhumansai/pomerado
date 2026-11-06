@@ -210,9 +210,11 @@ export const mintRequest = (
   context: RequestContext,
   request: PomeradoMintRequest,
   fileHandles: FileHandles,
+  /** The read a host's `seen` hook hears from, run after each browser call. */
+  pagesRead?: Effect.Effect<void>,
 ) =>
   Effect.gen(function* () {
-    const state = yield* mintState(session, context, request, fileHandles);
+    const state = yield* mintState(session, context, request, fileHandles, pagesRead);
     // The request's runs share its publication decisions.
     const publicationDecisions = memoryPublicationDecisions();
     const mintRequest = {

@@ -139,6 +139,7 @@ export const localLiveTests = (state: MintState): LiveTestHost => {
                 // A test asks nobody: a case whose script asks a question is not judged.
                 ask: () => Effect.fail(new InputRequestFailure({ code: "Unavailable" })),
                 signIn: state.sessionSignIn.hook(() => undefined),
+                ...(state.pagesRead === undefined ? {} : { afterBrowserCall: state.pagesRead }),
               }).pipe(
                 Effect.map((result) => ({
                   ...result,

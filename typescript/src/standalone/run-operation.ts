@@ -21,6 +21,7 @@ import { siteDomain } from "../runtime/same-site.js";
 import { localStartHooks, startPage } from "../runtime/start-state.js";
 import type { MintArtifact } from "../mint/input-feedback.js";
 import type { OperationHooks } from "../runtime/operation-hooks.js";
+import { watchingPages } from "./pages-seen.js";
 import type { PomeradoRequest } from "./contracts.js";
 import { makeRunSignIn } from "./session-sign-in.js";
 import { sessionCardFill } from "./card-fill.js";
@@ -116,11 +117,14 @@ export const runOperation = (
   Effect.gen(function* () {
     const { options, browser, ask, secrets } = session;
     const { siteOrigin } = yield* requestSite(session, request);
+    const { seen, ...operationHooks } = hooks ?? {};
     // A cursor this host did not sign for this tool and these inputs, or one past its hour, ends
     // the run here, before the sign-in or any page load.
     const list = yield* admitArtifactCursor(session, artifact, siteOrigin, request);
     // So does a caller's file outside the limits the tool declares for its input.
     yield* admitDeclaredFiles(artifact, request);
+    // From before the sign-in's first page, as the host compares all that this account saw.
+    const pagesRead = seen === undefined ? undefined : yield* watchingPages(browser, secrets, seen);
     const workspace = yield* createLocalWorkspace();
     yield* seedLocalRuntime(workspace);
     const sources = artifact.files.map(({ path, content }) => [path, content] as const);
@@ -191,7 +195,8 @@ export const runOperation = (
       // A card the script asked for is typed by the host; the script holds only its handles.
       cardFill: sessionCardFill(session, siteOrigin),
       files,
-      ...(hooks === undefined ? {} : { hooks }),
+      ...(hooks === undefined ? {} : { hooks: operationHooks }),
+      ...(pagesRead === undefined ? {} : { afterBrowserCall: pagesRead }),
     }).pipe(
       Effect.mapError((error) =>
         runOutcomeFailure(request.effect, "operation", dialogs.unanswered())(error),
